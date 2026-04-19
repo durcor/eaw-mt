@@ -71,6 +71,59 @@ typedef void (WINAPI *RenderFlushFn)(void *);
 static RenderFlushFn g_trampoline = NULL;
 
 /* =========================================================================
+ * Profiling
+ *
+ * Timing is split across two threads but there is no race: the implementation
+ * is serialized — render_done is signaled before the main thread reads any
+ * render-thread timing values on the next call to render_flush_hook.
+ *
+ * Logged every PROFILE_WINDOW frames via OutputDebugString.
+ * ========================================================================= */
+
+#define PROFILE_WINDOW 300
+
+static LARGE_INTEGER g_qpc_freq;
+
+/* Set by render thread, read by main thread after render_done (safe). */
+static LARGE_INTEGER g_flush_start;
+static LARGE_INTEGER g_flush_end;
+
+/* Accumulators — only touched by main thread. */
+static LARGE_INTEGER g_frame_start;
+static BOOL          g_frame_start_valid = FALSE;
+static LONG          g_frame_count       = 0;
+
+static double g_flush_sum_ms = 0, g_flush_min_ms = 1e9, g_flush_max_ms = 0;
+static double g_frame_sum_ms = 0, g_frame_min_ms = 1e9, g_frame_max_ms = 0;
+
+static void profile_report_and_reset(void) {
+    double freq = (double)g_qpc_freq.QuadPart / 1000.0;
+    double n    = (double)PROFILE_WINDOW;
+
+    double flush_avg = g_flush_sum_ms / n;
+    double frame_avg = g_frame_sum_ms / n;
+    double pct       = (frame_avg > 0.0) ? (flush_avg / frame_avg * 100.0) : 0.0;
+
+    char buf[256];
+    wsprintfA(buf,
+        "[eaw-mt] profile(%d frames): "
+        "flush avg=%.2f min=%.2f max=%.2f ms | "
+        "frame avg=%.2f min=%.2f max=%.2f ms | "
+        "flush=%.1f%% of frame\n",
+        PROFILE_WINDOW,
+        flush_avg, g_flush_min_ms, g_flush_max_ms,
+        frame_avg, g_frame_min_ms, g_frame_max_ms,
+        pct);
+    OutputDebugStringA(buf);
+
+    /* Reset accumulators */
+    g_frame_count   = 0;
+    g_flush_sum_ms  = g_frame_sum_ms  = 0;
+    g_flush_min_ms  = g_frame_min_ms  = 1e9;
+    g_flush_max_ms  = g_frame_max_ms  = 0;
+}
+
+/* =========================================================================
  * Render thread
  * ========================================================================= */
 
@@ -83,7 +136,9 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
         if (wait == WAIT_TIMEOUT) continue;
         if (InterlockedCompareExchange(&g_shutdown, 0, 0)) break;
 
+        QueryPerformanceCounter(&g_flush_start);
         g_trampoline((void *)g_render_param);
+        QueryPerformanceCounter(&g_flush_end);
 
         SetEvent(g_render_done);
     }
@@ -97,6 +152,31 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
  * ========================================================================= */
 
 static void WINAPI render_flush_hook(void *param_1) {
+    /* --- record timing from the previous frame (render_done already fired) --- */
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    double freq = (double)g_qpc_freq.QuadPart / 1000.0;
+
+    if (g_frame_start_valid && g_frame_count < PROFILE_WINDOW) {
+        double flush_ms = (g_flush_end.QuadPart - g_flush_start.QuadPart) / freq;
+        double frame_ms = (now.QuadPart - g_frame_start.QuadPart) / freq;
+
+        g_flush_sum_ms += flush_ms;
+        g_frame_sum_ms += frame_ms;
+        if (flush_ms < g_flush_min_ms) g_flush_min_ms = flush_ms;
+        if (flush_ms > g_flush_max_ms) g_flush_max_ms = flush_ms;
+        if (frame_ms < g_frame_min_ms) g_frame_min_ms = frame_ms;
+        if (frame_ms > g_frame_max_ms) g_frame_max_ms = frame_ms;
+
+        g_frame_count++;
+        if (g_frame_count == PROFILE_WINDOW)
+            profile_report_and_reset();
+    }
+
+    g_frame_start       = now;
+    g_frame_start_valid = TRUE;
+
+    /* --- kick render thread --- */
     g_render_param = param_1;
     SetEvent(g_render_kick);
     WaitForSingleObject(g_render_done, INFINITE);
@@ -202,6 +282,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             OutputDebugStringA("[eaw-mt] FATAL: failed to resolve winmm exports\n");
             return FALSE;
         }
+
+        /* Initialize QPC frequency for profiling */
+        QueryPerformanceFrequency(&g_qpc_freq);
 
         /* Create sync events (auto-reset) */
         g_render_kick = CreateEventA(NULL, FALSE, FALSE, NULL);
