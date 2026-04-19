@@ -378,8 +378,8 @@ Or check `/proc/$(pgrep StarWarsG.exe)/maps` for two winmm entries (proxy + real
 Each step requires human validation before proceeding:
 
 1. **Scaffold only:** ✅ COMPLETE (2026-04-19) — winmm proxy loads, OutputDebugString confirmed.
-2. **Render thread separation (Model A):** Validate over 30+ minute session. Human sign-off required.
-3. **Profile:** Use Frida to measure where remaining frame time goes after Model A.
+2. **Render thread separation (Model A):** ✅ COMPLETE (2026-04-19) — hook stable, render thread running, no crashes or visual corruption. Human sign-off received.
+3. **Profile:** Use in-hook timing to measure render flush vs total frame time. Informs whether Step 4 parallelism is worth the double-buffer complexity.
 4. **Second thread:** Implement Model B or C based on profiling. One at a time.
 
 ---
