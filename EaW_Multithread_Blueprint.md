@@ -88,19 +88,28 @@ Enter the environment with `nix develop`. The `flake.lock` file generated on fir
 
 If `python3Packages.frida-python` is missing or the wrong version in the pinned nixpkgs, enter the shell and run `pip install frida-tools` into a local venv. Note that in the flake version you can also add a `frida` overlay if you need a specific version pinned.
 
+**`analyzeHeadless` path:** The Ghidra support scripts are not on the default PATH. The flake shellHook adds `${pkgs.ghidra}/lib/ghidra/support` to PATH so `analyzeHeadless` is available inside `nix develop`. Do not call the `ghidra` binary directly — it launches the GUI.
+
+**Ghidra project location:** Store Ghidra projects under `ghidra_projects/` in the repo root, not `/tmp`. This keeps the analyzed database in version control range and survives reboots.
+
+**Ghidra scripts must be Java, not Python.** Headless Ghidra does not include PyGhidra. All scripts in `tools/ghidra_scripts/` use the GhidraScript Java API. See `ExportFunctions.java`, `ExportStrings.java`, `FindGameLoop.java`, `DecompileCandidates.java` for examples.
+
 ### Finding Your Proton Prefix
 
 Steam game files and the Wine prefix for EaW are separate locations:
 
 ```
-# Binary (what we analyze and patch):
-~/.steam/steam/steamapps/common/Star Wars Empire at War/corruption/swfoc.exe
+# Binaries (what we analyze and patch):
+~/.steam/steam/steamapps/common/Star Wars Empire at War/corruption/StarWarsG.exe  # PRIMARY
+~/.steam/steam/steamapps/common/Star Wars Empire at War/corruption/swfoc.exe      # launcher
 
 # Proton prefix (Wine C: drive, config, etc.):
 ~/.steam/steam/steamapps/compatdata/32470/pfx/
 
 # EaW Gold Pack Steam App ID: 32470
 ```
+
+**Critical:** `swfoc.exe` is a 1.7MB launcher stub. The actual game engine is `StarWarsG.exe` (12MB). All Ghidra analysis, Frida scripts, and patches target `StarWarsG.exe`.
 
 ---
 
@@ -117,17 +126,20 @@ $PWD
 │   └── uv.lock                 # pinned by uv, consumed by uv2nix
 ├── binaries/
 │   ├── original/               # Read-only copies. Never touch.
-│   │   ├── swfoc.exe           # Forces of Corruption main executable
+│   │   ├── StarWarsG.exe       # PRIMARY TARGET — Forces of Corruption engine (12MB, x86-64)
+│   │   ├── swfoc.exe           # Launcher stub only (1.7MB) — NOT the engine
 │   │   ├── sweaw.exe           # Base game executable
 │   │   └── *.dll               # All DLLs from the corruption/ directory
 │   └── patched/                # Working copies for modification
+├── ghidra_projects/
+│   └── EawProject/             # Ghidra project with analyzed StarWarsG.exe
 ├── openspec/
 │   ├── README.md               # Spec conventions and glossary
 │   ├── engine/
 │   │   ├── game_loop.md
 │   │   ├── memory_layout.md
 │   │   ├── binary_metadata.md  # Architecture, imports, section layout
-│   │   ├── threading_model.md  # Initially: "single-threaded, main thread only"
+│   │   ├── threading_model.md  # Engine is multi-threaded at startup; main loop is single-threaded
 │   │   └── subsystems/
 │   │       ├── renderer.md
 │   │       ├── ai.md
@@ -140,7 +152,8 @@ $PWD
 │   └── data_structures/
 │       └── index.md            # Master struct registry
 ├── tools/
-│   ├── ghidra_scripts/         # Custom Ghidra analysis scripts (Python/Java)
+│   ├── ghidra_scripts/         # Ghidra analysis scripts — use Java, NOT Python
+│   │                           # (headless Ghidra does not support PyGhidra)
 │   ├── frida_scripts/          # Frida instrumentation scripts
 │   ├── hooks/                  # Hook DLL source (compiled with MinGW)
 │   └── harness/                # Headless test harness (built later)
@@ -177,102 +190,78 @@ Write the verification results to `logs/toolchain_check.txt`.
 
 **Goal:** Establish ground truth. Populate top-level spec entries. No patching.
 
-### 1.1 — PE Header Analysis
+### 1.1 — PE Header Analysis ✅ COMPLETE
 
-Using `pefile`, extract and document in `openspec/engine/binary_metadata.md`:
+**Findings (see `openspec/engine/binary_metadata.md`):**
+- **x86-64** (post-November 2023 Steam patch) — 64-bit toolchain throughout
+- LAA flag: not applicable (64-bit binary)
+- Threading primitives: `CreateThread`, `TlsAlloc/Get/Set/Free`, `InitializeCriticalSection`, `EnterCriticalSection` — **engine already uses threads**; `_beginthreadex` absent (uses `CreateThread` directly)
+- **Direct3D 9** via `d3d9.dll` + `d3dx9_43.dll` — legacy renderer, NOT D3D11/12
+- Lua: **statically linked** — no `lua*.dll` in import table
+- TLS directory present — thread-local state confirmed
 
-- Exact binary architecture — **critical question: is this the pre-2023 32-bit build or the post-November 2023 64-bit Steam build?** The 2023 patch converted the engine to 64-bit. This determines the entire toolchain going forward (MinGW target, Frida arch, Ghidra processor selection).
-- Whether the Large Address Aware (LAA) flag is set (relevant mainly if it's still a 32-bit build)
-- All imported DLLs and key imported functions — pay close attention to:
-  - Any threading primitives: `CreateThread`, `InitializeCriticalSection`, `WaitForSingleObject`, `SetThreadAffinityMask`, `_beginthreadex`
-  - D3D version: `d3d9.dll` vs `d3d11.dll` vs `d3d12.dll` (indicates renderer generation)
-  - Lua DLL if dynamically linked (`lua51.dll`, `lua52.dll`, etc.)
-- Section layout (`.text`, `.data`, `.rdata`, `.bss` sizes and RVAs)
-- Any TLS (Thread Local Storage) directory — its presence means the game already uses thread-local state somewhere
+**Important clarification:** `swfoc.exe` is a 1.7MB launcher stub. The engine is `StarWarsG.exe` (12MB). All analysis targets `StarWarsG.exe`.
 
-Sample script skeleton:
+SHA-256 of `StarWarsG.exe`: `07daeeaec9d1e751383b1db3f5847b6c66f68785440a6c52c87b85f723d018a4`
 
-```python
-import pefile
-import hashlib
+### 1.2 — Ghidra Initial Import + String Survey ✅ COMPLETE
 
-pe = pefile.PE("binaries/original/swfoc.exe")
-
-# Architecture
-arch = "x86-64" if pe.FILE_HEADER.Machine == 0x8664 else "x86-32"
-
-# LAA flag
-laa = bool(pe.OPTIONAL_HEADER.DllCharacteristics & 0x0020)
-
-# Imports
-for entry in pe.DIRECTORY_ENTRY_IMPORT:
-    dll = entry.dll.decode()
-    funcs = [imp.name.decode() for imp in entry.imports if imp.name]
-    # write to spec...
-
-# SHA-256
-with open("binaries/original/swfoc.exe", "rb") as f:
-    sha256 = hashlib.sha256(f.read()).hexdigest()
-```
-
-**Key question to answer and document explicitly:** Does `swfoc.exe` import *any* threading primitives? Even if unused, this tells us whether Petroglyph's 2023 patches introduced any threading scaffolding.
-
-### 1.2 — Ghidra Initial Import
-
-Run headless Ghidra analysis. Select the correct processor based on the architecture found in 1.1:
-
+**How to run (for future sessions):**
 ```bash
-analyzeHeadless /tmp/eaw-ghidra EawProject \
-  -import binaries/original/swfoc.exe \
+# From inside nix develop:
+analyzeHeadless ghidra_projects EawProject \
+  -import binaries/original/StarWarsG.exe \
   -processor x86:LE:64:default \
-  -postScript ExportFunctions.py \
-  -postScript ExportStrings.py \
+  -postScript ExportFunctions.java \
+  -postScript ExportStrings.java \
   -log logs/ghidra_analysis.log
-# Use x86:LE:32:default for a 32-bit binary
+# NOTE: Use Java scripts, not Python. Headless Ghidra does not support PyGhidra.
+# NOTE: Project goes in ghidra_projects/, not /tmp.
 ```
 
-Write `tools/ghidra_scripts/ExportFunctions.py` and `ExportStrings.py` to dump function lists and strings to `logs/`.
+**Findings:**
+- 21,744 functions exported to `logs/functions.tsv`
+- 17,758 strings exported to `logs/ghidra_strings.tsv`
+- Named thread roster confirmed: `Main Thread`, `LoadThread`, `PacketHandler Thread`, `NATUtilsThread`, `LuaScriptThread: Main State`, `LuaScriptThread: <name>`
+- `ThreadLockMutexClass` — custom Petroglyph mutex wrapper with 10-second deadlock detection
+- Render task system: `alRenderTask` base + 14 concrete task types, `MultiLinkedListClass<alRenderTask>` storage
+- Flush variants (`ValLaserBeamFlushTask`, `ValBlobFlushTask`, etc.) confirm two-phase accumulate+flush pattern
 
-From the strings output, search for and document:
-- Thread/job/fiber/queue/worker keyword hits
-- Lua-related strings (`.lua`, `lua_`, error messages)
-- Source file path fragments in assert strings (e.g. `../src/AI/GalacticAI.cpp` — these are goldmines)
-- Known EaW asset names (confirms we have the right binary)
+See `openspec/engine/threading_model.md` and `openspec/engine/subsystems/renderer.md`.
 
-**Any recovered source file path fragments must be immediately added to `openspec/engine/` as they directly anchor the subsystem map.**
+### 1.3 — Game Loop Identification ✅ COMPLETE
 
-### 1.3 — Game Loop Identification
+**Findings (see `openspec/engine/game_loop.md`):**
+- **WinMain** = `FUN_0x5d990` (RVA `0x5d990`, 7440 bytes)
+- Frame timing: `timeGetTime()` based, not QPC. `timeBeginPeriod()` at startup for 1ms resolution.
+- Active/idle gating: `DAT_1409cf314` — `WaitMessage()` when no game loaded, tight spin loop in-game
+- Primary game-state update: `FUN_14021caf0` (takes abs time + camera params) — likely the GOM tick
+- No Sleep in the active game path — fully single-threaded main loop
+- QPC-based timer cluster at `0x222e20–0x222fa0` is a **separate subsystem** (animation/particle timing)
 
-Locate the main loop via calls to timing/sleep functions. In the Ghidra decompiler, search for cross-references to:
-- `Sleep` / `SleepEx`
-- `QueryPerformanceCounter`
-- `WaitForSingleObject` with a non-zero timeout
+**Key architectural finding:** The main loop is single-threaded — all subsystem ticks run sequentially on the main thread. Worker threads (`LoadThread`, etc.) are started at startup and run independently. This confirms the baseline that Model A assumes.
 
-The function containing one of these in a tight conditional loop, branching on a "game running" boolean, and calling many subsystem-sized functions is the main loop.
+### 1.4 — Focused Decompilation (Remaining) 🔲 IN PROGRESS
 
-Document in `openspec/engine/game_loop.md`:
-- RVA of the main loop
-- Approximate pseudocode structure
-- Each direct callee with RVA and preliminary purpose guess
+Three open questions from 1.3 that block Phase 2 spec entries:
 
-### 1.4 — Script Engine Identification
+**A. Render task flush RVA** — Find the function that drains `MultiLinkedListClass<alRenderTask>` and issues D3D draw calls. This is the exact split point for Model A. Without it, the renderer Phase 2 entry cannot be completed.
+- Strategy: xref from `alRenderTask` vftable or find `IDirect3DDevice9::DrawIndexedPrimitive` callers
 
-Search for Lua presence:
-1. Check imports for `lua*.dll` (dynamic link)
-2. If statically linked, search strings for `lua_` function name patterns, `.lua` extensions, Lua error message templates
-3. Search strings for known Thrawn's Revenge script names or paths
+**B. GOM tick confirmation** — Confirm `FUN_14021caf0` is the game object manager tick (decompile + cross-reference with GOM-related strings like `GameObjectManager`)
 
-Document in `openspec/engine/subsystems/script_engine.md`:
-- Dynamic vs static Lua linkage
-- Lua version if determinable
-- RVA of the script tick function
-- Whether execution is synchronous on the main thread
+**C. Lua threading** — Confirm whether `LuaScriptThread` entries are OS-level threads (`CreateThread`) or Lua coroutines on one OS thread. This is the critical gate for Phase 3 Model B.
+- Strategy: xref `LuaScriptThread` string to the function that creates it; check if it calls `CreateThread`
+
+Document results in `openspec/engine/subsystems/script_engine.md` (Lua) and `openspec/engine/subsystems/renderer.md` (flush RVA).
 
 ---
 
 ## 5. Phase 2 — Subsystem Mapping
 
 **Goal:** Map each major subsystem's data dependencies to understand what can be safely parallelized.
+
+**Dependency on Phase 1.4:** The renderer entry (priority 1) requires the flush RVA from 1.4A. The script engine entry (priority 2) requires the Lua threading answer from 1.4C. Complete 1.4 before finalizing those two entries.
 
 For each file in `openspec/engine/subsystems/`, produce this minimum spec entry:
 
@@ -422,25 +411,27 @@ At the start of every session, before any work:
 
 ---
 
-## 10. Immediate First Task
+## 10. Session Startup State
 
-Execute these steps in order and do not skip ahead:
+### Completed (Phase 1.1 – 1.3) ✅
 
-1. Enter the dev environment (`nix develop`) and verify all tools from Section 3. Write results to `logs/toolchain_check.txt`. Commit `flake.lock` if it was just generated.
-2. Locate `swfoc.exe` on disk. Search in this order:
-   - `~/gam/steam/steamapps/common/Star Wars Empire at War/corruption/swfoc.exe`
-   - `~/.steam/steam/steamapps/common/Star Wars Empire at War/corruption/swfoc.exe`
-   - `~/.local/share/Steam/steamapps/common/Star Wars Empire at War/corruption/swfoc.exe`
-   - Run `find ~ -name "swfoc.exe" 2>/dev/null` as a fallback
-   Report the exact path found.
-3. Create the full repository structure from Section 2.
-4. Copy `swfoc.exe`, `sweaw.exe`, and all DLLs from the game's `corruption/` directory into `binaries/original/`. Compute SHA-256 checksums for every file and write them to `binaries/original/CHECKSUMS.txt`. Set the directory read-only: `chmod -R a-w binaries/original/`.
-5. Initialize git and make an initial commit with message `"init: project structure and original binary checksums"`.
-6. Run Phase 1.1 (PE Header Analysis) and report back:
-   - **32-bit or 64-bit?** (Most critical finding — determines the entire toolchain)
-   - LAA flag status
-   - Any threading primitives imported?
-   - Which Direct3D version is imported?
-   - Full SHA-256 of `swfoc.exe`
+1. ✅ Dev environment (`nix develop`) verified. `flake.lock` committed.
+2. ✅ Binaries located at `~/gam/steam/steamapps/common/Star Wars Empire at War/corruption/`. Primary target is `StarWarsG.exe` (12MB), not `swfoc.exe` (launcher stub).
+3. ✅ Repository structure created.
+4. ✅ All binaries copied to `binaries/original/` with SHA-256s in `CHECKSUMS.txt`. Directory set read-only.
+5. ✅ Initial commit made. Phase 1.2/1.3 committed as `b8f62e9`.
+6. ✅ Phase 1.1 complete — 64-bit, D3D9, threading primitives confirmed, Lua statically linked.
+7. ✅ Phase 1.2 complete — 21K functions exported, string survey done, thread roster + render task system documented.
+8. ✅ Phase 1.3 complete — WinMain identified at `0x5d990`, game loop structure documented, frame timing confirmed as `timeGetTime()`-based.
 
-**Pause after step 6 and wait for human review before continuing to Phase 1.2.**
+### Current Task — Phase 1.4
+
+Complete the three targeted decompiles before beginning Phase 2:
+
+**A.** Find render task flush RVA (xref from `IDirect3DDevice9::DrawIndexedPrimitive` or `alRenderTask` vftable)
+**B.** Confirm `FUN_14021caf0` is the GOM tick (decompile it)
+**C.** Confirm Lua thread model — OS threads or coroutines (xref `LuaScriptThread` string → creation site → check for `CreateThread` call)
+
+### Next Phase — Phase 2 Subsystem Mapping
+
+Begin after Phase 1.4 is complete. Priority order per Section 5.
