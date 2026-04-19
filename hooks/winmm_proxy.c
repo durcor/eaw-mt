@@ -32,6 +32,7 @@
 
 #include <windows.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /* =========================================================================
  * WINMM proxy — forward the 4 functions StarWarsG.exe imports
@@ -105,7 +106,7 @@ static void profile_report_and_reset(void) {
     double pct       = (frame_avg > 0.0) ? (flush_avg / frame_avg * 100.0) : 0.0;
 
     char buf[256];
-    wsprintfA(buf,
+    sprintf(buf,
         "[eaw-mt] profile(%d frames): "
         "flush avg=%.2f min=%.2f max=%.2f ms | "
         "frame avg=%.2f min=%.2f max=%.2f ms | "

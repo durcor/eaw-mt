@@ -27,8 +27,9 @@
             # Cross-compilation for Windows hook DLLs
             mingw
 
-            # Frida — if python3Packages.frida-python is unavailable or
-            # outdated in nixpkgs, fall back to: pip install frida-tools
+            # Frida
+            frida-tools
+            # if outdated in nixpkgs, fall back to getting from pypi
             python3Packages.frida-python
 
             # Utilities
