@@ -6,7 +6,8 @@
     ],
     "allow": [
       "Write(/home/ty/src/eaw-reverse-engineering/)",
-      "Edit(/home/ty/src/eaw-reverse-engineering/)"
+      "Edit(/home/ty/src/eaw-reverse-engineering/)",
+      "Bash(nix develop *)"
     ]
   },
   "hooks": {
