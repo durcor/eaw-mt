@@ -71,6 +71,16 @@ static volatile void *g_render_param = NULL;
 typedef void (WINAPI *RenderFlushFn)(void *);
 static RenderFlushFn g_trampoline = NULL;
 
+static volatile LONG g_param_log_count = 0;
+static void log_param(void *param_1) {
+    LONG n = InterlockedIncrement(&g_param_log_count);
+    if (n <= 10) {
+        char buf[128];
+        sprintf(buf, "[eaw-mt] flush call #%ld param_1=%p\n", (long)n, param_1);
+        OutputDebugStringA(buf);
+    }
+}
+
 /* =========================================================================
  * Profiling
  *
@@ -153,17 +163,7 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
  * ========================================================================= */
 
 static void WINAPI render_flush_hook(void *param_1) {
-    /* Guard: log and skip if param_1 looks invalid (NULL or below 64KB).
-     * This catches transitions where the graphics driver is torn down or not
-     * yet initialized (e.g. land battle load). If this fires, the caller is
-     * invoking the render flush with a bad driver pointer — a game-side issue
-     * that the original code also had to handle somehow. */
-    if ((uintptr_t)param_1 < 0x10000) {
-        char buf[128];
-        sprintf(buf, "[eaw-mt] render_flush_hook: skipping bad param_1=%p\n", param_1);
-        OutputDebugStringA(buf);
-        return;
-    }
+    log_param(param_1);
 
     /* --- record timing from the previous frame (render_done already fired) --- */
     LARGE_INTEGER now;
@@ -194,6 +194,7 @@ static void WINAPI render_flush_hook(void *param_1) {
     SetEvent(g_render_kick);
     WaitForSingleObject(g_render_done, INFINITE);
 }
+
 
 /* =========================================================================
  * Inline hook installation
