@@ -1,0 +1,44 @@
+2026-04-19 00:29:58 INFO  (LoggingInitialization) Using log config file: jar:file:/nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml  
+2026-04-19 00:29:58 INFO  (LoggingInitialization) Using log file: logs/phase14_threadwrapper.log  
+2026-04-19 00:29:58 INFO  (Preferences) Loading user preferences: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/preferences  
+2026-04-19 00:29:58 INFO  (ClassSearcher) Searching for classes...  
+2026-04-19 00:29:59 INFO  (ClassSearcher) Class search complete (1216 ms)  
+2026-04-19 00:29:59 INFO  (DefaultSSLContextInitializer) Initializing SSL Context  
+2026-04-19 00:29:59 INFO  (SecureRandomFactory) Initializing Random Number Generator...  
+2026-04-19 00:29:59 INFO  (SecureRandomFactory) Random Number Generator initialization complete: NativePRNGNonBlocking  
+2026-04-19 00:29:59 INFO  (DefaultTrustManagerFactory) Trust manager disabled, cacerts have not been set  
+2026-04-19 00:29:59 INFO  (AnalyzeHeadless) Headless startup complete (2104 ms)  
+2026-04-19 00:30:00 INFO  (ClassSearcher) Class searcher loaded 58 extension points (18 false positives)  
+2026-04-19 00:30:00 INFO  (HeadlessAnalyzer) HEADLESS Script Paths:
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Jython/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/PIC/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/Atmel/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SwiftDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/MicrosoftCodeAnalyzer/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/DATA/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/GnuDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SystemEmulation/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/WildcardAssembler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BytePatterns/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/VersionTracking/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PDB/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/JVM/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/8051/ghidra_scripts
+    /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/DecompilerDependent/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger-rmi-trace/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PyGhidra/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FunctionID/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BSim/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FileFormats/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Decompiler/ghidra_scripts  
+2026-04-19 00:30:00 INFO  (HeadlessAnalyzer) HEADLESS: execution starts  
+2026-04-19 00:30:00 INFO  (HeadlessAnalyzer) Opening existing project: /home/ty/src/eaw-reverse-engineering/ghidra_projects/EawProject  
+2026-04-19 00:30:00 INFO  (HeadlessProject) Opening project: /home/ty/src/eaw-reverse-engineering/ghidra_projects/EawProject  
+2026-04-19 00:30:01 INFO  (HeadlessAnalyzer) REPORT: Processing project file: /StarWarsG.exe  
+2026-04-19 00:30:01 INFO  (HeadlessAnalyzer) REPORT: Execute script: FindThreadWrapperCallers.java   
+2026-04-19 00:30:02 INFO  (HeadlessAnalyzer) SCRIPT: /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts/FindThreadWrapperCallers.java  
+2026-04-19 00:30:03 INFO  (GhidraScript) FindThreadWrapperCallers.java> Thread wrapper callers written to logs/thread_wrapper_callers.c — 5 callers  
+2026-04-19 00:30:03 INFO  (HeadlessAnalyzer) REPORT: Save succeeded for processed file: /StarWarsG.exe  

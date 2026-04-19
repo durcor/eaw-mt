@@ -1,0 +1,501 @@
+2026-04-18 23:33:07 INFO  (LoggingInitialization) Using log config file: jar:file:/nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml  
+2026-04-18 23:33:07 INFO  (LoggingInitialization) Using log file: logs/ghidra_analysis.log  
+2026-04-18 23:33:07 INFO  (Preferences) Loading user preferences: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/preferences  
+2026-04-18 23:33:07 INFO  (ClassSearcher) Searching for classes...  
+2026-04-18 23:33:08 INFO  (ClassSearcher) Class search complete (999 ms)  
+2026-04-18 23:33:08 INFO  (DefaultSSLContextInitializer) Initializing SSL Context  
+2026-04-18 23:33:08 INFO  (SecureRandomFactory) Initializing Random Number Generator...  
+2026-04-18 23:33:08 INFO  (SecureRandomFactory) Random Number Generator initialization complete: NativePRNGNonBlocking  
+2026-04-18 23:33:08 INFO  (DefaultTrustManagerFactory) Trust manager disabled, cacerts have not been set  
+2026-04-18 23:33:08 INFO  (FileCacheMaintenanceDaemon) Starting cache cleanup: /home/ty/.cache/ghidra/fscache2  
+2026-04-18 23:33:08 INFO  (FileCacheMaintenanceDaemon) Finished cache cleanup, estimated storage used: 0  
+2026-04-18 23:33:09 INFO  (AnalyzeHeadless) Headless startup complete (2661 ms)  
+2026-04-18 23:33:09 INFO  (ClassSearcher) Class searcher loaded 58 extension points (18 false positives)  
+2026-04-18 23:33:09 INFO  (HeadlessAnalyzer) HEADLESS Script Paths:
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Jython/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/PIC/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/Atmel/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SwiftDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/MicrosoftCodeAnalyzer/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/DATA/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/GnuDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SystemEmulation/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/WildcardAssembler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BytePatterns/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/VersionTracking/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PDB/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/JVM/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/8051/ghidra_scripts
+    /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/DecompilerDependent/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger-rmi-trace/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PyGhidra/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FunctionID/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BSim/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FileFormats/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Decompiler/ghidra_scripts  
+2026-04-18 23:33:09 INFO  (HeadlessAnalyzer) HEADLESS: execution starts  
+2026-04-18 23:33:09 INFO  (HeadlessAnalyzer) Creating project: /tmp/eaw-ghidra/EawProject  
+2026-04-18 23:33:09 ERROR (HeadlessAnalyzer) Abort due to Headless analyzer error: Directory not found: /tmp/eaw-ghidra java.io.FileNotFoundException: Directory not found: /tmp/eaw-ghidra
+	at ghidra.framework.project.DefaultProjectManager.createProject(DefaultProjectManager.java:100)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:449)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+ 
+2026-04-18 23:33:38 INFO  (LoggingInitialization) Using log config file: jar:file:/nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml  
+2026-04-18 23:33:38 INFO  (LoggingInitialization) Using log file: logs/ghidra_analysis.log  
+2026-04-18 23:33:38 INFO  (Preferences) Loading user preferences: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/preferences  
+2026-04-18 23:33:38 INFO  (ClassSearcher) Searching for classes...  
+2026-04-18 23:33:39 INFO  (ClassSearcher) Class search complete (1148 ms)  
+2026-04-18 23:33:39 INFO  (DefaultSSLContextInitializer) Initializing SSL Context  
+2026-04-18 23:33:39 INFO  (SecureRandomFactory) Initializing Random Number Generator...  
+2026-04-18 23:33:39 INFO  (SecureRandomFactory) Random Number Generator initialization complete: NativePRNGNonBlocking  
+2026-04-18 23:33:39 INFO  (DefaultTrustManagerFactory) Trust manager disabled, cacerts have not been set  
+2026-04-18 23:33:40 INFO  (AnalyzeHeadless) Headless startup complete (2740 ms)  
+2026-04-18 23:33:40 INFO  (ClassSearcher) Class searcher loaded 58 extension points (18 false positives)  
+2026-04-18 23:33:40 INFO  (HeadlessAnalyzer) HEADLESS Script Paths:
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Jython/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/PIC/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/Atmel/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SwiftDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/MicrosoftCodeAnalyzer/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/DATA/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/GnuDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SystemEmulation/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/WildcardAssembler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BytePatterns/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/VersionTracking/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PDB/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/JVM/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/8051/ghidra_scripts
+    /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/DecompilerDependent/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger-rmi-trace/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PyGhidra/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FunctionID/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BSim/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FileFormats/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Decompiler/ghidra_scripts  
+2026-04-18 23:33:40 INFO  (HeadlessAnalyzer) HEADLESS: execution starts  
+2026-04-18 23:33:40 INFO  (HeadlessAnalyzer) Creating project: /tmp/eaw-ghidra/EawProject  
+2026-04-18 23:33:40 INFO  (DefaultProject) Creating project: /tmp/eaw-ghidra/EawProject  
+2026-04-18 23:33:40 INFO  (HeadlessAnalyzer) REPORT: Processing input files:   
+2026-04-18 23:33:40 INFO  (HeadlessAnalyzer)      project: /tmp/eaw-ghidra/EawProject  
+2026-04-18 23:33:40 INFO  (HeadlessAnalyzer) IMPORTING: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:33:40 INFO  (ProgramLoader) Using Loader: Portable Executable (PE)  
+2026-04-18 23:33:40 INFO  (ProgramLoader) Using Language/Compiler: x86:LE:64:default:windows  
+2026-04-18 23:33:40 INFO  (ProgramLoader) Using Library Search Path: [., /bin, /lib, /lib64, /lib/x86_64-linux-gnu, /lib/aarch64-linux-gnu, /usr/bin, /usr/lib, /usr/X11R6/bin, /usr/X11R6/lib, /usr/java/packages/lib, /usr/lib64]  
+2026-04-18 23:33:41 INFO  (TLSDirectory) TLS callbacks at 1407ff5b0  
+2026-04-18 23:33:47 INFO  (TLSDirectory) TLS callbacks at 1800c6480  
+2026-04-18 23:33:48 INFO  (ProgramLoader) Additional info:
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe?MD5=9e33479ac8d0acad1bb04578dfedaeef...
+------------------------------------------------
+
+Searching 4 paths for library ADVAPI32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library BINK2W64.DLL...
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/bink2w64.dll?MD5=79ec2ef006692830bb1e6b3b9c597af6...
+Created exports file: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/symbols/win64/bink2w64.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 4 paths for library COMCTL32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library D3D9.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library D3DX9_43.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library GDI32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library KERNEL32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library MSS64.DLL...
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/mss64.dll?MD5=0455894d1f8d4a376c2105e5e8650bad...
+Created exports file: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/symbols/win64/mss64.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 4 paths for library OLE32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library OLEAUT32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library PERCEPTIONFUNCTIONG.DLL...
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/PerceptionFunctionG.dll?MD5=e3a3167f2bc478f385e9bbbf5858916b...
+Created exports file: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/symbols/win64/perceptionfunctiong.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 4 paths for library POWRPROF.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library SHELL32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library SHLWAPI.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library STEAM_API64.DLL...
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/steam_api64.dll?MD5=6c23eab28f1cd1bfd128934b08288dd8...
+Created exports file: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/symbols/win64/steam_api64.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 4 paths for library USER32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library WINMM.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library WS2_32.DLL...
+Library not found.
+------------------------------------------------
+
+Applying cached symbols from STEAM_API64.DLL
+Applying cached symbols from PERCEPTIONFUNCTIONG.DLL
+Applying cached symbols from MSS64.DLL
+Applying cached symbols from BINK2W64.DLL
+Linking the External Programs of 'StarWarsG.exe' to imported libraries...
+  [SHLWAPI.DLL] -> not found in project
+  [WINMM.DLL] -> not found in project
+  [POWRPROF.DLL] -> not found in project
+  [STEAM_API64.DLL] -> not found in project
+  [KERNEL32.DLL] -> not found in project
+  [USER32.DLL] -> not found in project
+  [GDI32.DLL] -> not found in project
+  [ADVAPI32.DLL] -> not found in project
+  [SHELL32.DLL] -> not found in project
+  [OLE32.DLL] -> not found in project
+  [OLEAUT32.DLL] -> not found in project
+  [WS2_32.DLL] -> not found in project
+  [PERCEPTIONFUNCTIONG.DLL] -> not found in project
+  [COMCTL32.DLL] -> not found in project
+  [D3D9.DLL] -> not found in project
+  [MSS64.DLL] -> not found in project
+  [BINK2W64.DLL] -> not found in project
+  [D3DX9_43.DLL] -> not found in project
+------------------------------------------------
+
+  
+2026-04-18 23:33:48 INFO  (HeadlessAnalyzer) IMPORTING: Loaded 0 additional files  
+2026-04-18 23:33:48 INFO  (HeadlessAnalyzer) ANALYZING all memory and code: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:33:48 WARN  (NoReturnFunctionAnalyzer) Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/PEFunctionsThatDoNotReturn  
+2026-04-18 23:33:48 WARN  (NoReturnFunctionAnalyzer) Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/PEFunctionsThatDoNotReturn  
+2026-04-18 23:33:48 DEBUG (SymbolServerService) SymbolServerService: querying Program's Import Location - /home/ty/src/eaw-reverse-engineering/binaries/original for StarWarsG.pdb, 65c2a900-75fc-42e9-93e3-15a5e99c35fb, 1, 0, ???  
+2026-04-18 23:33:48 DEBUG (SymbolServerService) SymbolServerService: got 0 results from Program's Import Location - /home/ty/src/eaw-reverse-engineering/binaries/original  
+2026-04-18 23:33:48 DEBUG (SymbolServerService) SymbolServerService: found 0 matches  
+2026-04-18 23:33:48 INFO  (PdbUniversalAnalyzer) Skipping PDB processing: failed to locate PDB file in configured locations  
+2026-04-18 23:33:48 INFO  (PdbUniversalAnalyzer) Use a script to set the PDB file location. I.e.,
+    PdbAnalyzer.setPdbFileOption(currentProgram, new File("/path/to/pdb/file.pdb")); or
+    PdbUniversalAnalyzer.setPdbFileOption(currentProgram, new File("/path/to/pdb/file.pdb"));
+Or set the symbol server search configuration using:    PdbPlugin.saveSymbolServerServiceConfig(...);
+ This must be done using a pre-script (prior to analysis).  
+2026-04-18 23:33:48 INFO  (PackedDatabaseCache) Packed database cache: /home/ty/.cache/ghidra/packed-db-cache  
+2026-04-18 23:33:48 DEBUG (PackedDatabaseCache) Caching packed database: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/typeinfo/win32/windows_vs12_64.gdt  
+2026-04-18 23:33:48 DEBUG (PackedDatabase) Unpacking database /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/typeinfo/win32/windows_vs12_64.gdt -> /home/ty/.cache/ghidra/packed-db-cache/pdb36B68E66/db.1.gbf  
+2026-04-18 23:33:48 DEBUG (PackedDatabaseCache) Cache update completed: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/typeinfo/win32/windows_vs12_64.gdt  
+2026-04-18 23:36:08 WARN  (AddressMapDB) More than 100 address segments have been created!  
+2026-04-18 23:37:34 INFO  (ApplyDataArchiveAnalyzer) Applied data type archive: windows_vs12_64  
+2026-04-18 23:37:34 INFO  (ApplyDataArchiveAnalyzer) Applied data type archive: windows_vs12_64  
+2026-04-18 23:39:21 INFO  (AutoAnalysisManager) -----------------------------------------------------
+    ASCII Strings                              4.312 secs
+    Apply Data Archives                        0.424 secs
+    Call Convention ID                         0.532 secs
+    Call-Fixup Installer                       0.246 secs
+    Create Address Tables                      8.757 secs
+    Create Address Tables - One Time           1.635 secs
+    Create Function                            0.466 secs
+    Data Reference                             6.777 secs
+    Decompiler Switch Analysis                80.466 secs
+    Demangler Microsoft                        0.360 secs
+    Disassemble                                0.003 secs
+    Disassemble Entry Points                  29.647 secs
+    Embedded Media                             0.077 secs
+    External Entry References                  0.000 secs
+    Function ID                               11.616 secs
+    Function Start Search                      0.176 secs
+    Non-Returning Functions - Discovered      11.346 secs
+    Non-Returning Functions - Known            0.050 secs
+    PDB Universal                              0.012 secs
+    Reference                                  7.122 secs
+    Scalar Operand References                 13.259 secs
+    Shared Return Calls                        2.657 secs
+    Stack                                     46.406 secs
+    Subroutine References                      1.938 secs
+    Subroutine References - One Time           0.083 secs
+    Windows x86 PE Exception Handling          1.397 secs
+    Windows x86 PE RTTI Analyzer              24.629 secs
+    Windows x86 Thread Environment Block (TEB) Analyzer     0.011 secs
+    WindowsResourceReference                  39.672 secs
+    x86 Constant Reference Analyzer           38.389 secs
+-----------------------------------------------------
+     Total Time   332 secs
+-----------------------------------------------------
+  
+2026-04-18 23:39:21 INFO  (HeadlessAnalyzer) REPORT: Analysis succeeded for file: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:39:21 INFO  (HeadlessAnalyzer) REPORT: Execute script: ExportFunctions.py   
+2026-04-18 23:39:21 ERROR (HeadlessAnalyzer) REPORT SCRIPT ERROR: ExportFunctions.py : Ghidra was not started with PyGhidra. Python is not available ghidra.app.script.GhidraScriptLoadException: Ghidra was not started with PyGhidra. Python is not available
+	at ghidra.pyghidra.PyGhidraScriptProvider.getScriptInstance(PyGhidraScriptProvider.java:75)
+	at ghidra.app.util.headless.HeadlessAnalyzer.runScriptsList(HeadlessAnalyzer.java:924)
+	at ghidra.app.util.headless.HeadlessAnalyzer.analyzeProgram(HeadlessAnalyzer.java:1086)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1584)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1744)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1685)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1769)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:462)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+ 
+2026-04-18 23:39:21 INFO  (HeadlessAnalyzer) ANALYZING changes made by post scripts: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:39:21 INFO  (HeadlessAnalyzer) REPORT: Post-analysis succeeded for file: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:39:21 INFO  (LocalFileSystem) /StarWarsG.exe: file created (ty)  
+2026-04-18 23:39:21 INFO  (HeadlessAnalyzer) REPORT: Save succeeded for: /StarWarsG.exe (EawProject:/StarWarsG.exe)  
+2026-04-18 23:39:21 INFO  (HeadlessAnalyzer) REPORT: Import succeeded  
+2026-04-18 23:46:21 INFO  (LoggingInitialization) Using log config file: jar:file:/nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml  
+2026-04-18 23:46:21 INFO  (LoggingInitialization) Using log file: logs/ghidra_analysis.log  
+2026-04-18 23:46:21 INFO  (Preferences) Loading user preferences: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/preferences  
+2026-04-18 23:46:21 INFO  (ClassSearcher) Searching for classes...  
+2026-04-18 23:46:22 INFO  (ClassSearcher) Class search complete (962 ms)  
+2026-04-18 23:46:22 INFO  (DefaultSSLContextInitializer) Initializing SSL Context  
+2026-04-18 23:46:22 INFO  (SecureRandomFactory) Initializing Random Number Generator...  
+2026-04-18 23:46:22 INFO  (SecureRandomFactory) Random Number Generator initialization complete: NativePRNGNonBlocking  
+2026-04-18 23:46:22 INFO  (DefaultTrustManagerFactory) Trust manager disabled, cacerts have not been set  
+2026-04-18 23:46:23 INFO  (AnalyzeHeadless) Headless startup complete (2665 ms)  
+2026-04-18 23:46:23 INFO  (ClassSearcher) Class searcher loaded 58 extension points (18 false positives)  
+2026-04-18 23:46:23 INFO  (HeadlessAnalyzer) HEADLESS Script Paths:
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Jython/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/PIC/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/Atmel/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SwiftDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/MicrosoftCodeAnalyzer/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/DATA/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/GnuDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SystemEmulation/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/WildcardAssembler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BytePatterns/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/VersionTracking/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PDB/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/JVM/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/8051/ghidra_scripts
+    /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/DecompilerDependent/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger-rmi-trace/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PyGhidra/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FunctionID/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BSim/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FileFormats/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Decompiler/ghidra_scripts  
+2026-04-18 23:46:23 INFO  (HeadlessAnalyzer) HEADLESS: execution starts  
+2026-04-18 23:46:23 INFO  (HeadlessAnalyzer) Creating project: /home/ty/src/eaw-reverse-engineering/ghidra_projects/EawProject  
+2026-04-18 23:46:23 INFO  (DefaultProject) Creating project: /home/ty/src/eaw-reverse-engineering/ghidra_projects/EawProject  
+2026-04-18 23:46:23 INFO  (HeadlessAnalyzer) REPORT: Processing input files:   
+2026-04-18 23:46:23 INFO  (HeadlessAnalyzer)      project: /home/ty/src/eaw-reverse-engineering/ghidra_projects/EawProject  
+2026-04-18 23:46:23 INFO  (HeadlessAnalyzer) IMPORTING: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:46:23 INFO  (ProgramLoader) Using Loader: Portable Executable (PE)  
+2026-04-18 23:46:23 INFO  (ProgramLoader) Using Language/Compiler: x86:LE:64:default:windows  
+2026-04-18 23:46:23 INFO  (ProgramLoader) Using Library Search Path: [., /bin, /lib, /lib64, /lib/x86_64-linux-gnu, /lib/aarch64-linux-gnu, /usr/bin, /usr/lib, /usr/X11R6/bin, /usr/X11R6/lib, /usr/java/packages/lib, /usr/lib64]  
+2026-04-18 23:46:24 INFO  (TLSDirectory) TLS callbacks at 1407ff5b0  
+2026-04-18 23:46:30 INFO  (TLSDirectory) TLS callbacks at 1800c6480  
+2026-04-18 23:46:31 INFO  (ProgramLoader) Additional info:
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe?MD5=9e33479ac8d0acad1bb04578dfedaeef...
+------------------------------------------------
+
+Searching 4 paths for library ADVAPI32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library BINK2W64.DLL...
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/bink2w64.dll?MD5=79ec2ef006692830bb1e6b3b9c597af6...
+Created exports file: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/symbols/win64/bink2w64.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 4 paths for library COMCTL32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library D3D9.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library D3DX9_43.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library GDI32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library KERNEL32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library MSS64.DLL...
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/mss64.dll?MD5=0455894d1f8d4a376c2105e5e8650bad...
+Created exports file: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/symbols/win64/mss64.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 4 paths for library OLE32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library OLEAUT32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library PERCEPTIONFUNCTIONG.DLL...
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/PerceptionFunctionG.dll?MD5=e3a3167f2bc478f385e9bbbf5858916b...
+Created exports file: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/symbols/win64/perceptionfunctiong.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 4 paths for library POWRPROF.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library SHELL32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library SHLWAPI.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library STEAM_API64.DLL...
+Loading file:///home/ty/src/eaw-reverse-engineering/binaries/original/steam_api64.dll?MD5=6c23eab28f1cd1bfd128934b08288dd8...
+Created exports file: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/symbols/win64/steam_api64.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 4 paths for library USER32.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library WINMM.DLL...
+Library not found.
+------------------------------------------------
+
+Searching 4 paths for library WS2_32.DLL...
+Library not found.
+------------------------------------------------
+
+Applying cached symbols from STEAM_API64.DLL
+Applying cached symbols from PERCEPTIONFUNCTIONG.DLL
+Applying cached symbols from MSS64.DLL
+Applying cached symbols from BINK2W64.DLL
+Linking the External Programs of 'StarWarsG.exe' to imported libraries...
+  [SHLWAPI.DLL] -> not found in project
+  [WINMM.DLL] -> not found in project
+  [POWRPROF.DLL] -> not found in project
+  [STEAM_API64.DLL] -> not found in project
+  [KERNEL32.DLL] -> not found in project
+  [USER32.DLL] -> not found in project
+  [GDI32.DLL] -> not found in project
+  [ADVAPI32.DLL] -> not found in project
+  [SHELL32.DLL] -> not found in project
+  [OLE32.DLL] -> not found in project
+  [OLEAUT32.DLL] -> not found in project
+  [WS2_32.DLL] -> not found in project
+  [PERCEPTIONFUNCTIONG.DLL] -> not found in project
+  [COMCTL32.DLL] -> not found in project
+  [D3D9.DLL] -> not found in project
+  [MSS64.DLL] -> not found in project
+  [BINK2W64.DLL] -> not found in project
+  [D3DX9_43.DLL] -> not found in project
+------------------------------------------------
+
+  
+2026-04-18 23:46:31 INFO  (HeadlessAnalyzer) IMPORTING: Loaded 0 additional files  
+2026-04-18 23:46:31 INFO  (HeadlessAnalyzer) ANALYZING all memory and code: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:46:31 WARN  (NoReturnFunctionAnalyzer) Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/PEFunctionsThatDoNotReturn  
+2026-04-18 23:46:31 WARN  (NoReturnFunctionAnalyzer) Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/PEFunctionsThatDoNotReturn  
+2026-04-18 23:46:31 DEBUG (SymbolServerService) SymbolServerService: querying Program's Import Location - /home/ty/src/eaw-reverse-engineering/binaries/original for StarWarsG.pdb, 65c2a900-75fc-42e9-93e3-15a5e99c35fb, 1, 0, ???  
+2026-04-18 23:46:31 DEBUG (SymbolServerService) SymbolServerService: got 0 results from Program's Import Location - /home/ty/src/eaw-reverse-engineering/binaries/original  
+2026-04-18 23:46:31 DEBUG (SymbolServerService) SymbolServerService: found 0 matches  
+2026-04-18 23:46:31 INFO  (PdbUniversalAnalyzer) Skipping PDB processing: failed to locate PDB file in configured locations  
+2026-04-18 23:46:31 INFO  (PdbUniversalAnalyzer) Use a script to set the PDB file location. I.e.,
+    PdbAnalyzer.setPdbFileOption(currentProgram, new File("/path/to/pdb/file.pdb")); or
+    PdbUniversalAnalyzer.setPdbFileOption(currentProgram, new File("/path/to/pdb/file.pdb"));
+Or set the symbol server search configuration using:    PdbPlugin.saveSymbolServerServiceConfig(...);
+ This must be done using a pre-script (prior to analysis).  
+2026-04-18 23:46:31 INFO  (PackedDatabaseCache) Packed database cache: /home/ty/.cache/ghidra/packed-db-cache  
+2026-04-18 23:46:31 DEBUG (PackedDatabaseCache) Using cached packed database: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/typeinfo/win32/windows_vs12_64.gdt  
+2026-04-18 23:48:50 WARN  (AddressMapDB) More than 100 address segments have been created!  
+2026-04-18 23:50:17 INFO  (ApplyDataArchiveAnalyzer) Applied data type archive: windows_vs12_64  
+2026-04-18 23:50:17 INFO  (ApplyDataArchiveAnalyzer) Applied data type archive: windows_vs12_64  
+2026-04-18 23:51:57 INFO  (AutoAnalysisManager) -----------------------------------------------------
+    ASCII Strings                              4.287 secs
+    Apply Data Archives                        0.404 secs
+    Call Convention ID                         0.461 secs
+    Call-Fixup Installer                       0.243 secs
+    Create Address Tables                      8.209 secs
+    Create Address Tables - One Time           1.955 secs
+    Create Function                            0.464 secs
+    Data Reference                             6.558 secs
+    Decompiler Switch Analysis                80.584 secs
+    Demangler Microsoft                        0.313 secs
+    Disassemble                                0.002 secs
+    Disassemble Entry Points                  29.365 secs
+    Embedded Media                             0.064 secs
+    External Entry References                  0.000 secs
+    Function ID                               11.352 secs
+    Function Start Search                      0.186 secs
+    Non-Returning Functions - Discovered      11.305 secs
+    Non-Returning Functions - Known            0.048 secs
+    PDB Universal                              0.010 secs
+    Reference                                  7.054 secs
+    Scalar Operand References                 12.775 secs
+    Shared Return Calls                        2.551 secs
+    Stack                                     42.969 secs
+    Subroutine References                      2.005 secs
+    Subroutine References - One Time           0.090 secs
+    Windows x86 PE Exception Handling          1.288 secs
+    Windows x86 PE RTTI Analyzer              25.614 secs
+    Windows x86 Thread Environment Block (TEB) Analyzer     0.011 secs
+    WindowsResourceReference                  37.253 secs
+    x86 Constant Reference Analyzer           38.640 secs
+-----------------------------------------------------
+     Total Time   326 secs
+-----------------------------------------------------
+  
+2026-04-18 23:51:57 INFO  (HeadlessAnalyzer) REPORT: Analysis succeeded for file: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:51:57 INFO  (HeadlessAnalyzer) REPORT: Execute script: ExportFunctions.java   
+2026-04-18 23:51:57 INFO  (HeadlessAnalyzer) SCRIPT: /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts/ExportFunctions.java  
+2026-04-18 23:51:57 INFO  (GhidraScript) ExportFunctions.java> Wrote 21744 functions to logs/functions.tsv  
+2026-04-18 23:51:57 INFO  (HeadlessAnalyzer) REPORT: Execute script: ExportStrings.java   
+2026-04-18 23:51:57 INFO  (HeadlessAnalyzer) SCRIPT: /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts/ExportStrings.java  
+2026-04-18 23:51:59 INFO  (GhidraScript) ExportStrings.java> Wrote 17758 strings to logs/ghidra_strings.tsv  
+2026-04-18 23:51:59 INFO  (HeadlessAnalyzer) ANALYZING changes made by post scripts: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:51:59 INFO  (HeadlessAnalyzer) REPORT: Post-analysis succeeded for file: file:///home/ty/src/eaw-reverse-engineering/binaries/original/StarWarsG.exe  
+2026-04-18 23:51:59 INFO  (LocalFileSystem) /StarWarsG.exe: file created (ty)  
+2026-04-18 23:51:59 INFO  (HeadlessAnalyzer) REPORT: Save succeeded for: /StarWarsG.exe (EawProject:/StarWarsG.exe)  
+2026-04-18 23:51:59 INFO  (HeadlessAnalyzer) REPORT: Import succeeded  

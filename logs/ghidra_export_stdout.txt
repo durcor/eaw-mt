@@ -1,0 +1,97 @@
+openjdk version "21.0.10" 2026-01-20
+OpenJDK Runtime Environment (build 21.0.10+7-nixos)
+OpenJDK 64-Bit Server VM (build 21.0.10+7-nixos, mixed mode)
+INFO  Using log config file: jar:file:/nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml (LoggingInitialization)  
+INFO  Using log file: logs/ghidra_export.log (LoggingInitialization)  
+INFO  Loading user preferences: /home/ty/.config/ghidra/ghidra_12.0.4_NIX/preferences (Preferences)  
+INFO  Searching for classes... (ClassSearcher)  
+INFO  Class search complete (1145 ms) (ClassSearcher)  
+INFO  Initializing SSL Context (DefaultSSLContextInitializer)  
+INFO  Initializing Random Number Generator... (SecureRandomFactory)  
+INFO  Random Number Generator initialization complete: NativePRNGNonBlocking (SecureRandomFactory)  
+INFO  Trust manager disabled, cacerts have not been set (DefaultTrustManagerFactory)  
+INFO  Headless startup complete (1977 ms) (AnalyzeHeadless)  
+INFO  Class searcher loaded 58 extension points (18 false positives) (ClassSearcher)  
+INFO  HEADLESS Script Paths:
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Jython/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/PIC/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/Atmel/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SwiftDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/MicrosoftCodeAnalyzer/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/DATA/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/GnuDemangler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/SystemEmulation/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/WildcardAssembler/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BytePatterns/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/VersionTracking/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PDB/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/JVM/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Processors/8051/ghidra_scripts
+    /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/DecompilerDependent/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Debug/Debugger-rmi-trace/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/PyGhidra/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FunctionID/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/BSim/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/FileFormats/ghidra_scripts
+    /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Decompiler/ghidra_scripts (HeadlessAnalyzer)  
+INFO  HEADLESS: execution starts (HeadlessAnalyzer)  
+INFO  Opening existing project: /tmp/eaw-ghidra/EawProject (HeadlessAnalyzer)  
+INFO  Opening project: /tmp/eaw-ghidra/EawProject (HeadlessProject)  
+INFO  REPORT: Processing project file: /StarWarsG.exe (HeadlessAnalyzer)  
+INFO  ANALYZING all memory and code: /StarWarsG.exe (HeadlessAnalyzer)  
+WARN  Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)  
+WARN  Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/Ghidra/Features/Base/data/PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)  
+INFO  Skipping PDB processing: failed to locate PDB file in configured locations (PdbUniversalAnalyzer)  
+INFO  Use a script to set the PDB file location. I.e.,
+    PdbAnalyzer.setPdbFileOption(currentProgram, new File("/path/to/pdb/file.pdb")); or
+    PdbUniversalAnalyzer.setPdbFileOption(currentProgram, new File("/path/to/pdb/file.pdb"));
+Or set the symbol server search configuration using:    PdbPlugin.saveSymbolServerServiceConfig(...);
+ This must be done using a pre-script (prior to analysis). (PdbUniversalAnalyzer)  
+INFO  Packed database cache: /home/ty/.cache/ghidra/packed-db-cache (PackedDatabaseCache)  
+INFO  Applied data type archive: windows_vs12_64 (ApplyDataArchiveAnalyzer)  
+INFO  -----------------------------------------------------
+    ASCII Strings                              2.218 secs
+    Apply Data Archives                        0.508 secs
+    Call Convention ID                         0.419 secs
+    Call-Fixup Installer                       0.351 secs
+    Create Address Tables                      8.716 secs
+    Create Address Tables - One Time           0.189 secs
+    Create Function                            0.149 secs
+    Data Reference                             7.472 secs
+    Decompiler Switch Analysis                69.301 secs
+    Demangler Microsoft                        0.072 secs
+    Disassemble Entry Points                   1.221 secs
+    Embedded Media                             0.146 secs
+    External Entry References                  0.000 secs
+    Function ID                               15.513 secs
+    Function Start Search                      0.447 secs
+    Non-Returning Functions - Discovered       9.424 secs
+    Non-Returning Functions - Known            0.200 secs
+    PDB Universal                              0.013 secs
+    Reference                                  7.005 secs
+    Scalar Operand References                 12.259 secs
+    Shared Return Calls                        4.094 secs
+    Stack                                      4.807 secs
+    Subroutine References                      3.567 secs
+    Windows x86 PE Exception Handling          0.095 secs
+    Windows x86 PE RTTI Analyzer               0.000 secs
+    Windows x86 Thread Environment Block (TEB) Analyzer     0.000 secs
+    WindowsResourceReference                  37.000 secs
+    x86 Constant Reference Analyzer           39.544 secs
+-----------------------------------------------------
+     Total Time   224 secs
+-----------------------------------------------------
+ (AutoAnalysisManager)  
+INFO  REPORT: Analysis succeeded for file: /StarWarsG.exe (HeadlessAnalyzer)  
+INFO  REPORT: Execute script: ExportFunctions.java  (HeadlessAnalyzer)  
+INFO  SCRIPT: /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts/ExportFunctions.java (HeadlessAnalyzer)  
+INFO  ExportFunctions.java> Wrote 21938 functions to logs/functions.tsv (GhidraScript)  
+INFO  REPORT: Execute script: ExportStrings.java  (HeadlessAnalyzer)  
+INFO  SCRIPT: /home/ty/src/eaw-reverse-engineering/tools/ghidra_scripts/ExportStrings.java (HeadlessAnalyzer)  
+INFO  ExportStrings.java> Wrote 17758 strings to logs/ghidra_strings.tsv (GhidraScript)  
+INFO  ANALYZING changes made by post scripts: /StarWarsG.exe (HeadlessAnalyzer)  
+INFO  REPORT: Post-analysis succeeded for file: /StarWarsG.exe (HeadlessAnalyzer)  
+INFO  REPORT: Save succeeded for processed file: /StarWarsG.exe (HeadlessAnalyzer)  
