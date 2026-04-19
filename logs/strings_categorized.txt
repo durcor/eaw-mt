@@ -1,0 +1,3136 @@
+
+============================================================
+[THREADING] — 916 hits
+============================================================
+  0x0048017B  UnlockedI
+  0x00803A20  SteamAsyncSocketImpl::On_Peer_Disconnect -- Address: %s
+  0x00805150  LoadThread
+  0x00806A90  IDC_EDIT_LOCK_WINGS
+  0x008080B0  TEXT_TOOLTIP_ABILITY_SPOLIER_LOCK_NAME
+  0x008096E0  TEXT_KEY_NUMLOCK
+  0x00809E90  IDC_EDIT_LOCK_WINGS
+  0x0080B4B0  TEXT_TOOLTIP_ABILITY_SPOLIER_LOCK_NAME
+  0x0080CCE0  IDC_EDIT_LOCK_WINGS
+  0x0080E300  TEXT_TOOLTIP_ABILITY_SPOLIER_LOCK_NAME
+  0x0080FB30  IDC_EDIT_LOCK_WINGS
+  0x00811150  TEXT_TOOLTIP_ABILITY_SPOLIER_LOCK_NAME
+  0x00812980  IDC_EDIT_LOCK_WINGS
+  0x00813FA0  TEXT_TOOLTIP_ABILITY_SPOLIER_LOCK_NAME
+  0x00816798  TEXT_BLOCKADE
+  0x00819A88  Cannot set spawn dependency
+  0x00819AA8  Selected particle already has a spawn master.
+  0x00819AE0  Could not set this spawn dependency because it would create a cycle.
+  0x0081AE80   ERROR: render task for %s exceeded the dynamic geometry limits (%d pverts, %d lverts, %d indices)
+  0x0081C350  D3DFMT_D16_LOCKABLE
+  0x0084EF68  ImmLockIMC
+  0x0084EF78  ImmUnlockIMC
+  0x0084EF88  ImmLockIMCC
+  0x0084EF98  ImmUnlockIMCC
+  0x008515C8  _IPCMutex
+  0x00851BF0  ThreadLockMutexClass -- %s failed to obtain mutex within 10 seconds (current owner is %s)
+  0x00851C50  ThreadLockMutexClass -- Failed to obtain mutex within 10 seconds (current owner is %s)
+  0x00851CB0  ReleaseMutex failed with error code %d - %s (mutex owner is %s)
+  0x00851FE8  PacketHandler Thread
+  0x00853530  NATUtilsThread
+  0x008542D0  WSAEWOULDBLOCK
+  0x00854988  WinsockAsyncSocketImpl::Init
+  0x00854A80  %s - ioctlsocket failed setting socket to non-blocking. Error code %d - %s
+  0x00854B20  WinsockAsyncSocketImpl::Get_Read_Bytes_Available
+  0x00854D30  FX3DManagerClass::SFX_Start ERROR: Couldn't lock sound buffer?! sound = %s
+  0x00854DA8  Main Thread
+  0x00854DE8  Thread %d (%s) failed to exit - forcing exit
+  0x00855CD0  LuaScriptThread: Main State
+  0x00855CF0  LuaScriptThread: %s
+  0x00855E60  LuaThreadTable
+  0x00855E90  LuaThreadTable
+  0x00855EA0  LuaThreadTable
+  0x00855EB0  LuaScript::Free_Script_Pool -- Script: %s:%8.8X is still in use.
+  0x00855EF8  ScriptPoolCount
+  0x008561A0  Is_Pool_Safe
+  0x00856210  LuaNetworkDebuggerClass::Process_Threads_Response -- Thread: %d, Name: %s
+  0x00856260  LuaNetworkDebuggerClass::Process_Add_Breakpoint_Request -- Script ID: %d, Thread ID: %d, Name: %s, Line: %d, Condition: %s
+  0x008562E0  LuaNetworkDebuggerClass::Process_Remove_Breakpoint_Request -- Script ID: %d, Thread ID: %d, Name: %s, Line: %d
+  0x008563A0  LuaNetworkDebuggerClass::Process_Script_Suspended_Response -- Script: %d, Thread: %d, File: %s
+  0x00856460  LuaNetworkDebuggerClass::Process_Script_Suspended_Response -- Thread: %d, Name: %s
+  0x008567B8  LuaScriptThread: Main State
+  0x008567D8  LuaScriptThread: 
+  0x008568C0  thread: %p
+  0x00856E18  Is_Thread_Active
+  0x00856E30  LuaCreateThread::Get_Name -- Expected a thread id parameter.
+  0x00856E70  LuaCreateThread::Get_Name -- Expected a number for thread id parameter.
+  0x00856EB8  LuaCreateThread::Kill -- Expected a thread id parameter.
+  0x00856F00  LuaCreateThread::Kill -- Expected a number for thread id parameter.
+  0x00856F48  LuaCreateThread -- Expected a LuaFunction parameter.
+  0x00856F80  LuaCreateThread -- Expected a string for function name.
+  0x00856FB8  LuaCreateThread -- "%s" does not evaluate to a lua function.
+  0x00857000  LuaCreateThread::Is_Thread_Active -- invalid number of parameters.  Expected 1, got %d.
+  0x00857058  LuaCreateThread::Is_Thread_Active -- Expected a thread id.
+  0x00857700  ThreadValue::Get -- Invalid number of parameters %d should be 1
+  0x00857740  ThreadValue::Get -- Invalid parameter 1, should be a string.
+  0x00857780  ThreadValue::Set -- Invalid number of parameters %d should be 2
+  0x008577C0  ThreadValue::Set -- Invalid parameter 1, should be a string.
+  0x00857998  ThreadValue
+  0x008579D8  GetThreadID
+  0x008579F8  Create_Thread
+  0x00857A08  Thread
+  0x008591F0  BLOCK_BLASTER
+  0x00859218  IDLE_BLOCKBLASTER
+  0x0085A4B0  Block_Blaster
+  0x0085A4D8  Idle_Blockblaster
+  0x0085AA80  FrameSynchronizer waiting for player %ls. My frame = %d, their frame = %d, MaxAhead = %d
+  0x0085AAE0  FrameSynchronizer waiting for player %ls. received_commands = %d, their_commands = %d
+  0x0085AB40  FrameSynchronizerClass::Register_Frame_Information:
+  0x0085ABB0  FrameSynchronizerClass::Calculate_Frame_CRC -- GOM:0x%8.8X, RND:0x%8.8X, PLR:0x%8.8X
+  0x0085AC10  FrameSynchronizerClass::Calculate_Frame_CRC -- no_scoring_crc = 0x%8.8X
+  0x0085BD80  TEAM_%02d_SPAWN_POINT_MARKER
+  0x0085BE38  PLAYER_%d_SPAWN_POINT_MARKER
+  0x0085BF00  %s: Clearing all land based production objects from build queue...
+  0x0085BF50  %s: Clearing all space orbit bases production objects from build queue...
+  0x0085D4D0  day_clock
+  0x0085D8D0  SpeechEventManager: Event %s: Starting queued speech stream playback for sample %s - volume = %d
+  0x0085D990  SpeechEventManager: Event %s: Speech stream ended naturally (System_Update) - removing from queue.
+  0x0085DB60  SpeechEventManager: Queue_Speech_Event() - Event %s queued, queue size now = %u
+  0x0085E750  DESTROY_ALL_INDIGENOUS_SPAWNERS
+  0x0085F998  queue00
+  0x0085F9A0  queue01
+  0x0085F9A8  queue02
+  0x0085F9B0  queue03
+  0x0085F9B8  queue04
+  0x0085F9C0  queue05
+  0x0085F9C8  queue06
+  0x0085F9D0  queue07
+  0x0085F9D8  queue08
+  0x0085F9E0  queue09
+  0x00861090  tqueue00
+  0x008610A0  tqueue01
+  0x008610B0  tqueue02
+  0x008610C0  tqueue03
+  0x008610D0  tqueue04
+  0x008610E0  tqueue05
+  0x008610F0  tqueue06
+  0x00861100  tqueue07
+  0x00861110  tqueue08
+  0x00861120  tqueue09
+  0x00861668  garrison_respawn_counter
+  0x00865748  External Hologram - Queueing speech event %s.
+  0x00865AA0  WARNING!  %s does not have friendly spawn text defined! (This may be intentional)
+  0x00865B00  WARNING!  %s does not have enemy spawn text defined! (This may be intentional)
+  0x00866DB0  OutgoingEventQueueClass::Add -- Adding scheduled event %s
+  0x00866DF0  OutgoingEventQueueClass::Add -- Adding non-scheduled event %s
+  0x00866E60  Synchronized objects     : %d
+  0x00866E80  Non-synchronized objects : %d
+  0x00867228            Energy Pool : %6.0f (%5.1f%%)
+  0x00868910  Successfully spawned %s at %s!
+  0x00868930  Failed to spawn %s at %s! Trying another planet...
+  0x00868E90  Frame %d: Planet %s: Production queue - Queued production_location_object '%s' now under production by player %d: countdown is now %.2f seconds.
+  0x00868FA0  %s: Reevaluate_All_Ground_Production(): Deleting %s from production queue
+  0x00868FF0  %s: Reevaluate_All_Space_Production(): Deleting %s from production queue
+  0x00869040  Object '%s' added to production queue at '%s' by player %d: countdown is %.2f seconds, once underway.
+  0x0086C1C0  SPAWN_HERO
+  0x0086C2F8  LOCK_CONTROLS
+  0x0086C5D8  SET_SPAWN
+  0x0086C650  SET_PLANET_SPAWN
+  0x0086C6B8  LOCK_UNIT
+  0x0086C8E8  FORCE_RESPAWN
+  0x0086C8F8  SCROLL_LOCK
+  0x0086C9E8  LOCK_PLANET_SELECTION
+  0x0086E1C8  STORY REWARD - Unlocking unit %s
+  0x0086E1F0  STORY REWARD - Locking unit %s
+  0x0086E218  STORY REWARD - Error! Lock Unit - No unit specified
+  0x0086E250  STORY REWARD - Locking production of %s
+  0x0086F4A0  STORY REWARD - ERROR!  Set spawn failed due to incomplete parameters.
+  0x0086F680  STORY REWARD - ERROR!  Set planet spawn failed due to incomplete parameters.
+  0x008707B0  STORY REWARD - ERROR!  FORCE_RESPAWN failed due to incomplete parameters.
+  0x00870800  STORY REWARD - ERROR!  FORCE_RESPAWN failed due to invalid hero unit type %s.
+  0x00870850  STORY REWARD - ERROR!  SCROLL_LOCK takes one parameter, and param = 0 or 1 
+  0x008708A0  STORY REWARD - Locking user scrolling (SCROLL_LOCK = 1)
+  0x008708E0  STORY REWARD - Unlocking user scrolling (SCROLL_LOCK = 0)
+  0x00870D50  STORY REWARD - ERROR!  LOCK_PLANET_SELECTION takes one parameter, param = 0 or 1 
+  0x00870DA8  STORY REWARD - LOCK_PLANET_SELECTION set to %s
+  0x008714B0  STORY REWARD - Unlocking Black Market item %s
+  0x00874380  %s -- Pump_Threads
+  0x00875020  Error: (%s) Automatic special abilities must have Causes_Despawn=false.
+  0x008750A0  Error: (%s) Min_Respawn_Time and Max_Respawn_Time must be values of 0.0 or greater!
+  0x00875100  Error: (%s) Min_Respawn_Time cannot be greater than Max_Respawn_Time!
+  0x00875200  Cannot schedule the respawn of %s yet because its teammate %s is still alive.
+  0x00875250  Cannot schedule the respawn of %s yet because its transport still contains active objects (%s).
+  0x008752C0  Cannot schedule the respawn of %s yet because its squadron still contains active objects (%s).
+  0x00875320  %s will respawn at or near %s in %g seconds
+  0x00875980  Tactical build attempt failed - No space in queue to produce type %s at location %s.
+  0x00877348  SPAWN_SQUADRON
+  0x00877370  SPAWN_INDIGENOUS_UNITS
+  0x00877390  GUARD_SPAWN_HOUSE
+  0x00879B98  TaskForce
+  0x00879C68  No valid TaskForce Definition found!
+  0x0087C5A8  EVENT_SPAWN_OBJECT
+  0x0087CBE8  Respawn_Whole_Team_When_Killed
+  0x0087CCC0  Always_Spawn_In_Orbit
+  0x0087D588  Build_Initially_Locked
+  0x0087D5A0  Build_Can_Be_Unlocked_By_Slicer
+  0x0087EBD8  Projectile_Block_Chance_Modifier
+  0x0087ECA8  Projectile_Stun_Spawn_Effect
+  0x0087EE50  Projectile_Instant_Heal_Spawn_Effect
+  0x0087EF18  Projectile_Distract_Spawn_Effect
+  0x0087EFB8  Projectile_Convert_Enemy_Spawn_Effect
+  0x0087F0D0  Projectile_Cause_Invulnerability_Spawn_Effect
+  0x0087F1B0  Projectile_Weaken_Enemy_Spawn_Effect
+  0x0087F740  SFXEvent_Hero_Respawned
+  0x00880210  Friendly_Spawn_Text
+  0x00880228  Enemy_Spawn_Text
+  0x00880518  Spawned_Squadron_Types
+  0x00880530  Spawned_Squadron_Delay_Seconds
+  0x00880550  Spawned_Squadron_Location_Bones
+  0x00880570  Spawned_Squadron_Location_Flyout_Distances
+  0x008805A0  Spawned_Indigenous_Units_Type
+  0x008805C0  Spawned_Indigenous_Units_Delay_Seconds
+  0x008805E8  Spawned_Indigenous_Units_Quantity
+  0x00880610  Spawn_Indigenous_Units_In_Packs
+  0x00880630  Spawn_Indigenous_Units_Chance
+  0x00880650  Spawn_Indigenous_Units_Radius
+  0x008806A8  Spawned_Indigenous_Pack_Type
+  0x00880EF0  Prevents_Blockade_Run_Attrition
+  0x00881040  Respawn_Tied_To_Structure
+  0x00881140  Max_Distance_From_Spawner
+  0x00881470  Starting_Spawned_Units_Tech_0
+  0x00881490  Reserve_Spawned_Units_Tech_0
+  0x008814B0  Starting_Spawned_Units_Tech_1
+  0x008814D0  Reserve_Spawned_Units_Tech_1
+  0x008814F0  Starting_Spawned_Units_Tech_2
+  0x00881510  Reserve_Spawned_Units_Tech_2
+  0x00881530  Starting_Spawned_Units_Tech_3
+  0x00881550  Reserve_Spawned_Units_Tech_3
+  0x00881570  Starting_Spawned_Units_Tech_4
+  0x00881590  Reserve_Spawned_Units_Tech_4
+  0x008815B0  Starting_Spawned_Units_Tech_5
+  0x008815D0  Reserve_Spawned_Units_Tech_5
+  0x00881630  Tactical_Production_Queue
+  0x008816C0  Tactical_Respawn_Time_In_Secs
+  0x00881960  Map_Load_Spawn_Table
+  0x00881EF8  Spawn_Garrison_On_Load
+  0x00882900  Corruption_1_Success_Unlock_Unit_Type
+  0x00882BD0  Corruption_2_Success_Unlock_Unit_Type
+  0x00882EA0  Corruption_3_Success_Unlock_Unit_Type
+  0x00884A70  AI_BuildTaskReservationSeconds
+  0x00884D38  Default_Hero_Respawn_Time
+  0x008852D0  Task_Text_Color
+  0x00885518  Left_Queue_Tint
+  0x00885528  Right_Queue_Tint
+  0x00886488  Blockade_Run_Attrition_Factor
+  0x008864E8  Space_Tactical_Camera_Locked
+  0x00886508  Land_Tactical_Camera_Locked
+  0x00886BE8  Max_Build_Queue
+  0x00887210  Strategic_Queue_Tactical_Battles
+  0x008877B0  Indigenous_Spawn_Destruction_Reward
+  0x0088B200  SFXEvent_Build_Impossible_Location_Blockaded
+  0x0088C990  Causes_Despawn
+  0x0088CC48  Min_Respawn_Time
+  0x0088CC60  Max_Respawn_Time
+  0x0088CD98  Spawned_Object_Type
+  0x0088CDB0  Max_Num_Spawned_Objects
+  0x0088D280  Min_Respawn_Time_Per_Tech_Level
+  0x0088D2A0  Max_Respawn_Time_Per_Tech_Level
+  0x0088D3E8  Energy_Pool_Bonus_Percentage
+  0x0088D870  Block_Chance
+  0x0088D8C8  Turn_To_Face_Unblockable_Shots
+  0x0088DCA8  Grenade_Spawn_Frame
+  0x0088DCC0  Grenade_Spawn_Bone
+  0x0088DEA8  Bomb_Spawn_Frame
+  0x0088DFB0  Owner_Respawn_Time_In_Secs
+  0x0088DFD0  Target_Respawn_Time_In_Secs
+  0x0088F3C8  Min_Respawn_Times
+  0x0088F3E0  Max_Respawn_Times
+  0x0088F8D0  Spawn_Frame
+  0x0088F8E0  Spawn_Bone
+  0x0088FBF0  Spawn_Bone_Name
+  0x00890208  Production Event failed - player %s has no build queue.
+  0x00890EB0  SpawnIndigenousUnitsBehaviorClass
+  0x00894570  LuaLockControls -- Expected float parameter 1
+  0x008945A0  LuaLockControls -- Invalid parameter 1, expected a float
+  0x008988F0  GameRandom::Free_Random -- cannot generate non-synchronized random numbers from script in MP.  Falling back to synchronized random.
+  0x00898A48  BlockForever
+  0x00898C28  Spawn_Unit
+  0x00898DC8  Lock_Controls
+  0x008992D8  Spawn_From_Reinforcement_Pool
+  0x008992F8  Spawn_Special_Weapon
+  0x008995A8  %s Shield Pool = %.2f (%+.2f)
+  0x0089A388  EnergyPoolBehaviorClass
+  0x0089AAD0  Lock_Current_Orders
+  0x0089AB78  Despawn
+  0x0089ACF0  Unlock_Current_Orders
+  0x0089AE60  Lock_Build_Pad_Contents
+  0x0089AED0  Set_Garrison_Spawn
+  0x0089B690  GameObjectWrapper::Attack_Target -- object %s is locked into existing orders. Attack_Target fails.
+  0x0089BEE0  GameObjectWrapper::Move_Internal -- object %s is locked into existing orders. Attack_Target fails.
+  0x0089CBB0  GameObjectWrapper::Lock_Current_Orders - object %s does not belong to an AI player; cannot lock.
+  0x0089CC20  GameObjectWrapper::Lock_Current_Orders - %s is immobile; locking not supported.
+  0x0089CC70  GameObjectWrapper::Lock_Current_Orders - %s is already locked.  Script cannot stack locks.
+  0x0089D2F8  GameObjectWrapper::Despawn -- this object is dead!
+  0x0089D700  GameObjectWrapper::Divert -- unable to divert - object %s has had its movement locked.
+  0x0089E550  GameObjectWrapper::Unlock_Current_Orders - object %s does not belong to an AI player; cannot unlock.
+  0x0089E5C0  GameObjectWrapper::Unlock_Current_Orders - object %s is locked by a hero clash.  Cannot unlock.
+  0x0089E620  GameObjectWrapper::Unlock_Current_Orders - object %s is not locked.
+  0x0089F830  GameObjectWrapper::Lock_Build_Pad_Contents -- invalid number of parameters.  Expected 1, got %d.
+  0x0089F8A0  GameObjectWrapper::Lock_Build_Pad_Contents -- invalid type for parameter 1.  Expected boolean.
+  0x0089F900  GameObjectWrapper::Lock_Build_Pad_Contents -- %s is not a build pad.
+  0x0089F950  GameObjectWrapper::Lock_Build_Pad_Contents -- cannot lock an empty build pad.
+  0x0089FE60  GameObjectWrapper::Set_Garrison_Spawn -- invalid number of parameters.  Expected 1, got %d.
+  0x0089FEC0  GameObjectWrapper::Set_Garrison_Spawn -- invalid type for parameter 1.  Expected boolean.
+  0x0089FF20  GameObjectWrapper::Set_Garrison_Spawn -- %s is set up to be capable of spawning garrisons.
+  0x008A2F60  Object is trying to deploy troopers, but does not have a spawned_object_type specified in DeployTroopers unit ability!
+  0x008A2FE0  Object is trying to deploy troopers, but the spawned_object_type specified in DeployTroopers unit ability is not a SQUADRON!
+  0x008A3510  SpawnSquadronBehaviorClass
+  0x008A4150  Error: (%s) This ability must cause the owner to despawn. Set Causes_Despawn to Yes.
+  0x008A4FE8  BuildQueueDepth
+  0x008A4FF8  MaxBuildQueueDepth
+  0x008A5010  BuildQueueTime
+  0x008A5020  MaxBuildQueueTime
+  0x008A50A8  AverageBuildQueueDepth
+  0x008A5808  Parameter_Queue_Type
+  0x008A7030  SPOILER_LOCK
+  0x008A7750  ProductionQueueType
+  0x008A8B98  _Thread
+  0x008A9030  Task Force 
+  0x008A91C8  Block_Goal_Proposal
+  0x008A91E0  Unblock_Goal_Proposal
+  0x008A93D8  TaskForceClass::Lua_Set_As_Goal_System_Removable -- No params
+  0x008A9420  TaskForceClass::Lua_Set_As_Goal_System_Removable -- Invalid parameter 1, expected boolean
+  0x008A9480  TaskForceClass::Get_Type_Of_Unit -- Invalid Parameter 1, expected an integer index
+  0x008A94E0  TaskForceClass::Add_Force -- Invalid Parameter 1, expected a GameObjectClass
+  0x008A9530  TaskForceClass::Produce_Force -- Expected a planet object for parameter 1
+  0x008A9580  TaskForceClass::Prioduce_Force -- invalid type for parameter 2.  Expected bool
+  0x008A95D0  TaskForceClass::Release_Unit -- invalid number of parameters.  Expected 1, got %d.
+  0x008A9630  TaskForceClass::Release_Unit -- parameter 1 is not a game object (or else it's dead).
+  0x008A9690  TaskForceClass::Release_Unit -- unit %s is not in taskforce %s.
+  0x008A96D0  TaskForceClass::Collect_All_Free_Units -- invalid number of parameters.  Expected 0 or 1, got %d.
+  0x008A9740  TaskForceClass::Collect_All_Free_Units -- parameter 1 is not a string.
+  0x008A9790  TaskForceClass::Collect_All_Free_Units -- unrecognized game object category %s.
+  0x008AA120  TaskForce::Can_Garrison -- invalid number of parameters.  Expected 1, got %d.
+  0x008AA170  TaskForce::Can_Garrison -- invalid type for parameter 1.  Expected game object or AI target.
+  0x008AA1D0  TaskForce;:Can_Garrison - target is already dead.
+  0x008AA428  Unlock_Tech
+  0x008AA438  Lock_Tech
+  0x008AA920  PlayerWrapper::Lua_Unlock_Tech -- invalid number of parameters.  Expected 1, got %d.
+  0x008AA980  PlayerWrapper::Lua_Unlock_Tech -- invalid type for parameter 1.  Expected game object type.
+  0x008AA9E0  PlayerWrapper::Lua_Unlock_Tech -- type %s is already unlocked.
+  0x008AAA20  PlayerWrapper::Lua_Lock_Tech -- invalid number of parameters.  Expected 1, got %d.
+  0x008AAA80  PlayerWrapper::Lua_Lock_Tech -- invalid type for parameter 1.  Expected game object type.
+  0x008AAAE0  PlayerWrapper::Lua_Lock_Tech -- type %s is already locked.
+  0x008AB860  Is_Build_Locked
+  0x008AB920  GameObjectTypeWrapper::Is_Build_Locked -- invalid number of parameters.  Expected 1, got %d.
+  0x008AB980  GameObjectTypeWrapper::Is_Build_Locked -- invalid type for parameter 1.  Expected player
+  0x008ACD20  Error: (%s) Min Respawn Time cannot be greater than Max Respawn Time!
+  0x008ACD90  Error: (%s) The Slicer ability must cause the owner to despawn.
+  0x008ACF27  They can all be zero if you don't want the respawn feature.
+  0x008ACF68  Error: (%s) All respawn times must be >= 0.0 for %s.
+  0x008ACFA0  Error: (%s) Zero is only a valid respawn time for %s
+  0x008AD0B8  Slice: Object Type %s has been unlocked.
+  0x008AD2A0  Error: (%s) The Black Market ability must cause the owner to despawn.
+  0x008B0BE0  GuardSpawnHouseBehaviorClass
+  0x008B3C20  BUILD_STATE_INIT_TASK
+  0x008B3C68  BUILD_STATE_BUILD_TASK_LIST
+  0x008B3C88  BUILD_STATE_PRODUCTION_QUEUED
+  0x008B3E58  BUILD_STATE_DO_TASK_FORCE_MERGE
+  0x008B3E78  BUILD_STATE_JOIN_TASK_FORCE
+  0x008B4B10  TaskForceRequired
+  0x008B60D8  Spawn_Ability
+  0x008B68C0  GalacticFreeStoreClass::Move_To -- Unit cannot be launched into orbit, %s must be under blockade.
+  0x008B76A8  FindTarget -- Parameter 1 is not a valid taskforce.
+  0x008B77A0  Find_Best_Of -- invalid type for parameter 1.  Expected taskforce.
+  0x008B8750  FindDeadlyEnemy - invalid type for parameter 1. Expected taskforce or AI ship target location.
+  0x008B9080  Evaluate_In_Galactic_Context: This function may only be used in tactical games spawned from campaign mode.
+  0x008B9350  Find_Nearest - invalid type for parameter 1; expected game object, ai target or taskforce.
+  0x008B9BE8  LuaSpawnUnitCommandClass -- Invalid number of parameters.
+  0x008B9C28  LuaSpawnUnitCommandClass -- Invalid parameter for player.
+  0x008B9C68  LuaSpawnUnitCommandClass -- Invalid parameter for type.
+  0x008B9CA0  LuaSpawnUnitCommandClass -- Invalid position parameter.
+  0x008B9CD8  Galactic_Spawn_Unit -- Invalid number of parameters.
+  0x008B9D10  Galactic_Spawn_Unit -- Invalid parameter for player.
+  0x008B9D48  Galactic_Spawn_Unit -- Invalid parameter for type.
+  0x008B9D80  Galactic_Spawn_Unit -- Invalid planet parameter.
+  0x008B9DC0  Galactic_Spawn_Unit -- Create returned NULL for %s at planet: %s.
+  0x008BD370  Spawn_From_Reinforcement_Pool -- Invalid number of parameters.  Expected 3, got %d
+  0x008BD3C8  Spawn_From_Reinforcement_Pool -- Invalid parameter for player.
+  0x008BD408  Spawn_From_Reinforcement_Pool -- Invalid parameter for type.
+  0x008BD448  Spawn_From_Reinforcement_Pool -- Invalid position parameter.
+  0x008BD490  Spawn_From_Reinforcement_Pool -- player has no objects of type %s in reinforcement pool.
+  0x008BD4F0  Spawn_Special_Weapon -- this command may only be used in space mode.
+  0x008BD540  Spawn_Special_Weapon -- invalid number of parameters.  Expected 2, got %d.
+  0x008BD590  Spawn_Special_Weapon -- invalid type for parameter 1.  Expected string.
+  0x008BD5E0  Spawn_Special_Weapon -- request to spawn weapon of unknown  type %s.
+  0x008BD630  Spawn_Special_Weapon -- request to spawn weapon of type %s which is not a valid space special weapon type.
+  0x008BD6A0  Spawn_Special_Weapon -- weapon type %s has invalid weapon index %d.  Weapon will not be usable, spawn aborted.
+  0x008BD710  Spawn_Special_Weapon -- invalid type for parameter 2.  Expected player.
+  0x008BD760  Spawn_Special_Weapon -- attempt to spawn weapon for unknown player who has been removed from the game.
+  0x008BD7D0  Spawn_Special_Weapon -- unable to find an object in this map with SPECIAL_WEAPON_SOURCE behavior.  Cannot place special weapon.
+  0x008BDC10  MovementBlockStatus::Get_Next_Hop -- ResultObject no longer valid.
+  0x008BDC60  MovementBlockStatus::Get_Next_Hop -- Fleet: %8.8X doesn't appear to be on a planet
+  0x008BDCC0  MovementBlockStatus::Get_Next_Hop -- Unable to find a path from %s to %s.
+  0x008BDD10  MovementBlockStatus::Receive_Signal -- Object Move Canceled.  Unable to path to %s.
+  0x008C0180  GalacticTaskForceClass::Move_To -- No units in TaskForce %s, or no FleetObject
+  0x008C01D0  GalacticTaskForceClass::Move_To -- TaskForce %s is not at any planet.
+  0x008C0220  GalacticTaskForceClass::Move_To -- No destination set for TaskForce %s
+  0x008C0270  GalacticTaskForceClass::Move_To -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C02D0  GalacticTaskForceClass::Form_Units -- No units in TaskForce %s, or no FleetObject
+  0x008C0330  GalacticTaskForceClass::Form_Units -- TaskForce %s is not at any planet
+  0x008C0380  GalacticTaskForceClass::Add_Force -- Invalid Parameter 1, expected a GameObjectClass (and dead ones don't count)
+  0x008C0400  GalacticTaskForceClass::Lua_Launch_Units -- Planet: %s is now under blockade, can't launch units for TF: %s
+  0x008C0470  GalacticTaskForceClass::Lua_Land_Units -- No units in TaskForce %s, or no FleetObject
+  0x008C04D0  GalacticTaskForceClass::Invade -- No units in TaskForce %s, or no FleetObject
+  0x008C0520  GalacticTaskForceClass::Invade -- taskforce is not in orbit at a planet
+  0x008C0570  GalacticTaskForceClass::Invade -- surface of %s is not accessible
+  0x008C05C0  GalacticTaskForceClass::Invade -- No transports in Taskforce %s.
+  0x008C0610  Refit_To_Definition: This script command may only be used for taskforces that specify units by percentages.
+  0x008C0770  Refit_To_Definition: Taskforce definition %s appears to specify no units.
+  0x008C07C0  GalacticTaskForceClass::Raid -- TaskForce %s is not at any planet.
+  0x008C0810  GalacticTaskForceClass::Raid -- TaskForce %s is not raid capable.
+  0x008C0860  GalacticTaskForceClass::Raid -- No destination set for TaskForce %s
+  0x008C08B0  GalacticTaskForceClass::Raid -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C1F60  SpaceTaskForceClass::Attack_Target -- No destination set for TaskForce %s
+  0x008C1FB0  SpaceTaskForceClass::Attack_Target -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C2010  SpaceTaskForceClass::Attack_Target -- if you're not going to specify a hard point type then you're only allowed 2 or 3 parameters, but there are %d here!
+  0x008C20B0  SpaceTaskForceClass::Move_To -- unknown space collision type %s for avoidance parameter.
+  0x008C2110  SpaceTaskForceClass::Attack_Target -- Unrecognized hard point type %s.
+  0x008C2160  SpaceTaskForceClass::Attack_Target -- repeat parameter is specified but the taskforce is not attacking a hard point.  That's kind of pointless.
+  0x008C21F0  SpaceTaskForceClass::Attack_Target -- parameter %d is unexpected type.
+  0x008C2240  SpaceTaskForceClass::Attack_Target -- unknown space collision type %s for avoidance parameter.
+  0x008C22A0  SpaceTaskForceClass::Guard_Target -- No destination set for TaskForce %s
+  0x008C22F0  SpaceaskForceClass::Guard_Target -- target taskforce is empty.  Cannot guard.
+  0x008C2340  SpaceTaskForceClass::Guard_Target -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C23A0  SpaceTaskForceClass::Guard_Target -- parameter 2 is not a valid number.
+  0x008C23F0  SpaceTaskForceClass::Guard_Target -- invalid type for parameter 3.  Expected string.
+  0x008C2450  SpaceTaskForceClass::Guard_Target -- unknown space collision type %s for avoidance parameter.
+  0x008C2810  SpaceTaskForceClass::Get_Distance -- could not extract a position from parameter 1.
+  0x008C2870  SpaceTaskForceClass::Withdraw_Units -- No retreat coordinator!  What's going on?
+  0x008C28D0  SpaceTaskForceClass::Fire_Special_Weapon -- invalid number of parameters: expected 2 got %d.
+  0x008C2930  SpaceTaskForceClass::Fire_Special_Weapon -- invalid type for parameter 1.  Expected string
+  0x008C2990  SpaceTaskForceClass::Fire_Special_Weapon -- %s is not a space special weapon!
+  0x008C2A30  SpaceTaskForceClass::Fire_Special_Weapon -- Cannot activate targeting for special weapon %s.  What's going on?
+  0x008C2AA0  SpaceTaskForceClass::Fire_Special_Weapon -- Unknown and confusing error firing special weapon %s: everything seemed ok, but the weapon failed to fire.
+  0x008C2B40  SpaceTaskForceClass::Move_To -- No destination set for TaskForce %s
+  0x008C2B90  SpaceTaskForceClass::Move_To -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C2BF0  SpaceTaskForceClass::Move_To -- parameter 2 is not a valid number.
+  0x008C2C40  SpaceTaskForceClass::Move_To -- invalid type for parameter 3.  Expected string.
+  0x008C2C90  SpaceTaskForceClass::Attack_Move -- No destination set for TaskForce %s
+  0x008C2CE0  SpaceTaskForceClass::Attack_Move -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C2D40  SpaceTaskForceClass::Attack_Move -- parameter 2 is not a valid number.
+  0x008C2D90  SpaceTaskForceClass::Attack_Move -- invalid type for parameter 3.  Expected string.
+  0x008C2DF0  SpaceTaskForceClass::Attack_Move -- unknown space collision type %s for avoidance parameter.
+  0x008C2E50  SpaceTaskForceClass::Reinforce -- invalid number of parameters.  Expected 1 or 2, got %d.
+  0x008C2EB0  SpaceTaskForceClass::Reinforce -- invalid type for parameter 1 - cannot convert to position.
+  0x008C2F10  SpaceTaskForceClass::Reinforce -- invalid type for parameter 2.  Expected number (maximum wait time)
+  0x008C2F80  SpaceTaskForceClass::Reinforce -- taskforce %s has no reinforcements.
+  0x008C2FD0  SpaceTaskForceClass::Reinforce -- Rule Change: AI players cannot reinforce after their starbase has been destroyed.
+  0x008C3070  SpaceTaskForceClass::Build -- unable to build %s at %s: location is no longer friendly.
+  0x008C30D0  SpaceTaskForceClass::Build -- unable to build %s at %s: game rules prevent building.  Pad may be occupied or enemies may be too close.
+  0x008C3160  SpaceTaskForceClass::Build -- unable to build %s at %s: cooldown active because previous building was destroyed too recently.
+  0x008C31E0  SpaceTaskForceClass::Build -- unable to build %s at %s: build request somehow failed (why?!?).  At least this error case should no longer hang the script!
+  0x008C3280  SpaceTaskForceClass::Build -- invalid number of parameters.  Expected 1 or 2, got %d.
+  0x008C32E0  SpaceTaskForceClass::Build -- invalid type for parameter 1; expected string.
+  0x008C3330  SpaceTaskForceClass::Build -- cannot find game object type %s.
+  0x008C3370  SpaceTaskForceClass::Build -- there are no build pads available for taskforce %s.
+  0x008C33D0  SpaceTaskForceClass::Build -- invalid type for parameter 2; expected game object or ai target.
+  0x008C3430  SpaceTaskForceClass::Build -- build location is already dead.
+  0x008C3470  SpaceTaskForceClass::Build -- build location parameter %s does not represent a game object.
+  0x008C34D0  SpaceTaskForceClass::Build -- build location parameter %s does not represent a build pad.
+  0x008C3530  SpaceTaskForceClass::Build -- unable to match build request for %s at %s with build reservations.
+  0x008C35A0  SpaceTaskForceClass::Explore_Area -- invalid number of parameters.  Expected 1, got %d.
+  0x008C3600  SpaceTaskForceClass::Explore_Area -- invalid type for parameter 1.  Expected ai target location.
+  0x008C3668  SpaceTaskForceClass::Explore_Area -- target is dead.
+  0x008C3A10  LandTaskForceClass::Attack_Target -- No destination set for TaskForce %s
+  0x008C3A60  LandTaskForceClass::Attack_Target -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C3AC0  LandTaskForceClass::Attack_Target -- Cannot attack non-unit target %s.  Use Move_To instead.
+  0x008C3B20  LandTaskForceClass::Attack_Target -- Unexpected type for parameter %d.
+  0x008C3B70  LandTaskForceClass::Move_To -- No destination set for TaskForce %s
+  0x008C3BC0  LandTaskForceClass::Move_To -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C3C20  LandTaskForceClass::Move_To -- Unexpected type for parameter %d.
+  0x008C3D10  Prepare_Ambush -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C3D90  LandTaskForceClass::Withdraw_Units -- No retreat coordinator!  What's going on?
+  0x008C3DE0  LandTaskForceClass::Reinforce -- taskforce has no reinforcements.
+  0x008C3E30  LandTaskForceClass::Reinforce -- invalid number of parameters.  Expected 1 or 2, got %d.
+  0x008C3E90  LandTaskForceClass::Reinforce -- object defining reinforcement location is already dead
+  0x008C3EE8  LandTaskForceClass::Reinforce -- invalid reinforcement target
+  0x008C3F30  LandTaskForceClass::Reinforce -- invalid type for parameter 2.  Expected number.
+  0x008C3F90  LandTaskForceClass::Guard_Target -- No destination set for TaskForce %s
+  0x008C3FE0  LandTaskForceClass::Guard_Target -- target taskforce is empty.  Cannot guard.
+  0x008C4030  LandTaskForceClass::Guard_Target -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C4090  LandTaskForceClass::Attack_Move -- No destination set for TaskForce %s
+  0x008C40E0  LandTaskForceClass::Attack_Move -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C4140  LandTaskForceClass::Attack_Move -- Unexpected type for parameter %d.
+  0x008C4190  LandTaskForceClass::Bombing_Run -- invalid number of parameters.  Expected 1, got %d.
+  0x008C41F0  LandTaskForceClass::Bombing_Run -- invalid type for parameter 1.  Exepcted game objecdt or AI target
+  0x008C4260  LandTaskForceClass::Bombing_Run -- target is already dead.  Aborting.
+  0x008C42B0  LandTaskForceClass::Bombing_Run -- Target position is within an invalid area. Aborting.
+  0x008C4310  LandTaskForceClass::Bombing_Run -- No bombing run available.  Either there are no bombers in orbit or this is skirmish and the upgrade is needed.
+  0x008C43B0  LandTaskForceClass::Fire_Special_Weapon -- invalid number of parameters: expected 2 got %d.
+  0x008C4410  LandTaskForceClass::Fire_Special_Weapon -- invalid type for parameter 1.  Expected string
+  0x008C4470  LandTaskForceClass::Fire_Special_Weapon -- %s is not a land special weapon!
+  0x008C44C0  LandTaskForceClass -- Invalid type for parameter 1.  Expected game object or target location
+  0x008C4520  LandTaskForceClass -- target is already dead.  Aborting.
+  0x008C4560  LandTaskForceClass::Build -- unable to build %s at %s: location is no longer friendly.
+  0x008C45C0  LandTaskForceClass::Build -- unable to build %s at %s: game rules prevent building.  Pad may be occupied or enemies may be too close.
+  0x008C4650  LandTaskForceClass::Build -- unable to build %s at %s: cooldown active because previous building was destroyed too recently.
+  0x008C46D0  LandTaskForceClass::Build -- unable to build %s at %s: build request somehow failed (why?!?).  At least this error case should no longer hang the script!
+  0x008C4770  LandTaskForceClass::Build -- invalid number of parameters.  Expected 1 or 2, got %d.
+  0x008C47D0  LandTaskForceClass::Build -- invalid type for parameter 1; expected string.
+  0x008C4820  LandTaskForceClass::Build -- cannot find game object type %s.
+  0x008C4860  LandTaskForceClass::Build -- there are no build pads available for taskforce %s.
+  0x008C48C0  LandTaskForceClass::Build -- invalid type for parameter 2; expected game object or ai target.
+  0x008C4920  LandTaskForceClass::Build -- build location is already dead.
+  0x008C4960  LandTaskForceClass::Build -- build location parameter %s does not represent a game object.
+  0x008C49C0  LandTaskForceClass::Build -- build location parameter %s does not represent a build pad.
+  0x008C4A20  LandTaskForceClass::Build -- unable to match build request for %s at %s with build reservations.
+  0x008C4A90  LandTaskForceClass::Explore_Area -- invalid number of parameters.  Expected 1, got %d.
+  0x008C4AF0  LandTaskForceClass::Explore_Area -- invalid type for parameter 1.  Expected ai target location.
+  0x008C4B50  LandTaskForceClass::Explore_Area -- target is dead.
+  0x008C4B90  LandTaskForceClass::Fire_Orbital_Bombardment -- invalid number of parameters.  Expected 1, got %d.
+  0x008C4C00  LandTaskForceClass::Fire_Orbital_Bombardment -- could not extract a position from parameter 1.
+  0x008C5ED0  Error: (%s) Energy_Pool_Bonus_Percentage cannot be -1.0 or less.
+  0x008C66C0  Error: (%s) Bomb_Spawn_Frame cannot be less than zero.
+  0x008CA1B6  or Applicable_Unit_Types, otherwise this ability won't be able to block/redirect fire from any sources.
+  0x008CA258  Error: (%s) Block_Chance must be between 0 and 1.
+  0x008CDFE0  FreeStoreMovementBlockStatus::Get_Next_Hop -- Fleet: %8.8X doesn't appear to be on a planet
+  0x008CE040  FreeStoreMovementBlockStatus::Get_Next_Hop -- Unable to find a path from %s to %s.
+  0x008CE0A0  FreeStoreMovementBlockStatus::Receive_Signal -- Object Move Canceled.  Unable to path to %s.
+  0x008D1AE8  `local static thread guard'
+  0x008D8388  AppPolicyGetThreadInitializationType
+  0x008DFAC0  invalid block type
+  0x008DFAD8  invalid stored block lengths
+  0x008DFB60  invalid code -- missing end-of-block
+  0x008E2AF0  CO_E_INIT_SCM_MUTEX_EXISTS
+  0x008E2B78  CO_E_INIT_ONLY_SINGLE_THREADED
+  0x008E3D90  DISP_E_ARRAYISLOCKED
+  0x008E4210  STG_E_LOCKVIOLATION
+  0x008E4478  STG_S_BLOCK
+  0x008E4550  RPC_E_CANTCALLOUT_INASYNCCALL
+  0x008E4730  RPC_E_ATTEMPTED_MULTITHREAD
+  0x008E4868  RPC_E_WRONG_THREAD
+  0x008E4880  RPC_E_THREAD_NOT_INIT
+  0x008E4A88  CO_E_FAILEDTOOPENTHREADTOKEN
+  0x008E5988  OSS_MUTEX_NOT_CREATED
+  0x008E60D0  SPAPI_E_DEVINFO_LIST_LOCKED
+  0x008E60F0  SPAPI_E_DEVINFO_DATA_LOCKED
+  0x008E6148  SPAPI_E_FILEQUEUE_LOCKED
+  0x008E64B0  SPAPI_E_DEVINSTALL_QUEUE_NONNATIVE
+  0x008E6A70  SCARD_W_CHV_BLOCKED
+  0x008E6B80  ERROR_INVALID_BLOCK
+  0x008E6DE0  ERROR_LOCK_VIOLATION
+  0x008E6F78  ERROR_NO_SPOOL_SPACE
+  0x008E7158  ERROR_TOO_MANY_SEMAPHORES
+  0x008E7238  ERROR_DRIVE_LOCKED
+  0x008E7700  ERROR_NOT_LOCKED
+  0x008E7718  ERROR_BAD_THREADID_ADDR
+  0x008E7790  ERROR_LOCK_FAILED
+  0x008E77E0  ERROR_ATOMIC_LOCKS_NOT_SUPPORTED
+  0x008E7B00  ERROR_THREAD_1_INACTIVE
+  0x008E7B18  ERROR_LOCKED
+  0x008E7D48  ERROR_OPLOCK_NOT_GRANTED
+  0x008E7D68  ERROR_INVALID_OPLOCK_PROTOCOL
+  0x008E80F0  ERROR_SERVICE_NO_THREAD
+  0x008E8108  ERROR_SERVICE_DATABASE_LOCKED
+  0x008E8308  ERROR_INVALID_SERVICE_LOCK
+  0x008E8550  ERROR_INVALID_BLOCK_LENGTH
+  0x008E8590  ERROR_UNABLE_TO_LOCK_MEDIA
+  0x008E8800  ERROR_POSSIBLE_DEADLOCK
+  0x008E9DC0  ERROR_WINDOW_OF_OTHER_THREAD
+  0x008EA0E8  ERROR_DESTROY_OBJECT_OF_OTHER_THREAD
+  0x008EA178  ERROR_SCREEN_ALREADY_LOCKED
+  0x008EA1F0  ERROR_INVALID_THREAD_ID
+  0x008EB598  ERROR_ACCOUNT_LOCKED_OUT
+  0x008EB600  RPC_S_INVALID_ASYNC_HANDLE
+  0x008EB620  RPC_S_INVALID_ASYNC_CALL
+  0x008EB9E8  ERROR_SPOOL_FILE_NOT_FOUND
+  0x008EBA20  ERROR_SPL_NO_ADDJOB
+  0x008EBAC8  ERROR_PRINTER_HAS_JOBS_QUEUED
+  0x008EBDF8  ERROR_INVALID_MEDIA_POOL
+  0x008EEE58  DNS_ERROR_ZONE_LOCKED
+  0x008EF480  WSAEWOULDBLOCK
+  0x008EFA08  CO_E_ASYNC_WORK_REJECTED
+  0x008EFA80  CO_E_THREADPOOL_CONFIG
+  0x008EFAC0  REGDB_E_BADTHREADINGMODEL
+  0x008EFBF8  XACT_E_NOASYNC
+  0x008F0260  CO_E_THREADINGMODEL_CHANGED
+  0x008F02B8  CO_E_NOTPOOLED
+  0x008F02E0  CO_E_NOSYNCHRONIZATION
+  0x008F02F8  SCHED_S_TASK_READY
+  0x008F0310  SCHED_S_TASK_RUNNING
+  0x008F0328  SCHED_S_TASK_DISABLED
+  0x008F0340  SCHED_S_TASK_HAS_NOT_RUN
+  0x008F0360  SCHED_S_TASK_NO_MORE_RUNS
+  0x008F0380  SCHED_S_TASK_NOT_SCHEDULED
+  0x008F03A0  SCHED_S_TASK_TERMINATED
+  0x008F03B8  SCHED_S_TASK_NO_VALID_TRIGGERS
+  0x008F0410  SCHED_E_TASK_NOT_READY
+  0x008F0428  SCHED_E_TASK_NOT_RUNNING
+  0x008F0468  SCHED_E_CANNOT_OPEN_TASK
+  0x008F0488  SCHED_E_INVALID_TASK
+  0x008F1D20  COMADMIN_E_COMP_MOVE_LOCKED
+  0x008F1EA8  COMADMIN_E_OBJECTNOTPOOLABLE
+  0x008F2328  COMQC_E_APPLICATION_NOT_QUEUED
+  0x008F2348  COMQC_E_NO_QUEUEABLE_INTERFACES
+  0x008F23E0  COMQC_E_UNTRUSTED_ENQUEUER
+  0x008F24B0  COMADMIN_E_SVCAPP_NOT_POOLABLE_OR_RECYCLABLE
+  0x008F2968  ERROR_APPHELP_BLOCK
+  0x008F2A38  ERROR_MACHINE_LOCKED
+  0x008F2AA0  ERROR_DRIVER_BLOCKED
+  0x008F2F70  ERROR_KM_DRIVER_BLOCKED
+  0x008F2FE8  ERROR_PRINTER_DRIVER_BLOCKED
+  0x008F37D0  ERROR_CLUSTER_GUM_NOT_LOCKER
+  0x008F4000  ERROR_DS_COULDNT_LOCK_TREE_FOR_DELETE
+  0x008F4C90  ERROR_DS_THREAD_LIMIT_EXCEEDED
+  0x008F5260  ERROR_SXS_THREAD_QUERIES_DISABLED
+  0x008F61D0  ERROR_IPSEC_IKE_QUEUE_DROP_MM
+  0x008F61F0  ERROR_IPSEC_IKE_QUEUE_DROP_NO_MM
+  0x008F6CB8  DDERR_LOCKEDSURFACES
+  0x008F7010  DDERR_CANTLOCKSURFACE
+  0x008F73C0  DDERR_NOTLOCKED
+  0x008F7518  DDERR_CANTPAGELOCK
+  0x008F7530  DDERR_CANTPAGEUNLOCK
+  0x008F7548  DDERR_NOTPAGELOCKED
+  0x008F7E10  DVERR_LOCKEDBUFFER
+  0x008F9258  DMUS_S_REQUEUE
+  0x008F9940  DMUS_E_TRACK_NO_CLOCKTIME_SUPPORT
+  0x008F9968  DMUS_E_NO_MASTER_CLOCK
+  0x008F9FB8  VFW_E_NO_CLOCK
+  0x008FABB0  VFW_E_PIN_ALREADY_BLOCKED_ON_THIS_THREAD
+  0x008FABE0  VFW_E_PIN_ALREADY_BLOCKED
+  0x008FB808  WBEM_E_QUEUE_OVERFLOW
+  0x008FBB20  WBEM_E_SYNCHRONIZATION_REQUIRED
+  0x008FCF58  Thread table size overflow
+  0x008FD294  thread
+  0x008FF788  Resource deadlock avoided
+  0x008FF7C0  No locks available
+  0x008FFB58  operation would block
+  0x009CC358  ReleaseMutex
+  0x009CC368  CreateMutexA
+  0x009CC502  DispatchMessageA
+  0x009CC7D2  CoTaskMemFree
+  0x009CD4EC  D3DXCreateEffectPool
+  0x009CD6AA  GetCurrentThreadId
+  0x009CD732  LockResource
+  0x009CD8F8  GlobalUnlock
+  0x009CD908  GlobalLock
+  0x009CD9A4  OpenMutexA
+  0x009CD9C6  GetCurrentThread
+  0x009CD9DA  SetThreadPriority
+  0x009CD9EE  TerminateThread
+  0x009CDCA2  CreateThread
+  0x009CDCB2  ExitThread
+  0x009CDCC0  FreeLibraryAndExitThread
+  0x009CE080  GetAsyncKeyState
+  0x00A468C0  .?AV?$PooledObjectClass@V?$LuaValue@N$03@@$0IA@VEmptyLockerClass@@@@
+  0x00A46F90  .?AV?$SingletonInstance@VSignalDispatcherClass@@@@
+  0x00A47108  .?AVPGNetAsyncSocketImpl@@
+  0x00A47168  .?AVSteamAsyncSocketImpl@@
+  0x00A476F8  .?AVThreadClass@@
+  0x00A47720  .?AVLoadingThreadClass@@
+  0x00A47D38  .?AValRenderTask@@
+  0x00A47D60  .?AValBlobFlushTask@@
+  0x00A47D90  .?AV?$PooledObjectClass@ValBlobFlushTask@@$01VEmptyLockerClass@@@@
+  0x00A47E10  .?AV?$PooledObjectClass@ValBlob@@$0BAA@VEmptyLockerClass@@@@
+  0x00A47F90  .?AV?$MultiLinkedListClass@ValRenderTask@@@@
+  0x00A480E8  .?AValMeshRenderTask@@
+  0x00A48110  .?AV?$PooledObjectClass@ValMeshRenderTask@@$0EAA@VEmptyLockerClass@@@@
+  0x00A48190  .?AV?$PooledObjectClass@ValParticles@@$0EAA@VEmptyLockerClass@@@@
+  0x00A48210  .?AV?$PooledObjectClass@ValParticleGroup@@$0IA@VEmptyLockerClass@@@@
+  0x00A48268  .?AValParticleGroupRenderTask@@
+  0x00A482A0  .?AV?$PooledObjectClass@ValParticleGroupRenderTask@@$0EAA@VEmptyLockerClass@@@@
+  0x00A48B68  .?AValD3dTerrainRenderTask@@
+  0x00A48BA0  .?AV?$PooledObjectClass@ValD3dTerrainRenderTask@@$00VEmptyLockerClass@@@@
+  0x00A48C00  .?AValD3dWaterRenderTask@@
+  0x00A48C30  .?AV?$PooledObjectClass@ValD3dWaterRenderTask@@$00VEmptyLockerClass@@@@
+  0x00A48C88  .?AValD3dTerrainDecorationRenderTask@@
+  0x00A48CC0  .?AV?$PooledObjectClass@ValD3dTerrainDecorationRenderTask@@$00VEmptyLockerClass@@@@
+  0x00A49120  .?AV?$PooledObjectClass@ValD3dSimpleEngineParam@@$0BAA@VEmptyLockerClass@@@@
+  0x00A4A4E8  .?AVSignalDispatcherClass@@
+  0x00A4A518  .?AV?$Singleton@VSignalDispatcherClass@@@@
+  0x00A4A620  .?AV?$DynamicVectorClass@W4ThreadTaskType@NATUtilsClass@@@@
+  0x00A4A670  .?AVNATUtilsThreadClass@NATUtilsClass@@
+  0x00A4A6A8  .?AVWinsockAsyncSocketImpl@@
+  0x00A4A6E0  .?AV?$DynamicVectorClass@UtThreadDescriptionStruct@ThreadClass@@@@
+  0x00A4A738  .?AVMainThreadClass@@
+  0x00A4A7B0  .?AV?$PooledObjectClass@VPacketClass@@$0BE@VFastThreadLockClass@@@@
+  0x00A4A9D0  .?AV?$PooledObjectClass@V?$LuaValue@V?$map@V?$SmartPtr@VLuaVar@@@@V1@VLuaHashCompare@@V?$allocator@U?$pair@$$CBV?$SmartPtr@VLuaVar@@@@V1@@std@@@std@@@std@@$00@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AAD0  .?AV?$PooledObjectClass@V?$LuaValue@PEAX$02@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AB50  .?AV?$PooledObjectClass@V?$LuaValue@_N$04@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AC20  .?AV?$PooledObjectClass@V?$LuaValue@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@$05@@$0IA@VEmptyLockerClass@@@@
+  0x00A4ACF0  .?AV?$PooledObjectClass@V?$LuaValue@P6AXH@Z$06@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AD80  .?AV?$PooledObjectClass@V?$LuaValue@P6AXXZ$07@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AE10  .?AV?$PooledObjectClass@V?$LuaValue@PEAX$09@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AF40  .?AV?$PooledObjectClass@V?$LuaValue@V?$vector@V?$SmartPtr@VLuaVar@@@@V?$allocator@V?$SmartPtr@VLuaVar@@@@@std@@@std@@$01@@$0IA@VEmptyLockerClass@@@@
+  0x00A4B128  .?AVLuaCreateThread@@
+  0x00A4B150  .?AV?$LuaMemberFunctionWrapper@VLuaCreateThread@@@@
+  0x00A4B280  .?AVThreadValue@@
+  0x00A4B2B0  .?AV?$LuaMemberFunctionWrapper@VThreadValue@@@@
+  0x00A4B318  .?AVLuaGetThreadID@@
+  0x00A4B3A0  .?AV?$PooledObjectClass@VLuaScriptWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A4B480  .?AV?$PooledObjectClass@VLuaExternalFunction@@$0EA@VEmptyLockerClass@@@@
+  0x00A4B990  .?AValSimpleRenderTask@@
+  0x00A4B9C0  .?AV?$PooledObjectClass@ValSimpleRenderTask@@$0EAA@VEmptyLockerClass@@@@
+  0x00A4C1D8  .?AVScheduledEventQueueClass@@
+  0x00A4C208  .?AVEventQueueClass@@
+  0x00A4D200  .?AV?$PooledObjectClass@VGameObjectTypeClass@@$0BJ@VEmptyLockerClass@@@@
+  0x00A4D340  .?AV?$PooledObjectClass@VFlagshipDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4D440  .?AV?$PooledObjectClass@VTacticalCombatantDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4D550  .?AV?$PooledObjectClass@VDamageTrackingDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4D650  .?AV?$PooledObjectClass@VBoardableDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4D720  .?AV?$PooledObjectClass@VGameObjectClass@@$0EA@VEmptyLockerClass@@@@
+  0x00A4DD90  .?AVOutgoingEventQueueClass@@
+  0x00A4DFA0  .?AV?$PooledObjectClass@VSelectBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4E1C0  .?AV?$PooledObjectClass@VPlanetaryBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4E370  .?AV?$PooledObjectClass@VProductionBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4E4B0  .?AV?$PooledObjectClass@VTeamBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4E920  .?AV?$PooledObjectClass@VTacticalSuperWeaponBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4EA20  .?AV?$PooledObjectClass@VTacticalBuildObjectsBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4EAC0  .?AV?$PooledObjectClass@VAbilityCountdownBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4EC70  .?AV?$PooledObjectClass@VFleetBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4EE00  .?AV?$PooledObjectClass@VAsteroidFieldDamageBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4EEA0  .?AV?$PooledObjectClass@VNebulaBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A4F090  .?AV?$PooledObjectClass@VGarrisonUnitBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A50500  .?AV?$PooledObjectClass@VSpecialWeaponDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A505A0  .?AV?$PooledObjectClass@VSpecialWeaponBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A50FA0  .?AV?$PooledObjectClass@VPlanetaryDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A511F0  .?AV?$PooledObjectClass@VMarkerBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51280  .?AV?$PooledObjectClass@VHintBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51310  .?AV?$PooledObjectClass@VGroundBaseDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A513B0  .?AV?$PooledObjectClass@VStarBaseDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51450  .?AV?$PooledObjectClass@VSquadronDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A514F0  .?AV?$PooledObjectClass@VGroundCompanyDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A515A0  .?AV?$PooledObjectClass@VOrbitalStructureDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51640  .?AV?$PooledObjectClass@VGroundStructureDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51720  .?AV?$PooledObjectClass@VStarshipDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A517C0  .?AV?$PooledObjectClass@VSpecialWeaponSourceDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51880  .?AV?$PooledObjectClass@VTacticalSuperWeaponTargetDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51930  .?AV?$PooledObjectClass@VUpgradeDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A519D0  .?AV?$PooledObjectClass@VIonStunEffectBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51A70  .?AV?$PooledObjectClass@VDestroyAfterBombingRunDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51B30  .?AV?$PooledObjectClass@VDestroyAfterSpecialWeaponFiredDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51BE0  .?AV?$PooledObjectClass@VReinforcementPointBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51C80  .?AV?$PooledObjectClass@VTooltipDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51D30  .?AV?$PooledObjectClass@VDestroyAfterPlanetaryBombardDummyBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A51F70  .?AV?$PooledObjectClass@VProjectileBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52590  .?AV?$PooledObjectClass@VLobbingSuperweaponBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52620  .?AV?$PooledObjectClass@VTeamDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A526B0  .?AV?$PooledObjectClass@VTransportDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52740  .?AV?$PooledObjectClass@VHintDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A527D0  .?AV?$PooledObjectClass@VLightEffectDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52860  .?AV?$PooledObjectClass@VTransportBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52920  .?AV?$PooledObjectClass@VUnitAIBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A529B0  .?AV?$PooledObjectClass@VLandObstacleBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52A80  .?AV?$PooledObjectClass@VCapturePointBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52B20  .?AV?$PooledObjectClass@VAffectedByShieldBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52CE8  .?AVInvasionBlockStatus@@
+  0x00A52D18  .?AVBlockingStatus@@
+  0x00A52D40  .?AVFormationBlockStatus@@
+  0x00A52EF0  .?AV?$PooledObjectClass@VTacticalSellBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52F80  .?AV?$ReferenceListClass@VAIBuildTaskClass@@@@
+  0x00A53320  .?AVSpawnIndigenousUnitsBehaviorClass@@
+  0x00A53360  .?AV?$PooledObjectClass@VSpawnIndigenousUnitsBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A534F0  .?AV?$PooledObjectClass@VRadarMapDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A535F0  .?AV?$PooledObjectClass@VRevealBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A53680  .?AVAIPlanetBuildQueueClass@@
+  0x00A536B0  .?AV?$MultiLinkedListClass@VAIPlanetBuildTaskClass@@@@
+  0x00A53730  .?AV?$PooledObjectClass@VHideWhenFoggedBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A537D0  .?AV?$PooledObjectClass@VAffectedByShieldDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A53878  .?AVBinkMovieBlockStatus@@
+  0x00A53CC8  .?AVLuaSpawnUnitCommandClass@@
+  0x00A54348  .?AVSpawnFromReinforcePoolClass@@
+  0x00A54380  .?AVSpawnSpecialWeaponClass@@
+  0x00A54490  .?AVLuaLockControls@@
+  0x00A54DA0  .?AV?$PooledObjectClass@VShieldBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A54E30  .?AV?$PooledObjectClass@VWeaponBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A54F40  .?AV?$PooledObjectClass@VAIDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A54FD0  .?AV?$PooledObjectClass@VAmbientSFXDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55060  .?AV?$PooledObjectClass@VBombDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A550F0  .?AV?$PooledObjectClass@VCashPointDataPackClass@@$07VEmptyLockerClass@@@@
+  0x00A55180  .?AV?$PooledObjectClass@VDebrisDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55210  .?AV?$PooledObjectClass@VDemolitionDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A552A0  .?AV?$PooledObjectClass@VFleetDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55320  .?AV?$PooledObjectClass@VIdleDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A553B0  .?AV?$PooledObjectClass@VLocomotorDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55490  .?AV?$PooledObjectClass@VProductionDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55520  .?AV?$PooledObjectClass@VProjectileDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A555B0  .?AV?$PooledObjectClass@VSelectionDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55610  .?AVSpawnIndigenousUnitsDataPackClass@@
+  0x00A55650  .?AV?$PooledObjectClass@VSpawnIndigenousUnitsDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A556B8  .?AVSpawnSquadronDataPackClass@@
+  0x00A556F0  .?AV?$PooledObjectClass@VSpawnSquadronDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A557E0  .?AV?$PooledObjectClass@VSpecialAbilityDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A558E0  .?AV?$PooledObjectClass@VSquadLeaderDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55980  .?AV?$PooledObjectClass@VTacticalBuildObjectsDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55A20  .?AV?$PooledObjectClass@VTacticalSellDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55AC0  .?AV?$PooledObjectClass@VTacticalUnderConstructionDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55B60  .?AV?$PooledObjectClass@VTelekinesisDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55BF0  .?AV?$PooledObjectClass@VVehicleThiefDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55C90  .?AV?$PooledObjectClass@VTacticalSuperWeaponDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55D30  .?AV?$PooledObjectClass@VMarkerDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55DC0  .?AV?$PooledObjectClass@VCapturePointDataPackClass@@$07VEmptyLockerClass@@@@
+  0x00A55E60  .?AV?$PooledObjectClass@VAbilityCountdownDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55F00  .?AV?$PooledObjectClass@VBarrageAreaDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A55FA0  .?AV?$PooledObjectClass@VDeployTroopersDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56040  .?AV?$PooledObjectClass@VBaseShieldDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A560D0  .?AV?$PooledObjectClass@VEarthquakeDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56160  .?AV?$PooledObjectClass@VGarrisonDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A561F0  .?AV?$PooledObjectClass@VInfectionDataPackClass@@$0CA@VEmptyLockerClass@@@@
+  0x00A56290  .?AV?$PooledObjectClass@VProximityMineDataPackClass@@$0CA@VEmptyLockerClass@@@@
+  0x00A56320  .?AV?$PooledObjectClass@VBuzzDroidsDataPackClass@@$0CA@VEmptyLockerClass@@@@
+  0x00A563C0  .?AV?$PooledObjectClass@VCorruptSystemsDataPackClass@@$0CA@VEmptyLockerClass@@@@
+  0x00A56460  .?AV?$PooledObjectClass@VDynamicTransformDataPackClass@@$07VEmptyLockerClass@@@@
+  0x00A564F0  .?AV?$PooledObjectClass@VGUIDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A565B0  .?AV?$PooledObjectClass@VInvulnerableDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56650  .?AV?$PooledObjectClass@VFleetLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A566F0  .?AV?$PooledObjectClass@VBaseShieldBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56750  .?AVEnergyPoolBehaviorClass@@
+  0x00A56780  .?AV?$PooledObjectClass@VEnergyPoolBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56950  .?AV?$PooledObjectClass@VGameObjectWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A569A8  .?AVAbilityBlockStatus@@
+  0x00A569D8  .?AVUnitAnimationBlockStatus@@
+  0x00A56A08  .?AVGenericSignalBlockStatus@@
+  0x00A56D20  .?AV?$PooledObjectClass@VDamageTrackingBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56DC0  .?AV?$PooledObjectClass@VDeathDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56E40  .?AV?$PooledObjectClass@VLureDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56ED0  .?AV?$PooledObjectClass@VDeathBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56F60  .?AV?$PooledObjectClass@VHarassBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A56FF0  .?AV?$PooledObjectClass@VAvoidDangerBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A57080  .?AV?$PooledObjectClass@VBombBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A57110  .?AV?$PooledObjectClass@VDeployTroopersBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A571B0  .?AV?$PooledObjectClass@VBarrageAreaBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A57240  .?AV?$PooledObjectClass@VLandObstacleDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A572D0  .?AVSpawnSquadronBehaviorClass@@
+  0x00A57310  .?AV?$PooledObjectClass@VSpawnSquadronBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A574C0  .?AV?$PooledObjectClass@VLandTeamContainerLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A578C0  .?AV?$PooledObjectClass@VSquadLeaderBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A57980  .?AV?$PooledObjectClass@VFighterLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A57AF0  .?AV?$PooledObjectClass@VTacticalUnderConstructionBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A580D0  .?AV?$EnumConversionClass@W4ProductionQueueType@@@@
+  0x00A58790  .?AV?$PooledObjectClass@VAIDiagsNode@@$0BAA@VEmptyLockerClass@@@@
+  0x00A58850  .?AVTaskForceClass@@
+  0x00A58878  .?AVAITaskForceDiagnosticsNodeClass@@
+  0x00A588B0  .?AV?$LuaMemberFunctionWrapper@VTaskForceClass@@@@
+  0x00A58920  .?AV?$PooledObjectClass@VPlayerWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A58A00  .?AV?$PooledObjectClass@VGameObjectTypeWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A58AE0  .?AV?$PooledObjectClass@VAITargetLocationWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A58BC0  .?AV?$PooledObjectClass@VPositionWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A58ED0  .?AV?$PooledObjectClass@VGravityControlFieldBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A58F70  .?AV?$PooledObjectClass@VSkyDomeBehaviorClass@@$03VEmptyLockerClass@@@@
+  0x00A59000  .?AV?$PooledObjectClass@VWalkLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59090  .?AV?$PooledObjectClass@VCashPointBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59130  .?AV?$PooledObjectClass@VIndigenousUnitBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A591D0  .?AV?$PooledObjectClass@VLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59260  .?AV?$PooledObjectClass@VExplosionBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59300  .?AV?$PooledObjectClass@VStarshipLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A593A0  .?AV?$PooledObjectClass@VBurningBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59440  .?AV?$PooledObjectClass@VTerrainTextureModificationBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A594F0  .?AV?$PooledObjectClass@VWindDisturbanceBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59590  .?AV?$PooledObjectClass@VImposingPresenceBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59630  .?AV?$PooledObjectClass@VSimpleSpaceLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A596C0  .?AV?$PooledObjectClass@VHuntBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59740  .?AV?$PooledObjectClass@VWallBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A597D0  .?AV?$PooledObjectClass@VTreadScrollBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59860  .?AV?$PooledObjectClass@VSquashBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A598F0  .?AV?$PooledObjectClass@VAmbientSFXBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59980  .?AV?$PooledObjectClass@VDebrisBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59A10  .?AV?$PooledObjectClass@VLureBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59AB0  .?AV?$PooledObjectClass@VLandTeamInfantryLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59B50  .?AV?$PooledObjectClass@VIdleBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59C10  .?AV?$PooledObjectClass@VTeamTargetingBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59CB0  .?AV?$PooledObjectClass@VTeamLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59D40  .?AV?$PooledObjectClass@VSelfDestructBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59DD0  .?AV?$PooledObjectClass@VInvulnerableBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59E60  .?AV?$PooledObjectClass@VLandingBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59EF0  .?AV?$PooledObjectClass@VTurretBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59F90  .?AV?$PooledObjectClass@VSpaceObstacleBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A59FF0  .?AVGuardSpawnHouseBehaviorClass@@
+  0x00A5A030  .?AV?$PooledObjectClass@VGuardSpawnHouseBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A0D0  .?AV?$PooledObjectClass@VEarthquakeTargetBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A170  .?AV?$PooledObjectClass@VTargetingBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A210  .?AV?$PooledObjectClass@VHolsterWeaponBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A2A0  .?AV?$PooledObjectClass@VParticleBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A3A0  .?AV?$PooledObjectClass@VGarrisonVehicleBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A480  .?AV?$PooledObjectClass@VGarrisonStructureBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A530  .?AV?$PooledObjectClass@VDisableForceAbilitiesBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A5D0  .?AV?$PooledObjectClass@VConfuseBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A660  .?AV?$PooledObjectClass@VInfectionBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A700  .?AV?$PooledObjectClass@VProximityMineBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A790  .?AV?$PooledObjectClass@VBuzzDroidsBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A830  .?AV?$PooledObjectClass@VCorruptSystemsBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A8D0  .?AV?$PooledObjectClass@VBoardableBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5A970  .?AV?$PooledObjectClass@VDynamicTransformBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5AA70  .?AV?$PooledObjectClass@VBikeLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5AB10  .?AV?$PooledObjectClass@VFlyingLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5ABB0  .?AV?$PooledObjectClass@VTelekinesisTargetBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5AC50  .?AV?$PooledObjectClass@VVehicleThiefBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5ACE0  .?AV?$PooledObjectClass@VDemolitionBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5AD80  .?AV?$PooledObjectClass@VJetPackLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5AE20  .?AV?$PooledObjectClass@VTransportLandingBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5AEC0  .?AV?$PooledObjectClass@VSurfaceFXBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5AF60  .?AV?$PooledObjectClass@VLandBomberLocomotorBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5B000  .?AV?$PooledObjectClass@VStunnableBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5B090  .?AV?$PooledObjectClass@VBeaconBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5B0F0  .?AVAIBuildTaskClass@@
+  0x00A5B120  .?AV?$FiniteStateMachineClass@W4BuildTaskStates@@@@
+  0x00A5B170  .?AV?$MultiLinkedListClass@VAIBuildTaskClass@@@@
+  0x00A5B5C0  .?AV?$PooledObjectClass@VPerceptionGridEntryClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5BC38  .?AVTaskForceDefinitionClass@@
+  0x00A5BC68  .?AUTeamDef@TaskForceDefinitionClass@@
+  0x00A5C300  .?AVAIPlanetBuildTaskClass@@
+  0x00A5C330  .?AVProductionBlockStatus@@
+  0x00A5C448  .?AVForeverBlockStatus@@
+  0x00A5C478  .?AVGiveDesireBlockStatus@@
+  0x00A5C4A8  .?AVBaseBlockStatus@@
+  0x00A5C4D0  .?AVMarkupBlockStatus@@
+  0x00A5C4F8  .?AVReinforceBlockStatus@@
+  0x00A5C6B0  .?AVLightningEffectBlockStatus@@
+  0x00A5C808  .?AVUnitMovementBlockStatus@@
+  0x00A5C838  .?AVMovementBlockStatus@@
+  0x00A5C868  .?AVExploreAreaBlockStatus@@
+  0x00A5CBC8  .?AVBudgetBlockStatus@@
+  0x00A5CF10  .?AVProduceForceBlockStatus@@
+  0x00A5D060  .?AV?$PooledObjectClass@VBaseCombatantClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A5D148  .?AVGalacticTaskForceClass@@
+  0x00A5D180  .?AV?$LuaMemberFunctionWrapper@VGalacticTaskForceClass@@@@
+  0x00A5DEC8  .?AVSpaceTaskForceClass@@
+  0x00A5DEF8  .?AVTacticalBuildBlockStatus@@
+  0x00A5DF30  .?AV?$LuaMemberFunctionWrapper@VSpaceTaskForceClass@@@@
+  0x00A5DF78  .?AVLandTaskForceClass@@
+  0x00A5DFA8  .?AVBombingBlockStatus@@
+  0x00A5DFE0  .?AV?$LuaMemberFunctionWrapper@VLandTaskForceClass@@@@
+  0x00A5F008  .?AVSpawnAbilityClass@@
+  0x00A5F0C0  .?AVFreeStoreMovementBlockStatus@@
+  0x00A5F0F8  .?AVSpaceReinforceBlockStatus@@
+  0x00A5F150  .?AV?$PooledObjectClass@VStoryPlotWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A5F2B0  .?AVLandUnitsBlockStatus@@
+  0x00A5F718  .?AVSpaceMovementBlockStatus@@
+  0x00A5F748  .?AVSpaceAmbushBlockStatus@@
+  0x00A5F778  .?AVLandMovementBlockStatus@@
+  0x00A5F7D0  .?AV?$PooledObjectClass@VStoryEventWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A60470  .?AValLaserBeamFlushTask@@
+  0x00A604A0  .?AV?$PooledObjectClass@ValLaserBeamFlushTask@@$01VEmptyLockerClass@@@@
+  0x00A60520  .?AV?$PooledObjectClass@ValLaserBeam@@$0BAA@VEmptyLockerClass@@@@
+  0x00A60578  .?AValLaserKiteFlushTask@@
+  0x00A605B0  .?AV?$PooledObjectClass@ValLaserKiteFlushTask@@$01VEmptyLockerClass@@@@
+  0x00A60630  .?AV?$PooledObjectClass@ValLaserKite@@$0BAA@VEmptyLockerClass@@@@
+  0x00A60688  .?AValLensFlareTask@@
+  0x00A606B0  .?AV?$PooledObjectClass@ValLensFlareTask@@$01VEmptyLockerClass@@@@
+  0x00A60758  .?AValSplineRendererRenderTask@@
+  0x00A60790  .?AV?$PooledObjectClass@ValSplineRendererRenderTask@@$0EAA@VEmptyLockerClass@@@@
+  0x00A60910  .?AVal3DCableRenderTask@@
+  0x00A60940  .?AV?$PooledObjectClass@Val3DCableRenderTask@@$0EAA@VEmptyLockerClass@@@@
+  0x00A60AA0  .?AV?$LuaMemberFunctionWrapper@VBlockingStatus@@@@
+  0x00A60D08  .?AValLightningBoltRenderTask@@
+  0x00A60D40  .?AV?$PooledObjectClass@ValLightningBoltRenderTask@@$0EAA@VEmptyLockerClass@@@@
+
+============================================================
+[LUA] — 517 hits
+============================================================
+  0x00244DBF  D$`.luaL
+  0x002452EC  D$`.lua
+  0x005FB8D5  D$x.lua@
+  0x0084EB40  Error: attempt to override default GUI textures for %s does not specify component textures.
+  0x008521C0  ConnectionClass::Service -- Connection attempt to %s:%s has failed!
+  0x00855A30  ./?.lua;./?.lc
+  0x00855C20  LuaScriptClass::ERROR -- %s
+  0x00855C40  LuaScriptClass::ALERT -- %s
+  0x00855C60  LuaScript Error in %s.lua!
+  0x00855CB0  LuaScript: "%s", Message: %s
+  0x00855CD0  LuaScriptThread: Main State
+  0x00855CF0  LuaScriptThread: %s
+  0x00855D08  LuaScript: "%s", Error: %s
+  0x00855D28  LuaScript: "%s", Warning: %s
+  0x00855D80  LUA_PATH
+  0x00855E60  LuaThreadTable
+  0x00855E90  LuaThreadTable
+  0x00855EA0  LuaThreadTable
+  0x00855EB0  LuaScript::Free_Script_Pool -- Script: %s:%8.8X is still in use.
+  0x00855FD0  ?.lua;
+  0x008560B8  LuaWrapperMetaTable
+  0x008561C0  LuaNetworkDebuggerClass::Process_Scripts_Response -- Script: %d, Name: %s
+  0x00856210  LuaNetworkDebuggerClass::Process_Threads_Response -- Thread: %d, Name: %s
+  0x00856260  LuaNetworkDebuggerClass::Process_Add_Breakpoint_Request -- Script ID: %d, Thread ID: %d, Name: %s, Line: %d, Condition: %s
+  0x008562E0  LuaNetworkDebuggerClass::Process_Remove_Breakpoint_Request -- Script ID: %d, Thread ID: %d, Name: %s, Line: %d
+  0x00856350  LuaNetworkDebuggerClass::Process_Script_Added_Response -- Script: %d, File: %s
+  0x008563A0  LuaNetworkDebuggerClass::Process_Script_Suspended_Response -- Script: %d, Thread: %d, File: %s
+  0x00856400  LuaNetworkDebuggerClass::Process_Script_Suspended_Response -- Callstack %2.2d: %s
+  0x00856460  LuaNetworkDebuggerClass::Process_Script_Suspended_Response -- Thread: %d, Name: %s
+  0x008564C0  LuaNetworkDebuggerClass::Process_Child_Script_List_Response -- Child Script: %s
+  0x00856520  LuaNetworkDebuggerClass::Process_Dump_Var_Request -- Script ID: %d, Name: %s
+  0x00856570  LuaNetworkDebuggerClass::Process_Dump_Var_Response -- Script: %d, Name: %s, Type: %d, Result: %s
+  0x008565E0  LuaNetworkDebuggerClass::Process_Dump_Table_Request -- Script ID: %d, Name: %s, Decension Size %d
+  0x00856650  LuaNetworkDebuggerClass::Send_Output_To_Debugger -- Message: %s
+  0x008566A0  LuaNetworkDebuggerClass::Process_Output_To_Debugger -- Message: %s
+  0x008566F0  LuaNetworkDebuggerClass::Process_Execute_Text_Request -- Script ID: %d, %s
+  0x00856740  LuaNetworkDebuggerClass::Process_Execute_Text_Request -- Couldn't find script! Script ID: %d, %s
+  0x008567B8  LuaScriptThread: Main State
+  0x008567D8  LuaScriptThread: 
+  0x008567F0  LuaScript::CALLSTACK -- %2d: [%s:%s] %s:%d
+  0x00856820  LuaScript::CALLSTACK -- %2d: [%s:%s] %s:%d
+  0x00856AB8  LuaCustomScriptMessage -- Expected 2 parameters, got %d
+  0x00856AF0  LuaCustomScriptMessage -- expected two string parameters.
+  0x00856E30  LuaCreateThread::Get_Name -- Expected a thread id parameter.
+  0x00856E70  LuaCreateThread::Get_Name -- Expected a number for thread id parameter.
+  0x00856EB8  LuaCreateThread::Kill -- Expected a thread id parameter.
+  0x00856F00  LuaCreateThread::Kill -- Expected a number for thread id parameter.
+  0x00856F48  LuaCreateThread -- Expected a LuaFunction parameter.
+  0x00856F80  LuaCreateThread -- Expected a string for function name.
+  0x00856FB8  LuaCreateThread -- "%s" does not evaluate to a lua function.
+  0x00857000  LuaCreateThread::Is_Thread_Active -- invalid number of parameters.  Expected 1, got %d.
+  0x00857058  LuaCreateThread::Is_Thread_Active -- Expected a thread id.
+  0x008572F0  type = ???, cannot be evaluated with lc()
+  0x00857570  GlobalValue::Set -- Invalid parameter 2, cannot be a Lua User Variable.
+  0x00857C00  LuaScriptWrapper::Call_Function -- invalid number of parameters.  Expected at least 1, got %d.
+  0x00857C60  LuaScriptWrapper::Call_Function -- invalid type for parameter 1.  Expected string.
+  0x00857CC0  LuaScriptWrapper::Set_Variable -- invalid number of parameters.  Expected 2, got %d.
+  0x00857D20  LuaScriptWrapper::Set_Variable -- invalid type for parameter 1.  Expected string.
+  0x00857D80  LuaScriptWrapper::Get_Variable -- invalid number of parameters.  Expected 1, got %d.
+  0x00857DE0  LuaScriptWrapper::Get_Variable -- invalid type for parameter 1.  Expected string.
+  0x0085DE28  Lua_Script
+  0x00868FA0  %s: Reevaluate_All_Ground_Production(): Deleting %s from production queue
+  0x00868FF0  %s: Reevaluate_All_Space_Production(): Deleting %s from production queue
+  0x00873210  LuaScriptClass
+  0x00874398  TheGameScoringManagerClass::Attach_Lua_Script
+  0x00879B48  Unable to read lua script file %s!
+  0x008804A0  Has_Space_Evaluator
+  0x008804B8  Has_Land_Evaluator
+  0x008848F8  AI_SpaceEvaluatorRegionSize
+  0x00884918  AI_LandEvaluatorRegionSize
+  0x00885140  MovementReevaluationFrameCount
+  0x0088D698  Evaluation_Interval_In_Secs
+  0x008941C0  LuaStartCinematicCamera -- invalid type for parameter 1.  Expected bool.
+  0x00894350  LuaSuspendAI -- Expected float parameter 1
+  0x00894380  LuaSuspendAI -- Invalid parameter 1, expected a float
+  0x00894458  LuaCreatePosition -- Expected 3 float parameters
+  0x00894490  LuaCreatePosition -- Invalid parameter, expected 3 floats
+  0x00894570  LuaLockControls -- Expected float parameter 1
+  0x008945A0  LuaLockControls -- Invalid parameter 1, expected a float
+  0x00894680  LuaRotateCameraTo -- Command only valid in a tactical game.
+  0x008946C0  LuaRotateCameraTo -- Expected float parameter 1, float parameter 2
+  0x00894708  LuaRotateCameraTo -- Invalid parameter 1, expected a float
+  0x00894748  LuaRotateCameraTo -- Invalid parameter 2, expected a float
+  0x00894788  LuaRotateCameraTo -- Invalid parameter 3, expected a float
+  0x00894868  LuaRotateCameraBy -- Command only valid in a tactical game.
+  0x008948B0  LuaRotateCameraBy -- Expected float parameter 1, float parameter 2
+  0x008948F8  LuaRotateCameraBy -- Invalid parameter 1, expected a float
+  0x00894938  LuaRotateCameraBy -- Invalid parameter 2, expected a float
+  0x00894A18  LuaZoomCamera -- Command only valid in a tactical game.
+  0x00894A50  LuaZoomCamera -- Expected float parameter 1, float parameter 2
+  0x00894A90  LuaZoomCamera -- Invalid parameter 1, expected a float
+  0x00894AC8  LuaZoomCamera -- Invalid parameter 2, expected a float
+  0x00894BA0  LuaScrollCameraTo -- Command only valid in a tactical game.
+  0x00894C80  LuaScrollCameraTo -- Expected position parameter 1
+  0x00894CB8  LuaScrollCameraTo -- Invalid position.
+  0x00895000  LuaLetterBoxIn -- Expected float parameter 1
+  0x00895030  LuaLetterBoxIn -- Invalid parameter 1, expected a float
+  0x00895108  LuaLetterBoxOut -- Expected float parameter 1
+  0x00895138  LuaLetterBoxOut -- Invalid parameter 1, expected a float
+  0x00895218  LuaFadeScreenIn -- Expected float parameter 1
+  0x00895248  LuaFadeScreenIn -- Invalid parameter 1, expected a float
+  0x00895328  LuaFadeScreenOut -- Expected float parameter 1
+  0x00895358  LuaFadeScreenOut -- Invalid parameter 1, expected a float
+  0x00895438  LuaPointCamera -- Command only valid in a tactical game.
+  0x00895478  LuaPointCamera -- Expected position parameter 1
+  0x008954A8  LuaPointCamera -- Invalid position.
+  0x00895570  LuaFindObjectType -- Expected type name for parameter 1
+  0x00895848  LuaSetCinematicTargetKey -- Expected 8 parameters
+  0x00895880  LuaSetCinematicTargetKey -- Invalid parameter 1, expected a position.
+  0x008958D0  LuaSetCinematicTargetKey -- Invalid parameter 2, expected a float
+  0x00895920  LuaSetCinematicTargetKey -- Invalid parameter 3, expected a float
+  0x00895970  LuaSetCinematicTargetKey -- Invalid parameter 4, expected a float
+  0x008959C0  LuaSetCinematicTargetKey -- Invalid parameter 5, expected a float
+  0x00895A10  LuaSetCinematicTargetKey -- Invalid parameter 7, expected a float
+  0x00895A60  LuaSetCinematicTargetKey -- Invalid parameter 8, expected a float
+  0x00895B48  LuaTransitionCinematicTargetKey -- Expected 9 parameters
+  0x00895B90  LuaTransitionCinematicTargetKey -- Invalid parameter 1, expected a position.
+  0x00895BE0  LuaTransitionCinematicTargetKey -- Invalid parameter 2, expected a float
+  0x00895C30  LuaTransitionCinematicTargetKey -- Invalid parameter 3, expected a float
+  0x00895C80  LuaTransitionCinematicTargetKey -- Invalid parameter 4, expected a float
+  0x00895CD0  LuaTransitionCinematicTargetKey -- Invalid parameter 5, expected a float
+  0x00895D20  LuaTransitionCinematicTargetKey -- Invalid parameter 6, expected a float
+  0x00895D70  LuaTransitionCinematicTargetKey -- Invalid parameter 8, expected a float
+  0x00895DC0  LuaTransitionCinematicTargetKey -- Invalid parameter 9, expected a float
+  0x00895EB0  LuaSetCinematicCameraKey -- Expected 8 parameters
+  0x00895EF0  LuaSetCinematicCameraKey -- Invalid parameter 1, expected a position.
+  0x00895F40  LuaSetCinematicCameraKey -- Invalid parameter 2, expected a float
+  0x00895F90  LuaSetCinematicCameraKey -- Invalid parameter 3, expected a float
+  0x00895FE0  LuaSetCinematicCameraKey -- Invalid parameter 4, expected a float
+  0x00896030  LuaSetCinematicCameraKey -- Invalid parameter 5, expected a float
+  0x00896080  LuaSetCinematicCameraKey -- Invalid parameter 7, expected a float
+  0x008960D0  LuaSetCinematicCameraKey -- Invalid parameter 8, expected a float
+  0x008961B8  LuaTransitionCinematicCameraKey -- Expected 9 parameters
+  0x00896200  LuaTransitionCinematicCameraKey -- Invalid parameter 1, expected a position.
+  0x00896250  LuaTransitionCinematicCameraKey -- Invalid parameter 2, expected a float
+  0x008962A0  LuaTransitionCinematicCameraKey -- Invalid parameter 3, expected a float
+  0x008962F0  LuaTransitionCinematicCameraKey -- Invalid parameter 4, expected a float
+  0x00896340  LuaTransitionCinematicCameraKey -- Invalid parameter 5, expected a float
+  0x00896390  LuaTransitionCinematicCameraKey -- Invalid parameter 6, expected a float
+  0x008963E0  LuaTransitionCinematicCameraKey -- Invalid parameter 8, expected a float
+  0x00896430  LuaTransitionCinematicCameraKey -- Invalid parameter 9, expected a float
+  0x00896520  LuaTransitionCinematicTargetKey -- Command only valid in a tactical game.
+  0x00896570  LuaHideObject -- Expected gameobject pointer parameter 1, float parameter 2
+  0x008965C0  LuaHideObject -- Invalid parameter 1, expected a game object
+  0x00896600  LuaHideObject -- Invalid parameter 2, expected a float
+  0x008966D8  LuaHideSubObject -- Command only valid in a tactical game.
+  0x00896720  LuaHideSubObject -- Expected gameobject pointer parameter 1, float parameter 2, string parameter 3
+  0x00896790  LuaHideSubObject -- Invalid parameter 1, expected a game object
+  0x008967D0  LuaHideSubObject -- Invalid parameter 2, expected a float
+  0x00896810  LuaHideSubObject -- invalid type for parameter 3.  Expected string.
+  0x008968F8  LuaTransitionToTacticalCamera -- Expected float parameter 1
+  0x00896940  LuaTransitionToTacticalCamera -- Invalid parameter 1, expected a float
+  0x00896A30  LuaCreateCinematicTransport -- Command only valid in a tactical game.
+  0x00896A80  LuaCreateCinematicTransport -- Command only valid in a land tactical game.
+  0x00896AD0  LuaCreateCinematicTransport -- Expected 8 parameters
+  0x00896B10  LuaCreateCinematicTransport -- invalid type for parameter 1.  Expected string.
+  0x00896B60  LuaCreateCinematicTransport -- Invalid parameter 2, expected a float value for player_id
+  0x00896BC0  LuaCreateCinematicTransport -- Invalid parameter 3, expected a position value.
+  0x00896C10  LuaCreateCinematicTransport -- Invalid parameter 4, expected a float value for z_angle
+  0x00896C70  LuaCreateCinematicTransport -- Invalid parameter 5, expected a float value for transport landing mode
+  0x00896CE0  LuaCreateCinematicTransport -- Invalid parameter 6, expected a float value for anim delta
+  0x00896D40  LuaCreateCinematicTransport -- Invalid parameter 7, expected a float value for idle time
+  0x00896DA0  LuaCreateCinematicTransport -- Invalid parameter 8, expected a float value for transport persisting
+  0x00896E10  LuaCreateCinematicTransport -- invalid type for parameter 9.  Expected string.
+  0x00896F00  LuaEnableFog -- Command only valid in a land tactical game.
+  0x00896F40  LuaEnableFog -- Expected bool parameter 1
+  0x00896F70  LuaEnableFog -- invalid type for parameter 1.  Expected bool.
+  0x00897050  LuaPromoteToSpaceCinematicLayer -- Command only valid in a tactical game.
+  0x008970A0  LuaPromoteToSpaceCinematicLayer -- Command only valid in a land or space tactical game.
+  0x00897100  LuaPromoteToSpaceCinematicLayer -- Expected gameobject parameter 1
+  0x00897150  LuaPromoteToSpaceCinematicLayer -- Invalid parameter 1, expected a game object
+  0x00897240  LuaPlayBinkMovie -- Expected type name for parameter 1
+  0x00897278  LuaPlayBinkMovie -- Expected type string for parameter 1
+  0x00897540  LuaCinematicZoom -- Expected float param 1 time, float param 2 delta
+  0x00897590  LuaCinematicZoom -- This command only when the cinematic manager is in story mode
+  0x008975E8  LuaCinematicZoom -- Invalid parameter 1, expected a float
+  0x00897628  LuaCinematicZoom -- Invalid parameter 2, expected a float
+  0x00897850  LuaAllowLocalizedSFX -- Command only valid in a land tactical game.
+  0x00897898  LuaAllowLocalizedSFX -- Expected bool parameter 1
+  0x008978D0  LuaAllowLocalizedSFX -- invalid type for parameter 1.  Expected bool.
+  0x00897AF8  LuaSetCinematicEnvironment -- No active game mode.
+  0x00897B30  LuaSetCinematicEnvironment -- Command only valid in a tactical game.
+  0x00897B80  LuaSetCinematicEnvironment -- Unable to retrieve RTS scene from game mode.
+  0x00897BD0  LuaSetCinematicEnvironment -- Expected bool parameter 1
+  0x00897C10  LuaSetCinematicEnvironment -- invalid type for parameter 1.  Expected bool.
+  0x00897D00  LuaSetNewEnvironment -- No active game mode.
+  0x00897D30  LuaSetNewEnvironment -- Command only valid in a tactical game.
+  0x00897D70  LuaSetNewEnvironment -- Unable to retrieve RTS scene from game mode.
+  0x00897DB8  LuaSetNewEnvironment -- Expected int parameter 1
+  0x00897DF0  LuaSetNewEnvironment -- invalid type for parameter 1.  Expected int.
+  0x00898020  LuaWeatherAudioPause -- Command only valid in a land tactical game.
+  0x00898068  LuaWeatherAudioPause -- Expected bool parameter 1
+  0x008980A0  LuaWeatherAudioPause -- invalid type for parameter 1.  Expected bool.
+  0x00898190  LuaStartCinematicSpaceRetreat -- Unable to retrieve current game mode.
+  0x008981E0  LuaStartCinematicSpaceRetreat -- Command only valid in a space tactical game.
+  0x00898230  LuaStartCinematicSpaceRetreat -- Expected player id for parameter 1
+  0x00898280  LuaStartCinematicSpaceRetreat -- Invalid parameter 1, expected an int value for player_id
+  0x008982E0  LuaStartCinematicSpaceRetreat -- Invalid parameter 2, expected an float value for delay time
+  0x00898340  LuaStartCinematicSpaceRetreat -- Unable to locate valid retreat coordinator
+  0x00898390  LuaStartCinematicSpaceRetreat -- Unable to locate valid space retreat coordinator
+  0x00898A68  EvaluatePerception
+  0x00898AE8  EvaluateTypeList
+  0x00898B80  Evaluate_In_Galactic_Context
+  0x0089B350  GameObjectWrapper::Lua_Set_Prefer_Ground_Over_Space -- Missing required boolean parameter.
+  0x0089B3B0  GameObjectWrapper::Lua_Set_Prefer_Ground_Over_Space -- Object invalid or missing Unit_AI behavior.
+  0x008A0F90  GameObjectWrapper::Lua_Is_In_End_Cinematic -- Missing required boolean parameter.
+  0x008A4B48  Evaluate
+  0x008A8198  Data/Scripts/Evaluators/
+  0x008A81B8  .\Data\Scripts\Evaluators\
+  0x008A93D8  TaskForceClass::Lua_Set_As_Goal_System_Removable -- No params
+  0x008A9420  TaskForceClass::Lua_Set_As_Goal_System_Removable -- Invalid parameter 1, expected boolean
+  0x008AA5A0  PlayerWrapper::Lua_Give_Money -- Missing required parameter.
+  0x008AA5E0  PlayerWrapper::Lua_Give_Money -- Parameter 1 must be a number.
+  0x008AA620  PlayerWrapper::Lua_Set_Tech_Level -- Missing required parameter.
+  0x008AA670  PlayerWrapper::Lua_Set_Tech_Level -- Parameter 1 must be a number.
+  0x008AA8D0  PlayerWrapper::Lua_Retreat -- No retreat coordinator!  What's going on?
+  0x008AA920  PlayerWrapper::Lua_Unlock_Tech -- invalid number of parameters.  Expected 1, got %d.
+  0x008AA980  PlayerWrapper::Lua_Unlock_Tech -- invalid type for parameter 1.  Expected game object type.
+  0x008AA9E0  PlayerWrapper::Lua_Unlock_Tech -- type %s is already unlocked.
+  0x008AAA20  PlayerWrapper::Lua_Lock_Tech -- invalid number of parameters.  Expected 1, got %d.
+  0x008AAA80  PlayerWrapper::Lua_Lock_Tech -- invalid type for parameter 1.  Expected game object type.
+  0x008AAAE0  PlayerWrapper::Lua_Lock_Tech -- type %s is already locked.
+  0x008AAB20  PlayerWrapper::Lua_Enable_As_Actor -- This player has no AI attached to it.
+  0x008AAB70  PlayerWrapper::Lua_Is_Enemy -- invalid number of parameters.  Expected 1, got %d.
+  0x008AABD0  PlayerWrapper::Lua_Is_Enemy -- invalid type for parameter 1.  Expected player object.
+  0x008AAC30  PlayerWrapper::Lua_Is_Ally -- invalid number of parameters.  Expected 1, got %d.
+  0x008AAC90  PlayerWrapper::Lua_Is_Ally -- invalid type for parameter 1.  Expected player object.
+  0x008AACF0  PlayerWrapper::Lua_Select_Object -- invalid number of parameters.  Expected 1, got %d.
+  0x008AAD50  PlayerWrapper::Lua_Select_Object -- invalid type for parameter 1.  Expected game object.
+  0x008AB040  PlayerWrapper::Lua_Set_Black_Market_Tutorial -- Missing required parameter.
+  0x008AB090  PlayerWrapper::Lua_Set_Black_Market_Tutorial -- invalid type for parameter 1.  Expected boolean.
+  0x008AB100  PlayerWrapper::Lua_Set_Sabotage_Tutorial -- Missing required parameter.
+  0x008AB150  PlayerWrapper::Lua_Set_Sabotage_Tutorial -- invalid type for parameter 1.  Expected boolean.
+  0x008AB250  PlayerWrapper::Make_Ally -- attempt to ally with mystery player who appears to have been removed from the game.
+  0x008AB360  layerWrapper::Make_Enemy -- attempt to make an enemy of mystery player who appears to have been removed from the game.
+  0x008B4078  Not a leaf evaluator.
+  0x008B4440  Evaluator_Clean_Up
+  0x008B6970  GalacticFreeStoreClass::Lua_Is_Unit_Safe -- Only %d parameters provided, needed 1
+  0x008B69D0  GalacticFreeStoreClass::Lua_Is_Unit_Safe -- Parameter 1 is not a valid freestore object.
+  0x008B7AF0  Evaluate_Perception: Invalid number of parameters.  Expected 2 or 3, got %d.
+  0x008B7B40  Evaluate_Perception: Invalid parameter type for parameter 1. Expected string.
+  0x008B7B90  Evaluate_Perception: Unrecognised perception function %s.
+  0x008B7BD0  Evaluate_Perception: Invalid parameter type for parameter 2.  Expected player object.
+  0x008B7C30  Evaluate_Perception: Invalid parameter type for parameter 3.  Expected AI target location or game object.
+  0x008B7CA0  Evaluate_Perception: target is already dead.
+  0x008B7CD0  Evaluate_Perception: Cannot evaluate perceptions for players with no AI.
+  0x008B7D20  Evaluate_Perception: Cannot evaluate perception - AI not yet initialized.  Ask again later.
+  0x008B7D80  Evaluate_Perception: Error evaluating perception function %s.
+  0x008B8580  Evaluate_Type_List: Invalid number of parameters.  Expected 3, got %d.
+  0x008B85D0  Evaluate_Type_List: Invalid parameter type for parameter 1. Expected Player Wrapper.
+  0x008B8628  Evaluate_Type_List: AI target location is defunct.
+  0x008B8660  Evaluate_Type_List: Invalid parameter type for parameter 3. Expected weighted type list.
+  0x008B86C0  Evaluate_Type_List: parameter 2 should be a planet target.
+  0x008B9080  Evaluate_In_Galactic_Context: This function may only be used in tactical games spawned from campaign mode.
+  0x008B90F0  Evaluate_In_Galactic_Context: Invalid number of parameters.  Expected 2, got %d.
+  0x008B9150  Evaluate_In_Galactic_Context: Invalid parameter type for parameter 1. Expected string.
+  0x008B91B0  Evaluate_In_Galactic_Context: Unrecognised perception function %s.
+  0x008B9200  Evaluate_In_Galactic_Context: Invalid parameter type for parameter 2.  Expected player object.
+  0x008B9260  Evaluate_In_Galactic_Context: AI player %s has no galactic AI.
+  0x008B9A60  LuaReinforceCommandClass::Reinforce -- Command only valid in a tactical game.
+  0x008B9AB0  LuaReinforceCommandClass::Reinforce -- Invalid number of parameters.
+  0x008B9B00  LuaReinforceCommandClass::Reinforce -- Invalid parameter for player.
+  0x008B9B50  LuaReinforceCommandClass::Reinforce -- Invalid parameter for type.
+  0x008B9BA0  LuaReinforceCommandClass::Reinforce -- Invalid position parameter.
+  0x008B9BE8  LuaSpawnUnitCommandClass -- Invalid number of parameters.
+  0x008B9C28  LuaSpawnUnitCommandClass -- Invalid parameter for player.
+  0x008B9C68  LuaSpawnUnitCommandClass -- Invalid parameter for type.
+  0x008B9CA0  LuaSpawnUnitCommandClass -- Invalid position parameter.
+  0x008B9FB0  LuaFindMarkerCommandClass -- Command only valid in a tactical game.
+  0x008B9FF8  LuaFindMarkerCommandClass -- Invalid number of parameters.
+  0x008BA040  LuaFindMarkerCommandClass -- Expected type or name for parameter 1
+  0x008BA088  LuaFindMarkerCommandClass -- Unable to resolve type name
+  0x008BAE20  LuaFOWRevealCommandClass -- Command only valid in a tactical game.
+  0x008BAE70  LuaFOWRevealCommandClass -- Requires 2 parameters: (player, object, [radius]).
+  0x008BAEC0  LuaFOWRevealCommandClass -- Expected player object as first parameter.
+  0x008BAF08  LuaFOWRevealCommandClass -- Expected object as 2nd parameter.
+  0x008BAF48  LuaFOWRevealCommandClass -- Expected number as 3rd parameter.
+  0x008BAF90  LuaFOWRevealCommandClass -- Requires at least 1 parameters: (player).
+  0x008BAFE0  LuaFOWRevealCommandClass -- Requires at least 2 parameters: (player, object).
+  0x008BB030  LuaFOWRevealCommandClass -- Expected 3rd parameter for reveal radius.
+  0x008BB080  LuaFOWRevealCommandClass -- Undable to get a valid position from parameter 2.
+  0x008BB3A0  Assemble_Fleet -- invalid type for parameter 1.  Expected lua table of units.
+  0x008BD760  Spawn_Special_Weapon -- attempt to spawn weapon for unknown player who has been removed from the game.
+  0x008C0400  GalacticTaskForceClass::Lua_Launch_Units -- Planet: %s is now under blockade, can't launch units for TF: %s
+  0x008C0470  GalacticTaskForceClass::Lua_Land_Units -- No units in TaskForce %s, or no FleetObject
+  0x008C99E0  Error: (%s) Evaluation_Interval_In_Secs cannot be less than zero. Set it to 0.0
+  0x008C9A30  if you don't want the ability to evaluate.
+  0x008CE658  Evaluate_Attack_Ability
+  0x008ECDA8  ERROR_DS_MEMBERSHIP_EVALUATED_LOCALLY
+  0x008FCF80  $Lua: Lua 5.0.2 Copyright (C) 1994-2004 Tecgraf, PUC-Rio $
+  0x008FCFF8  $URL: www.lua.org $
+  0x008FD020  Lua 5.0.2
+  0x008FD090  value for `lua_getinfo' is not a function
+  0x008FD0D0  attempt to %s %s `%s' (a %s value)
+  0x008FD0F8  attempt to %s a %s value
+  0x008FD140  attempt to compare two %s values
+  0x008FD168  attempt to compare %s with %s
+  0x008FD3A0  attempt to yield across metamethod/C-call boundary
+  0x008FD860  [string "
+  0x008FE068  ?;?.lua
+  0x008FE460  Lua function expected
+  0x009CC94A  ?Init_Perception_DLL@@YAXPEAV?$DynamicEnumConversionClass@W4PerceptionTokenType@@@@P6A_NPEAVPerceptionContextClass@@W4PerceptionTokenType@@2@ZP6A_NPEBV2@AEAVPerceptionEvaluationStateClass@@AEAN@ZP6AXAEBV2@AEBVPerceptionFunctionClass@@@ZP6AMMM@ZP6APEAXI@ZP6A_NAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@ZP6AXAEBV67@@ZP6APEBVDatabaseUIntConversionClass@@AEBV67@@ZP84@EAA_N2N@ZP84@EAAXXZPEAVMegaFileManagerClass@@PEA_NAEBV?$DynamicVectorClass@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@@@Z
+  0x009CCB5E  ?Evaluate@PerceptionFunctionClass@@QEBA_NAEBVPerceptionContextClass@@AEAN@Z
+  0x00A46870  .?AVLuaVar@@
+  0x00A46890  .?AV?$LuaValue@N$03@@
+  0x00A468C0  .?AV?$PooledObjectClass@V?$LuaValue@N$03@@$0IA@VEmptyLockerClass@@@@
+  0x00A4A8D8  .?AVLuaScriptClass@@
+  0x00A4A900  .?AVLuaUserVar@@
+  0x00A4A930  .?AV?$LuaValue@V?$map@V?$SmartPtr@VLuaVar@@@@V1@VLuaHashCompare@@V?$allocator@U?$pair@$$CBV?$SmartPtr@VLuaVar@@@@V1@@std@@@std@@@std@@$00@@
+  0x00A4A9D0  .?AV?$PooledObjectClass@V?$LuaValue@V?$map@V?$SmartPtr@VLuaVar@@@@V1@VLuaHashCompare@@V?$allocator@U?$pair@$$CBV?$SmartPtr@VLuaVar@@@@V1@@std@@@std@@@std@@$00@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AAA0  .?AV?$LuaValue@PEAX$02@@
+  0x00A4AAD0  .?AV?$PooledObjectClass@V?$LuaValue@PEAX$02@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AB28  .?AV?$LuaValue@_N$04@@
+  0x00A4AB50  .?AV?$PooledObjectClass@V?$LuaValue@_N$04@@$0IA@VEmptyLockerClass@@@@
+  0x00A4ABB0  .?AV?$LuaValue@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@$05@@
+  0x00A4AC20  .?AV?$PooledObjectClass@V?$LuaValue@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@$05@@$0IA@VEmptyLockerClass@@@@
+  0x00A4ACB8  .?AV?$LuaValue@P6AXH@Z$06@@
+  0x00A4ACF0  .?AV?$PooledObjectClass@V?$LuaValue@P6AXH@Z$06@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AD50  .?AV?$LuaValue@P6AXXZ$07@@
+  0x00A4AD80  .?AV?$PooledObjectClass@V?$LuaValue@P6AXXZ$07@@$0IA@VEmptyLockerClass@@@@
+  0x00A4ADE0  .?AV?$LuaValue@PEAX$09@@
+  0x00A4AE10  .?AV?$PooledObjectClass@V?$LuaValue@PEAX$09@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AE70  .?AV?$LuaMemberFunctionWrapper@VLuaScriptClass@@@@
+  0x00A4AEC0  .?AV?$LuaValue@V?$vector@V?$SmartPtr@VLuaVar@@@@V?$allocator@V?$SmartPtr@VLuaVar@@@@@std@@@std@@$01@@
+  0x00A4AF40  .?AV?$PooledObjectClass@V?$LuaValue@V?$vector@V?$SmartPtr@VLuaVar@@@@V?$allocator@V?$SmartPtr@VLuaVar@@@@@std@@@std@@$01@@$0IA@VEmptyLockerClass@@@@
+  0x00A4AFE8  .?AV?$LuaMemberFunctionWrapper@VLuaUserVar@@@@
+  0x00A4B058  .?AVLuaScriptMessage@@
+  0x00A4B080  .?AVLuaDebugBreak@@
+  0x00A4B0A8  .?AVLuaCustomScriptMessage@@
+  0x00A4B100  .?AVLuaScriptExit@@
+  0x00A4B128  .?AVLuaCreateThread@@
+  0x00A4B150  .?AV?$LuaMemberFunctionWrapper@VLuaCreateThread@@@@
+  0x00A4B198  .?AVLuaStringCompare@@
+  0x00A4B1C0  .?AVLuaDebugPrint@@
+  0x00A4B1E8  .?AVLuaConsolePrint@@
+  0x00A4B240  .?AV?$LuaMemberFunctionWrapper@VGlobalValue@@@@
+  0x00A4B2B0  .?AV?$LuaMemberFunctionWrapper@VThreadValue@@@@
+  0x00A4B2F0  .?AVLuaMessagePopup@@
+  0x00A4B318  .?AVLuaGetThreadID@@
+  0x00A4B370  .?AVLuaScriptWrapper@@
+  0x00A4B3A0  .?AV?$PooledObjectClass@VLuaScriptWrapper@@$0EA@VEmptyLockerClass@@@@
+  0x00A4B400  .?AV?$LuaMemberFunctionWrapper@VLuaScriptWrapper@@@@
+  0x00A4B448  .?AVLuaExternalFunction@@
+  0x00A4B480  .?AV?$PooledObjectClass@VLuaExternalFunction@@$0EA@VEmptyLockerClass@@@@
+  0x00A4B500  .?AV?$LuaMemberFunctionWrapper@VGetEvent@@@@
+  0x00A52000  .?AV?$LuaMemberFunctionWrapper@VAIFreeStoreClass@@@@
+  0x00A53908  .?AVEvaluatePerceptionClass@@
+  0x00A53A30  .?AVEvaluateTypeListClass@@
+  0x00A53AE0  .?AVLuaFindPathClass@@
+  0x00A53B08  .?AVLuaStoryEventClass@@
+  0x00A53B38  .?AVLuaAddObjectiveClass@@
+  0x00A53B68  .?AVEvaluateGalacticContextClass@@
+  0x00A53C98  .?AVLuaReinforceCommandClass@@
+  0x00A53CC8  .?AVLuaSpawnUnitCommandClass@@
+  0x00A53CF8  .?AVLuaCreateGenericObjectClass@@
+  0x00A53D30  .?AVLuaFindMarkerCommandClass@@
+  0x00A53D60  .?AVLuaFindAllHintsCommandClass@@
+  0x00A53DF0  .?AVLuaGameMessageClass@@
+  0x00A53F78  .?AVLuaPlayMusicClass@@
+  0x00A53FA0  .?AVLuaStopAllMusicClass@@
+  0x00A53FD0  .?AVLuaResumeModeBasedMusicClass@@
+  0x00A543E0  .?AVLuaStartCinematicCamera@@
+  0x00A54410  .?AVLuaEndCinematicCamera@@
+  0x00A54440  .?AVLuaSuspendAI@@
+  0x00A54468  .?AVLuaCreatePosition@@
+  0x00A54490  .?AVLuaLockControls@@
+  0x00A544B8  .?AVLuaRotateCameraTo@@
+  0x00A544E0  .?AVLuaRotateCameraBy@@
+  0x00A54508  .?AVLuaZoomCamera@@
+  0x00A54530  .?AVLuaCameraToFollow@@
+  0x00A54558  .?AVLuaScrollCameraTo@@
+  0x00A54580  .?AVLuaFadeOn@@
+  0x00A545A0  .?AVLuaFadeOff@@
+  0x00A545C8  .?AVLuaLetterBoxOn@@
+  0x00A545F0  .?AVLuaLetterBoxOff@@
+  0x00A54618  .?AVLuaLetterBoxIn@@
+  0x00A54640  .?AVLuaLetterBoxOut@@
+  0x00A54668  .?AVLuaFadeScreenIn@@
+  0x00A54690  .?AVLuaFadeScreenOut@@
+  0x00A546B8  .?AVLuaPointCamera@@
+  0x00A546E0  .?AVLuaFindObjectType@@
+  0x00A54768  .?AVLuaSetCinematicTargetKey@@
+  0x00A54798  .?AVLuaTransitionCinematicTargetKey@@
+  0x00A547D0  .?AVLuaSetCinematicCameraKey@@
+  0x00A54800  .?AVLuaTransitionCinematicCameraKey@@
+  0x00A54838  .?AVLuaHideObject@@
+  0x00A54860  .?AVLuaHideSubObject@@
+  0x00A54888  .?AVLuaTransitionToTacticalCamera@@
+  0x00A548C0  .?AVLuaCreateCinematicTransport@@
+  0x00A548F8  .?AVLuaEnableFog@@
+  0x00A54920  .?AVLuaPromoteToSpaceCinematicLayer@@
+  0x00A54958  .?AVLuaPlayBinkMovie@@
+  0x00A54980  .?AVLuaStopBinkMovie@@
+  0x00A549A8  .?AVLuaForceWeather@@
+  0x00A549D0  .?AVLuaResumeHyperspaceIn@@
+  0x00A54A00  .?AVLuaCinematicZoom@@
+  0x00A54A28  .?AVLuaStopAllSpeech@@
+  0x00A54A50  .?AVLuaRemoveAllText@@
+  0x00A54A78  .?AVLuaAllowLocalizedSFX@@
+  0x00A54AA8  .?AVLuaMasterVolumeRestore@@
+  0x00A54AD8  .?AVLuaGetGameMode@@
+  0x00A54B00  .?AVLuaSetCinematicEnvironment@@
+  0x00A54B38  .?AVLuaSetNewEnvironment@@
+  0x00A54B68  .?AVLuaStartCinematicMode@@
+  0x00A54B98  .?AVLuaEndCinematicMode@@
+  0x00A54BC8  .?AVLuaWeatherAudioPause@@
+  0x00A54BF8  .?AVLuaStartCinematicSpaceRetreat@@
+  0x00A54C30  .?AVLuaDoEndCinematicCleanup@@
+  0x00A54C60  .?AVLuaIsMultiplayerMode@@
+  0x00A54C90  .?AVLuaGetTime@@
+  0x00A54CB8  .?AV?$LuaMemberFunctionWrapper@VLuaGetTime@@@@
+  0x00A54CF8  .?AVLuaGameRandom@@
+  0x00A54D20  .?AV?$LuaMemberFunctionWrapper@VLuaGameRandom@@@@
+  0x00A56A40  .?AV?$LuaMemberFunctionWrapper@VGameObjectWrapper@@@@
+  0x00A584A8  .?AVTheEvaluatorScriptManagerClass@@
+  0x00A584E0  .?AV?$DatabaseObjectManagerClass@VLuaScriptClass@@@@
+  0x00A588B0  .?AV?$LuaMemberFunctionWrapper@VTaskForceClass@@@@
+  0x00A58980  .?AV?$LuaMemberFunctionWrapper@VPlayerWrapper@@@@
+  0x00A58A60  .?AV?$LuaMemberFunctionWrapper@VGameObjectTypeWrapper@@@@
+  0x00A58B40  .?AV?$LuaMemberFunctionWrapper@VAITargetLocationWrapper@@@@
+  0x00A58C20  .?AV?$LuaMemberFunctionWrapper@VPositionWrapper@@@@
+  0x00A5B1B8  .?AVPerceptualEvaluatorClass@@
+  0x00A5B1E8  .?AVPerceptualEvaluatorDiagnosticsNodeClass@@
+  0x00A5B230  .?AV?$VisiblePerceptualEvaluatorClass@VPerceptualEvaluatorClass@@@@
+  0x00A5B290  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VPerceptualEvaluatorClass@@@@
+  0x00A5B2F0  .?AVFunctionPerceptualEvaluatorClass@@
+  0x00A5B328  .?AVGameObjectTypePerceptualEvaluatorClass@@
+  0x00A5B370  .?AV?$VisiblePerceptualEvaluatorClass@VGameObjectTypePerceptualEvaluatorClass@@@@
+  0x00A5B3E0  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VGameObjectTypePerceptualEvaluatorClass@@@@
+  0x00A5B448  .?AVPlanetTypePerceptualEvaluatorClass@@
+  0x00A5B490  .?AV?$VisiblePerceptualEvaluatorClass@VPlanetTypePerceptualEvaluatorClass@@@@
+  0x00A5B4F0  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VPlanetTypePerceptualEvaluatorClass@@@@
+  0x00A5B558  .?AVScriptPerceptualEvaluatorClass@@
+  0x00A5B6B0  .?AVPlanetPerceptualEvaluatorClass@@
+  0x00A5B6E8  .?AVGameObjectPerceptualEvaluatorClass@@
+  0x00A5B730  .?AV?$FoggedPerceptualUnitEvaluatorClass@VPlanetPerceptualEvaluatorClass@@@@
+  0x00A5B790  .?AV?$FoggedPerceptualEvaluatorClass@VPlanetPerceptualEvaluatorClass@@@@
+  0x00A5B7F0  .?AV?$VisiblePerceptualEvaluatorClass@VPlanetPerceptualEvaluatorClass@@@@
+  0x00A5B850  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VPlanetPerceptualEvaluatorClass@@@@
+  0x00A5B970  .?AVGalacticPlayerPerceptualEvaluatorClass@@
+  0x00A5B9B0  .?AVPlayerPerceptualEvaluatorClass@@
+  0x00A5B9F0  .?AV?$VisiblePerceptualEvaluatorClass@VGalacticPlayerPerceptualEvaluatorClass@@@@
+  0x00A5BA60  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VGalacticPlayerPerceptualEvaluatorClass@@@@
+  0x00A5BAC8  .?AVGamePerceptualEvaluatorClass@@
+  0x00A5BB00  .?AVGalacticGamePerceptualEvaluatorClass@@
+  0x00A5BB40  .?AV?$VisiblePerceptualEvaluatorClass@VGalacticGamePerceptualEvaluatorClass@@@@
+  0x00A5BBA0  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VGalacticGamePerceptualEvaluatorClass@@@@
+  0x00A5C160  .?AV?$LuaMemberFunctionWrapper@VWeightedTypeListClass@@@@
+  0x00A5C1E0  .?AV?$LuaMemberFunctionWrapper@VGalacticFreeStoreClass@@@@
+  0x00A5C390  .?AV?$LuaMemberFunctionWrapper@VFindPlanetClass@@@@
+  0x00A5C400  .?AV?$LuaMemberFunctionWrapper@VFindTargetClass@@@@
+  0x00A5C528  .?AVLuaDiscreteDistributionClass@@
+  0x00A5C560  .?AV?$LuaMemberFunctionWrapper@VLuaDiscreteDistributionClass@@@@
+  0x00A5C5B8  .?AVLuaFOWRevealCommandClass@@
+  0x00A5C5E8  .?AVLuaFOWCellsClass@@
+  0x00A5C610  .?AV?$LuaMemberFunctionWrapper@VLuaFOWCellsClass@@@@
+  0x00A5C660  .?AV?$LuaMemberFunctionWrapper@VLuaFOWRevealCommandClass@@@@
+  0x00A5C6E8  .?AVLuaSFXCommandsClassClass@@
+  0x00A5C720  .?AV?$LuaMemberFunctionWrapper@VLuaSFXCommandsClassClass@@@@
+  0x00A5CBF0  .?AV?$LuaMemberFunctionWrapper@VBudgetWrapper@@@@
+  0x00A5D180  .?AV?$LuaMemberFunctionWrapper@VGalacticTaskForceClass@@@@
+  0x00A5D1D0  .?AVSpaceLocationPerceptualEvaluatorClass@@
+  0x00A5D210  .?AVTacticalLocationPerceptualEvaluatorClass@@
+  0x00A5D250  .?AVSpaceShipPerceptualEvaluatorClass@@
+  0x00A5D288  .?AVTacticalUnitPerceptualEvaluatorClass@@
+  0x00A5D2C8  .?AVTacticalObjectPerceptualEvaluatorClass@@
+  0x00A5D310  .?AV?$VisiblePerceptualEvaluatorClass@VSpaceShipPerceptualEvaluatorClass@@@@
+  0x00A5D370  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VSpaceShipPerceptualEvaluatorClass@@@@
+  0x00A5D3D8  .?AVSpaceStructurePerceptualEvaluatorClass@@
+  0x00A5D420  .?AVTacticalStructurePerceptualEvaluatorClass@@
+  0x00A5D460  .?AVSpacePlayerPerceptualEvaluatorClass@@
+  0x00A5D4A0  .?AVTacticalPlayerPerceptualEvaluatorClass@@
+  0x00A5D4E0  .?AVTacticalGamePerceptualEvaluatorClass@@
+  0x00A5D520  .?AVSpaceGamePerceptualEvaluatorClass@@
+  0x00A5D558  .?AVLandPlayerPerceptualEvaluatorClass@@
+  0x00A5D5A0  .?AV?$VisiblePerceptualEvaluatorClass@VLandPlayerPerceptualEvaluatorClass@@@@
+  0x00A5D600  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VLandPlayerPerceptualEvaluatorClass@@@@
+  0x00A5D668  .?AVLandGamePerceptualEvaluatorClass@@
+  0x00A5D6A0  .?AVLandLocationPerceptualEvaluatorClass@@
+  0x00A5D6E0  .?AV?$VisiblePerceptualEvaluatorClass@VLandLocationPerceptualEvaluatorClass@@@@
+  0x00A5D740  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VLandLocationPerceptualEvaluatorClass@@@@
+  0x00A5D7A8  .?AVLandUnitPerceptualEvaluatorClass@@
+  0x00A5D7E0  .?AV?$VisiblePerceptualEvaluatorClass@VLandUnitPerceptualEvaluatorClass@@@@
+  0x00A5D840  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VLandUnitPerceptualEvaluatorClass@@@@
+  0x00A5D8A8  .?AVLandStructurePerceptualEvaluatorClass@@
+  0x00A5D8E8  .?AVPlanetForcePerceptualEvaluatorClass@@
+  0x00A5D928  .?AVPlanetEnemyForcePerceptualEvaluatorClass@@
+  0x00A5D970  .?AVPlanetFriendlyForcePerceptualEvaluatorClass@@
+  0x00A5D9C0  .?AV?$FoggedPerceptualUnitEvaluatorClass@VPlanetForcePerceptualEvaluatorClass@@@@
+  0x00A5DA30  .?AV?$FoggedPerceptualEvaluatorClass@VPlanetForcePerceptualEvaluatorClass@@@@
+  0x00A5DA90  .?AV?$VisiblePerceptualEvaluatorClass@VPlanetForcePerceptualEvaluatorClass@@@@
+  0x00A5DAF0  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VPlanetForcePerceptualEvaluatorClass@@@@
+  0x00A5DB58  .?AVHintPerceptualEvaluatorClass@@
+  0x00A5DB90  .?AVHintEvaluatorDiagnosticsNodeClass@@
+  0x00A5DBC8  .?AVRootLookupPerceptualEvaluatorClass@@
+  0x00A5DC40  .?AV?$VisiblePerceptualEvaluatorClass@VPlayerPerceptualEvaluatorClass@@@@
+  0x00A5DCA0  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VPlayerPerceptualEvaluatorClass@@@@
+  0x00A5DD00  .?AV?$VisiblePerceptualEvaluatorClass@VGamePerceptualEvaluatorClass@@@@
+  0x00A5DD60  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VGamePerceptualEvaluatorClass@@@@
+  0x00A5DDC0  .?AVGameForcePerceptualEvaluatorClass@@
+  0x00A5DE00  .?AV?$VisiblePerceptualEvaluatorClass@VGameForcePerceptualEvaluatorClass@@@@
+  0x00A5DE60  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VGameForcePerceptualEvaluatorClass@@@@
+  0x00A5DF30  .?AV?$LuaMemberFunctionWrapper@VSpaceTaskForceClass@@@@
+  0x00A5DFE0  .?AV?$LuaMemberFunctionWrapper@VLandTaskForceClass@@@@
+  0x00A5F1B0  .?AV?$LuaMemberFunctionWrapper@VStoryPlotWrapper@@@@
+  0x00A5F2E0  .?AV?$VisiblePerceptualEvaluatorClass@VTacticalLocationPerceptualEvaluatorClass@@@@
+  0x00A5F350  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VTacticalLocationPerceptualEvaluatorClass@@@@
+  0x00A5F3C0  .?AV?$VisiblePerceptualEvaluatorClass@VTacticalObjectPerceptualEvaluatorClass@@@@
+  0x00A5F430  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VTacticalObjectPerceptualEvaluatorClass@@@@
+  0x00A5F4A0  .?AV?$VisiblePerceptualEvaluatorClass@VTacticalUnitPerceptualEvaluatorClass@@@@
+  0x00A5F500  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VTacticalUnitPerceptualEvaluatorClass@@@@
+  0x00A5F570  .?AV?$VisiblePerceptualEvaluatorClass@VTacticalPlayerPerceptualEvaluatorClass@@@@
+  0x00A5F5E0  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VTacticalPlayerPerceptualEvaluatorClass@@@@
+  0x00A5F650  .?AV?$VisiblePerceptualEvaluatorClass@VTacticalGamePerceptualEvaluatorClass@@@@
+  0x00A5F6B0  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VTacticalGamePerceptualEvaluatorClass@@@@
+  0x00A5F830  .?AV?$LuaMemberFunctionWrapper@VStoryEventWrapper@@@@
+  0x00A60AA0  .?AV?$LuaMemberFunctionWrapper@VBlockingStatus@@@@
+
+============================================================
+[SOURCE_PATHS] — 14 hits
+============================================================
+  0x00118A03  u3L90u.H
+  0x00118AC6  u3L90u.H
+  0x001792F4  t4;L$,u.H
+  0x0020A9D0  H9X t.H
+  0x0020AA80  H9X t.H
+  0x0029C06F  u@9{Xt.H
+  0x004433B8  .C|z(u&
+  0x00443501  .C|z/u-
+  0x00641B5F  D8~6t.H
+  0x00696D80  C<9G$u.H
+  0x00800A08  .\Data\Resources\GUIDialog\Resource.h
+  0x008799F0  Data/Scripts/AI/SpaceMode/
+  0x00879A10  Data/Scripts/AI/LandMode/
+  0x00879A30  Data/Scripts/AI/StoryArc/
+
+============================================================
+[EAW_ASSETS] — 545 hits
+============================================================
+  0x002452EC  D$`.lua
+  0x005DE8A8  GalacticH
+  0x005FB8D5  D$x.lua@
+  0x007FFAA8  Splash.TGA
+  0x00800888  i_button_temporary.tga
+  0x008008A0  i_attention00.tga
+  0x008026C7  fPetroglyphFoC64Save
+  0x008029F8  Petroglyph\Empire At War - Forces of Corruption
+  0x00802CF8  Star Wars: Empire at War: Forces of Corruption
+  0x00802DB8  Data\Patch.meg
+  0x00802DC8  Data\patch2.meg
+  0x00802DD8  Data\64Patch.meg
+  0x00802E18  Software\Petroglyph
+  0x00802E30  Software\Petroglyph\StarWars FOC
+  0x00802E58  Software\Petroglyph\StarWars FOC\Profiles
+  0x008031D8  .\ScreenShots\Shot%05d.tga
+  0x00803228  SPLASH_E3.TGA
+  0x008034F0  %s_%s_%s.tga
+  0x00804240  http://www.petroglyphgames.com/
+  0x00804D70  i_tree_arrow_right.tga
+  0x00804F28  TEXT_BUTTON_RETURN_TO_GALACTIC
+  0x00805340  load_overlay.tga
+  0x00805C80  i_pa_weather_sun.tga
+  0x00805CB0  i_pa_weather_fire.tga
+  0x00805CE0  i_pa_weather_snow.tga
+  0x00805D10  i_pa_weather_rain.tga
+  0x00805D40  i_pa_weather_wind.tga
+  0x00815858  Menuback_Overlay.TGA
+  0x008167B8  i_button_space_station.tga
+  0x008167D8  i_button_ground_base.tga
+  0x008167F8  i_button_space_unitcount.tga
+  0x00816818  i_button_ground_unitcount.tga
+  0x00816AB0  i_dialogue_blank.tga
+  0x00816AC8  checked_box.tga
+  0x00816B20  .\Data\Audio\SFX\SFX2D_ENGLISH.meg
+  0x00816B48  .\Data\Audio\SFX\SFX2D_GERMAN.meg
+  0x00816B70  .\Data\Audio\SFX\SFX2D_FRENCH.meg
+  0x00816B98  .\Data\Audio\SFX\SFX2D_SPANISH.meg
+  0x00816BC0  .\Data\Audio\SFX\SFX2D_ITALIAN.meg
+  0x00816BE8  .\Data\Audio\SFX\SFX2D_JAPANESE.meg
+  0x00816C10  .\Data\Audio\SFX\SFX2D_KOREAN.meg
+  0x00816C38  .\Data\Audio\SFX\SFX2D_CHINESE.meg
+  0x00816C60  .\Data\Audio\SFX\SFX2D_RUSSIAN.meg
+  0x00816C88  .\Data\Audio\SFX\SFX2D_POLISH.meg
+  0x00816CB0  .\Data\Audio\SFX\SFX2D_THAI.meg
+  0x00817780  Unit_Galactic_Slicer_Tani
+  0x00817D10  Galactic_Back.tga
+  0x00817D50  Generic_Space.tga
+  0x00817D68  Generic_Land.tga
+  0x00818110  red_dot.tga
+  0x00818120  yellow_dot.tga
+  0x00818130  green_dot.tga
+  0x00818690  i_tree_arrow_2right.tga
+  0x008186C0  i_tree_arrow_3right.tga
+  0x008186F0  i_tree_arrow_down.tga
+  0x00818ED0  Generic_Flat_B.tga
+  0x008190E0  w_generic_white.tga
+  0x00819840  w_shadow_blob.tga
+  0x00819858  w_light_blob.tga
+  0x008198A8  p_particle_master.tga
+  0x00819900  W_Generic_White.tga
+  0x0081AF88  missing_texture_xxx.tga
+  0x0081B200  AlamoEngine
+  0x0081B7D0  D_master_decal.tga
+  0x0081BDB8  p_particle_depth_master.tga
+  0x0081D8E8  AlamoCleanup
+  0x0081D960  _ALAMO_RENDER_PHASE
+  0x0081D9C8  _ALAMO_VERTEX_TYPE
+  0x0081D9E0  _ALAMO_VERTEX_PROC
+  0x0084E708  \MT_CommandBar.tga
+  0x0084E720  \MT_CommandBarCompressed.dds
+  0x0084EAE8  %s.dds
+  0x0084EAF0  %s.tga
+  0x008501D8  "PETROGLYPH_DIALOG_IMAGE"
+  0x008529B0  Data\Audio\SFX\SFX2D_Non_Localized.meg
+  0x008529D8  Data\Audio\SFX\SFX2D_English.meg
+  0x00852A00  Data\Audio\SFX\SFX3D_Non_Localized.Meg
+  0x008531D0  Software\LucasArts\Star Wars Empire At War\1.0
+  0x00853240  ..\..\EAW\Run\LaunchSWEAW.bat
+  0x00853270  ..\GameData\sweaw.exe
+  0x00853288  ..\GameData\
+  0x008532A8  Forces of Corruption requires Empire At War 
+  0x00853328  Forces of Corruption
+  0x00853340  Unable to locate the installation path of Star Wars: Empire At War. Cannot launch the Force of Corruption Expansion!
+  0x00855A30  ./?.lua;./?.lc
+  0x00855C60  LuaScript Error in %s.lua!
+  0x00855FD0  ?.lua;
+  0x00858FB0  DEFAULTPOINTER_00.TGA
+  0x0085BFA0  Galactic_Fleet
+  0x0085C150  tractor_beam00.tga
+  0x0085CBB8  i_button_unknown.tga
+  0x0085CBD0  i_icon_stealth.tga
+  0x0085CD90  data/art/models/i_tutorial_arrow.alo
+  0x0085CEB8  TEXT_ENCYCLOPEDIA_PLANET_CORRUPTION_INCOME
+  0x0085CF08  TEXT_CORRUPTION_ENCYCLOPEDIA_TITLE
+  0x0085CF80  e_line2.tga
+  0x0085CF90  i_bar_icons_space.tga
+  0x0085CFA8  i_bar_icons_land.tga
+  0x0085CFD0  e_topbar2.tga
+  0x0085CFE0  e_topbar.tga
+  0x0085D000  e_line.tga
+  0x0085D010  e_against_frame.tga
+  0x0085D210  %s%d.tga
+  0x0085D240  TEXT_CORRUPTION_UNIT_REQUIREMENT
+  0x0085D268  TEXT_CORRUPTION_MISSION_REQUIREMENT
+  0x0085D290  TEXT_CORRUPTION_PLANET_REQUIREMENT
+  0x0085D2B8  TEXT_CORRUPTION_REQUIREMENT
+  0x0085D520  missing.tga
+  0x0085D550  i_encyclopedia_border.tga
+  0x0085D5D8  data/art/models/p_hero_empire_fx.alo
+  0x0085D600  data/art/models/i_tactical_corrupt.alo
+  0x0085D628  data/art/models/p_icon_corrupt.alo
+  0x0085EF80  TEXT_GALACTIC_PERCENTAGE_CONTROL
+  0x0085F020  TEXT_WIN_CORRUPTION_MISSION
+  0x0085F058  TEXT_LOSE_CORRUPTION_MISSION
+  0x0085F0C0  Galactic_All_Planets_Controlled
+  0x0085F0E0  Galactic_Opponent_Controls_No_Planets
+  0x0085F108  Galactic_Credits_Accrued
+  0x0085F128  Galactic_Super_Weapon_Destruction
+  0x0085F150  Galactic_Percentage_Control
+  0x0085F170  Galactic_Conquer_Enemy_Homeworld_And_Leader
+  0x0085F1A0  Galactic_Super_Weapon_Destroys_Last_Enemy_Planet
+  0x0085F1D8  Galactic_Super_Weapon_Kills_Enemy_Leader
+  0x0085F208  Galactic_Kill_Enemy_Leader
+  0x0085F228  Galactic_Control_Named_Planets
+  0x0085F248  Galactic_Cycles_Elapsed
+  0x0085F968  radar_galactic
+  0x00861488  g_corruption_text
+  0x008614A0  g_corruption_icon
+  0x00861A20  text_galactic_help
+  0x00861AF8  Movie_galactic
+  0x00862078  radar_galactic_adv_map
+  0x00862C70  corruption_shell
+  0x008658B8  i_radar_default_blip.tga
+  0x00866240  Galactic_Fleet_Hyperspace
+  0x00867748  select_overlay.tga
+  0x00867A30  data/art/models/w_planet_select_neutral.alo
+  0x00867A60  data/art/models/i_game_arrow.alo
+  0x00867D50  i_icon_raid.tga
+  0x00867E78  TEXT_ABILITY_SLOT_REMOVE_CORRUPTION
+  0x00867EE0  TEXT_CORRUPTION_REMOVE_PERCENT
+  0x00867F00  TEXT_CORRUPTION_PERCENT
+  0x00867FB0  data/art/models/i_galactic_radar.alo
+  0x008681A8  maptemp.tga
+  0x00868228  shield_range.tga
+  0x00868258  TEXT_CORRUPTION_REMOVAL_DISPLAY_TEXT
+  0x008682B8  open_galactic_sabotage_menu
+  0x008682D8  TEXT_CORRUPTION_REQUIRED
+  0x008682F8  TEXT_PLANETARY_CORRUPTION_INFO
+  0x00868318  TEXT_CORRUPTION_TITLE
+  0x00868330  close_corruption_dialog
+  0x00868348  choose_corruption_option
+  0x00868400  W_galaxy_line.tga
+  0x00868418  w_galaxy_dot.tga
+  0x00868430  W_galaxy_line_alpha.tga
+  0x00868AE0  increase_corruption
+  0x00868AF8  decrease_corruption
+  0x00868B80  Removing corruption line between %s and %s
+  0x00868BB0  Corruption line between %s and %s
+  0x00868E00  Galactic_Build_Complete_Planet_Ping
+  0x00869388  TEXT_OBJECT_GALACTIC_FLEET
+  0x008693A8  Galactic_Squadron
+  0x0086B0F0  i_sa_defend_mode.tga
+  0x0086B108  i_sa_deploy.tga
+  0x0086B118  i_sa_interdict.tga
+  0x0086B130  i_sa_barrage_area.tga
+  0x0086B148  i_sa_capture_vehicles.tga
+  0x0086B168  i_sa_spread_out.tga
+  0x0086B180  i_sa_power_to_engines.tga
+  0x0086B1A0  i_sa_rocket_attack.tga
+  0x0086B1B8  i_sa_power_to_weapons.tga
+  0x0086B1D8  i_sa_tractor_beam.tga
+  0x0086B1F0  i_sa_fire_energy_weapon.tga
+  0x0086B210  i_sa_missile_jammer.tga
+  0x0086B228  i_sa_evasive_maneuvers.tga
+  0x0086B248  i_sa_all_ships_concentrate_fire.tga
+  0x0086B270  i_sa_sprint.tga
+  0x0086B280  i_sa_stim_pack.tga
+  0x0086B298  i_sa_s_foil_mode.tga
+  0x0086B2B0  i_sa_maximum_firepower.tga
+  0x0086B2D0  i_sa_swap_weapons.tga
+  0x0086B2E8  i_sa_full_salvo.tga
+  0x0086B300  i_sa_force_cloak.tga
+  0x0086B318  i_sa_sensor_jamming.tga
+  0x0086B330  i_sa_force_crush.tga
+  0x0086B348  i_sa_force_push.tga
+  0x0086B360  i_sa_force_lighting.tga
+  0x0086B378  i_sa_flame_thrower.tga
+  0x0086B390  i_sa_jetpack_jump.tga
+  0x0086B3A8  i_sa_force_protect.tga
+  0x0086B3C0  i_sa_hack_turret.tga
+  0x0086B3D8  i_sa_repair_vehicle.tga
+  0x0086B3F0  i_sa_sticky_bomb.tga
+  0x0086B408  i_sa_electronic_scramble.tga
+  0x0086B428  i_sa_area_heal.tga
+  0x0086B440  i_sa_join_me.tga
+  0x0086B458  i_sa_tow_cable_attack.tga
+  0x0086B478  i_sa_sensor_ping.tga
+  0x0086B490  i_sa_cover_me.tga
+  0x0086B4A8  i_sa_Harmonic_bomb.tga
+  0x0086B4C0  i_sa_drop_bomb.tga
+  0x0086B4D8  i_sa_weaken_enemy.tga
+  0x0086B4F0  i_sa_drain_life.tga
+  0x0086B508  i_sa_blast.tga
+  0x0086B518  i_sa_shield_flare.tga
+  0x0086B530  i_sa_deploy_squad.tga
+  0x0086B548  i_sa_stun.tga
+  0x0086B558  i_sa_contaminate.tga
+  0x0086B570  i_sa_berserker.tga
+  0x0086B588  i_sa_force_sight.tga
+  0x0086B5A0  i_sa_saber_throw.tga
+  0x0086B5B8  i_sa_laser_defense.tga
+  0x0086B5D0  i_sa_force_confuse.tga
+  0x0086B5E8  i_sa_leech_shields.tga
+  0x0086B600  i_sa_tactical_bribe.tga
+  0x0086B618  i_sa_cluster_bomb.tga
+  0x0086B630  i_sa_place_remote_bomb.tga
+  0x0086B650  i_sa_detonate_remote_bomb.tga
+  0x0086B670  i_sa_infection.tga
+  0x0086B688  i_sa_proximity_mines.tga
+  0x0086B6A8  i_sa_buzz_droids.tga
+  0x0086B6C0  i_sa_summon.tga
+  0x0086B6D0  i_sa_corrupt_systems.tga
+  0x0086B6F0  i_sa_hunt.tga
+  0x0086B700  i_sa_lure.tga
+  0x0086B710  i_sa_self_destruct.tga
+  0x0086B728  i_sa_deploy_stormtroopers.tga
+  0x0086B748  i_sa_ion_cannon_shot.tga
+  0x0086B768  i_sa_lucky_shot.tga
+  0x0086C098  STORY_CORRUPTION_CHANGED
+  0x0086C0E8  STORY_GALACTIC_SABOTAGE
+  0x0086C100  STORY_CORRUPTION_TACTICAL_COMPLETE
+  0x0086C128  STORY_CORRUPTION_TACTICAL_FAILED
+  0x0086C150  STORY_OPEN_CORRUPTION
+  0x0086C168  STORY_CORRUPTION_INCREASED
+  0x0086C5F8  ENABLE_GALACTIC_REVEAL
+  0x0086C720  PAUSE_GALACTIC_GAME
+  0x0086C888  PAUSE_GALACTIC
+  0x0086C898  UNPAUSE_GALACTIC
+  0x0086C918  RESET_GALACTIC_FILTERS
+  0x0086CAD8  REMOVE_CORRUPTION
+  0x0086CB90  RESTRICT_CORRUPTION
+  0x0086CC20  ENABLE_GALACTIC_CORRUPTION_HOLOGRAM
+  0x0086D168  CORRUPTION_SLOT
+  0x0086D178  REMOVE_CORRUPTION_SLOT
+  0x0086D1A8  CORRUPTION_NONE
+  0x0086D228  CORRUPTION_ANY
+  0x0086F540  STORY REWARD - ERROR!  Galactic reveal failed due to incomplete parameters.
+  0x0086F590  STORY REWARD - Turning galactic planet autoreveal OFF
+  0x0086F5C8  STORY REWARD - Turning galactic planet autoreveal ON
+  0x00870758  STORY REWARD - Pausing galactic mode.
+  0x00870780  STORY REWARD - Unpausing galactic mode.
+  0x008709E8  STORY REWARD - Resetting (turning OFF) all galactic filters
+  0x008712F0  STORY REWARD - ERROR!  REMOVE_CORRUPTION needs a planet name. 
+  0x00871340  STORY REWARD - ERROR!  REMOVE_CORRUPTION failed due to invalid unit %s.
+  0x00871390  STORY REWARD - ERROR!  REMOVE_CORRUPTION failed due to non-existent unit %s.
+  0x008713E0  STORY REWARD - ERROR!  REMOVE_CORRUPTION failed due to %s not being a planet.
+  0x00871430  STORY REWARD - Removing corruption on %s in %d seconds
+  0x008716E0  STORY REWARD - Forcing corruption slot to be shown at planet %s
+  0x00871730  STORY REWARD - Forcing remove corruption slot to be shown at planet %s
+  0x00871C70  STORY REWARD - ERROR!  RESTRICT_CORRUPTION takes a parameter, the planet name
+  0x00871CC0  STORY REWARD - ERROR!  RESTRICT_CORRUPTION failed due to invalid planet %s.
+  0x00871D10  STORY REWARD - ERROR!  RESTRICT_CORRUPTION failed due to non-existent planet %s.
+  0x00871D68  STORY REWARD - RESTRICT_CORRUPTION, Corruption %s at %s.
+  0x008721F0  STORY REWARD - ERROR!  ENABLE_GALACTIC_CORRUPTION_HOLOGRAM takes the planet name as the first parameter.
+  0x00872260  STORY REWARD - ERROR!  ENABLE_GALACTIC_CORRUPTION_HOLOGRAM failed due to invalid planet %s.
+  0x008722C0  STORY REWARD - ERROR!  ENABLE_GALACTIC_CORRUPTION_HOLOGRAM failed due to non-existent planet %s.
+  0x00872330  STORY REWARD - ENABLE_GALACTIC_CORRUPTION_HOLOGRAM, Hologram %s at %s.
+  0x00873E48  lightning_default.tga
+  0x008746C0  TheGameScoringManagerClass::Send_Galactic_Unit_Destroyed_Signal
+  0x00874700  Galactic_Unit_Destroyed_Event
+  0x00874780  Galactic_Production_Canceled_Event
+  0x008747A8  Galactic_Production_Begin_Event
+  0x00874848  Galactic_Production_End_Event
+  0x008748E0  Galactic_Neutralized_Event
+  0x00874900  Galactic_Starbase_Level_Change
+  0x00874920  Galactic_Planet_Faction_Change
+  0x00876588  GalacticMode
+  0x00876800  Mon_Mothma.tga
+  0x00876868  Tarkin.tga
+  0x008798E0  .\Data\XML\AI\GalacticMarkup\
+  0x0087AA88                 Galactic Path : 
+  0x0087C5D8  EVENT_GALACTIC_SELL
+  0x0087C7A8  Galactic_Model_Name
+  0x0087C7C0  Galactic_Fleet_Override_Model_Name
+  0x0087C7E8  Destroyed_Galactic_Model_Name
+  0x0087CFD8  GalacticBehavior
+  0x0087D088  Galactic_Position
+  0x0087D4F0  Planet_Corruption_Removal_Base_Cost
+  0x0087DDE0  Always_Instantiate_Galactic
+  0x00880038  Galactic_Influence_Range
+  0x00880178  Galactic_Fleet_Override_Icon_Index
+  0x008825C8  Destroy_When_Used_As_Corruption_Prereq
+  0x00882658  Corruption_1_Type
+  0x00882670  Corruption_1_Credit_Cost
+  0x00882690  Corruption_1_Required_Unit_Type
+  0x008826B0  Corruption_1_Required_Unit_Count
+  0x008826D8  Corruption_1_Required_Mission_Type
+  0x00882700  Corruption_1_Required_Mission_Count
+  0x00882728  Corruption_1_Required_Planets
+  0x00882748  Corruption_1_Tactical_Map_Name
+  0x00882768  Corruption_1_Tactical_Script_Name
+  0x00882790  Corruption_1_Tactical_Game_Mode
+  0x008827B0  Corruption_1_Success_Speech_Event
+  0x008827D8  Corruption_1_Success_Bink_Hologram_Name
+  0x00882800  Corruption_1_Failure_Speech_Event
+  0x00882828  Corruption_1_Failure_Bink_Hologram_Name
+  0x00882850  Corruption_1_Mission_Briefing
+  0x00882870  Corruption_1_Mission_Commencing_Speech_Event
+  0x008828A0  Corruption_1_Success_Credit_Bonus
+  0x008828C8  Corruption_1_Success_Planet_Specific_Tactical_Upgrade
+  0x00882900  Corruption_1_Success_Unlock_Unit_Type
+  0x00882928  Corruption_2_Type
+  0x00882940  Corruption_2_Credit_Cost
+  0x00882960  Corruption_2_Required_Unit_Type
+  0x00882980  Corruption_2_Required_Unit_Count
+  0x008829A8  Corruption_2_Required_Mission_Type
+  0x008829D0  Corruption_2_Required_Mission_Count
+  0x008829F8  Corruption_2_Required_Planets
+  0x00882A18  Corruption_2_Tactical_Map_Name
+  0x00882A38  Corruption_2_Tactical_Script_Name
+  0x00882A60  Corruption_2_Tactical_Game_Mode
+  0x00882A80  Corruption_2_Success_Speech_Event
+  0x00882AA8  Corruption_2_Success_Bink_Hologram_Name
+  0x00882AD0  Corruption_2_Failure_Speech_Event
+  0x00882AF8  Corruption_2_Failure_Bink_Hologram_Name
+  0x00882B20  Corruption_2_Mission_Briefing
+  0x00882B40  Corruption_2_Mission_Commencing_Speech_Event
+  0x00882B70  Corruption_2_Success_Credit_Bonus
+  0x00882B98  Corruption_2_Success_Planet_Specific_Tactical_Upgrade
+  0x00882BD0  Corruption_2_Success_Unlock_Unit_Type
+  0x00882BF8  Corruption_3_Type
+  0x00882C10  Corruption_3_Credit_Cost
+  0x00882C30  Corruption_3_Required_Unit_Type
+  0x00882C50  Corruption_3_Required_Unit_Count
+  0x00882C78  Corruption_3_Required_Mission_Type
+  0x00882CA0  Corruption_3_Required_Mission_Count
+  0x00882CC8  Corruption_3_Required_Planets
+  0x00882CE8  Corruption_3_Tactical_Map_Name
+  0x00882D08  Corruption_3_Tactical_Script_Name
+  0x00882D30  Corruption_3_Tactical_Game_Mode
+  0x00882D50  Corruption_3_Success_Speech_Event
+  0x00882D78  Corruption_3_Success_Bink_Hologram_Name
+  0x00882DA0  Corruption_3_Failure_Speech_Event
+  0x00882DC8  Corruption_3_Failure_Bink_Hologram_Name
+  0x00882DF0  Corruption_3_Mission_Briefing
+  0x00882E10  Corruption_3_Mission_Commencing_Speech_Event
+  0x00882E40  Corruption_3_Success_Credit_Bonus
+  0x00882E68  Corruption_3_Success_Planet_Specific_Tactical_Upgrade
+  0x00882EA0  Corruption_3_Success_Unlock_Unit_Type
+  0x008836C0  Starting_Galactic_Camera_Position
+  0x00883C18  Galactic_Right_Button_Scroll_Speed_Factor
+  0x00883C48  Galactic_Scroll_Plane
+  0x00884068  AIUsesFogOfWarGalactic
+  0x008842B0  Max_Galactic_Zoom_Distance
+  0x008842D0  Min_Galactic_Zoom_Speed
+  0x008842E8  Max_Galactic_Zoom_Speed
+  0x00884300  Galactic_Zoom_Acceleration
+  0x00884320  Galactic_Zoom_Light_Level
+  0x00884340  Galactic_Zoom_In_Light_Angle
+  0x00884360  Galactic_Zoom_Out_Light_Angle
+  0x00884380  Galactic_Zoom_In_Station_Offset
+  0x008843A0  Galactic_Zoom_In_Station_Rotation
+  0x00885F20  Object_Max_Speed_Multiplier_Galactic
+  0x00887190  Activated_Remove_Corruption_Ability_Names
+  0x00887890  Animate_During_Galactic_Mode_Pause
+  0x00887AA0  AI_Uses_Galactic_Pop_Cap
+  0x00887B60  Corruption_Particle_Name
+  0x00887B80  Corruption_Particle_Line_Name
+  0x00887BA0  Particle_Brightness_Per_Corruption_Level
+  0x00887BD0  Particle_Scale_Per_Corruption_Level
+  0x00887BF8  Particle_Energy_Per_Corruption_Level
+  0x00887C20  Corruption_Line_Radius
+  0x00887C38  Corruption_Line_Start_End_Offset
+  0x00887C60  Corruption_Line_Grow_Seconds
+  0x00887C80  Corruption_Path_Color
+  0x00887C98  Corruption_Path_Width
+  0x00887CB0  Corruption_Path_Offset
+  0x00887E68  Corruption_Hyperspace_Bonus
+  0x00887E88  Corruption_Choice_Icon_Name
+  0x00887EA8  Corruption_Choice_Name
+  0x00887EC0  Corruption_Choice_Benefit
+  0x00887EE0  Corruption_Mission_Requirement_Icon_Name
+  0x00887F10  Corruption_Choice_Encyclopedia
+  0x00887F30  Corruption_Choice_Income_Percentage
+  0x00887F58  Corruption_Planet_Icon
+  0x00887F70  Corruption_Planet_Icon_Encyclopedia_Name
+  0x00887FA0  Corruption_Planet_Icon_Encyclopedia_Desc
+  0x00887FE8  Corruption_Encyclopedia_Backdrop
+  0x00888010  Corruption_Encyclopedia_Header
+  0x00888030  Corruption_Encyclopedia_Complete
+  0x00888058  Corruption_Encyclopedia_Incomplete
+  0x00888080  Corruption_Encyclopedia_Money_Icon
+  0x008880A8  Corruption_Encyclopedia_Left_Edge
+  0x008880D0  Corruption_Encyclopedia_Spacing
+  0x00888168  Audio_Galactic_3D_Saturation_Distance_Mod
+  0x008881E8  Audio_Galactic_3D_Rolloff_Distance_Mod
+  0x00888260  Audio_Galactic_3D_Listener_Z_Pullback_Dist
+  0x00889CB0  Human_Victory_Galactic_Control
+  0x00889D70  AI_Victory_Galactic_Control
+  0x00889E60  Corruption_Level_Override
+  0x00889F78  Benefits_From_Corruption
+  0x00889F98  Corruption_Galactic_Production_Time_Multipliers
+  0x00889FC8  Corruption_Galactic_Production_Price_Multipliers
+  0x0088A000  Corruption_Tactical_Production_Time_Multipliers
+  0x0088A030  Corruption_Tactical_Production_Price_Multipliers
+  0x0088A068  Corruption_Tactical_Build_Pad_Time_Multipliers
+  0x0088A098  Corruption_Tactical_Build_Pad_Price_Multipliers
+  0x0088B1D0  SFXEvent_Tactical_Corruption_Mission_Commencing
+  0x0088B400  SFXEvent_Corruption_Removed
+  0x0088BBE0  SFXEvent_HUD_Won_Tactical_Corruption_Mission
+  0x0088BC10  SFXEvent_HUD_Lost_Tactical_Corruption_Mission
+  0x0088C7C0  Galactic_Advisor_Hints
+  0x0088C8E8  Automatic_Planetary_Corruption_Upgrade_Type
+  0x0088DF48  Cost_Mod_By_Planetary_Corruption_Level
+  0x0088E398  Required_Corruption_Level
+  0x0088E3D8  Num_Corruption_Levels_To_Remove
+  0x0088E3F8  Corruption_Removal_Cost_Multiplier
+  0x0088E420  Corruption_Removal_Time_In_Secs
+  0x0088F190  Galactic_Build_Time_Multiplier
+  0x0088F1F0  Galactic_AI_Contrast_Multiplier
+  0x0088F250  Galactic_AI_Goal_Cycle_Sleep_Duration
+  0x00890880  Corruption_Ability
+  0x00890898  corruption_dialog
+  0x008908B0  Error - Cannot complete corruption action because the defiler no longer exists!
+  0x00890900  Corruption underway at %s.
+  0x00898680  Galactic_Time
+  0x00898B80  Evaluate_In_Galactic_Context
+  0x0089FB00  GameObjectWrapper::Move_Galactic -- invalid number of parameters.  Expected 1, got %d.
+  0x0089FB60  GameObjectWrapper::Move_Galactic -- invalid type for parameter 1.  Expected planet.
+  0x0089FBC0  GameObjectWrapper::Move_Galactic -- this function is only valid on fleets.
+  0x0089FC10  GameObjectWrapper::Activate_Ability_Galactic -- invalid number of parameters.  Expected 0 or 1, got %d.
+  0x0089FC80  GameObjectWrapper::Activate_Ability_Galactic -- unknown object type %s.
+  0x0089FCD0  GameObjectWrapper::Activate_Ability_Galactic -- invalid type for parameter 1.  Expected object type.
+  0x0089FD40  GameObjectWrapper::Activate_Ability_Galactic -- %s is not at a planet.
+  0x0089FD90  GameObjectWrapper::Activate_Ability_Galactic -- %s is landed.  Must be in orbit to activate abilities.
+  0x008A0F30  GameObjectWrapper::Get_Planet_Location -- this function is only valid on galactic mode objects.
+  0x008A3F58  Remove_Corruption_Ability
+  0x008A3F78  TEXT_REMOVE_CORRUPTION_BEGIN
+  0x008A3F98  i_information00.tga
+  0x008A40E0  Galactic_Sabotage_Ability
+  0x008A5C30  IsCorruptionTransitionActive
+  0x008A5C50  IsConnectedToCorruption
+  0x008A5D38  TimeSinceCorruptionChange
+  0x008A7238  CorruptionType
+  0x008A7248  Corruption_None
+  0x008A7258  Corruption_Intimidation
+  0x008A7270  Corruption_Piracy
+  0x008A7288  Corruption_Kidnapping
+  0x008A72A0  Corruption_Racketeering
+  0x008A72B8  Corruption_Corrupt_Militia
+  0x008A72D8  Corruption_Bribery
+  0x008A72F0  Corruption_Black_Market
+  0x008A7308  Corruption_Bonded_Citizens
+  0x008A75B0  Damage_Force_Corruption
+  0x008A7BF0  Galactic_Automatic
+  0x008AA870  PlayerWrapper::Release_Credits_For_Tactical - player has no associated galactic AI.
+  0x008AC7A0  Error: (%s) Cost_Mod_By_Planetary_Corruption_Level must have at least two control points!
+  0x008ACBA8  TEXT_HERO_NEUTRALIZE_COST_PLANETARY_CORRUPTION
+  0x008B5AF8  Galactic_Stealth_Ability
+  0x008B65F0  GalacticFreeStoreClass::Is_Unit_In_Transit -- Only %d parameters provided, needed 1
+  0x008B6650  GalacticFreeStoreClass::Is_Unit_In_Transit -- Parameter 1 is not a valid freestore object.
+  0x008B66B0  GalacticFreeStoreClass::Move_To -- Galactic mode is currently paused.  Move not possible, try again later.
+  0x008B6720  GalacticFreeStoreClass::Move_To -- Only %d parameters provided, needed 2
+  0x008B6770  GalacticFreeStoreClass::Move_To -- Parameter 1 is not a valid freestore object.
+  0x008B67C0  GalacticFreeStoreClass::Move_To -- Parameter 2 is not a valid destination.
+  0x008B6810  GalacticFreeStoreClass::Move_To -- Unit is on a restricted planet and cannot be moved.
+  0x008B6870  GalacticFreeStoreClass::Move_To -- Unit is already in the middle of a move.
+  0x008B68C0  GalacticFreeStoreClass::Move_To -- Unit cannot be launched into orbit, %s must be under blockade.
+  0x008B6928  GalacticFreeStoreClass::Move_To -- Can't get object's fleet.
+  0x008B6970  GalacticFreeStoreClass::Lua_Is_Unit_Safe -- Only %d parameters provided, needed 1
+  0x008B69D0  GalacticFreeStoreClass::Lua_Is_Unit_Safe -- Parameter 1 is not a valid freestore object.
+  0x008B8CB0  Find_Path -- this script function is only supported in galactic mode.
+  0x008B9080  Evaluate_In_Galactic_Context: This function may only be used in tactical games spawned from campaign mode.
+  0x008B90F0  Evaluate_In_Galactic_Context: Invalid number of parameters.  Expected 2, got %d.
+  0x008B9150  Evaluate_In_Galactic_Context: Invalid parameter type for parameter 1. Expected string.
+  0x008B91B0  Evaluate_In_Galactic_Context: Unrecognised perception function %s.
+  0x008B9200  Evaluate_In_Galactic_Context: Invalid parameter type for parameter 2.  Expected player object.
+  0x008B9260  Evaluate_In_Galactic_Context: AI player %s has no galactic AI.
+  0x008B9CD8  Galactic_Spawn_Unit -- Invalid number of parameters.
+  0x008B9D10  Galactic_Spawn_Unit -- Invalid parameter for player.
+  0x008B9D48  Galactic_Spawn_Unit -- Invalid parameter for type.
+  0x008B9D80  Galactic_Spawn_Unit -- Invalid planet parameter.
+  0x008B9DC0  Galactic_Spawn_Unit -- Create returned NULL for %s at planet: %s.
+  0x008BDF98  W_TextScroll.alo
+  0x008C0180  GalacticTaskForceClass::Move_To -- No units in TaskForce %s, or no FleetObject
+  0x008C01D0  GalacticTaskForceClass::Move_To -- TaskForce %s is not at any planet.
+  0x008C0220  GalacticTaskForceClass::Move_To -- No destination set for TaskForce %s
+  0x008C0270  GalacticTaskForceClass::Move_To -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C02D0  GalacticTaskForceClass::Form_Units -- No units in TaskForce %s, or no FleetObject
+  0x008C0330  GalacticTaskForceClass::Form_Units -- TaskForce %s is not at any planet
+  0x008C0380  GalacticTaskForceClass::Add_Force -- Invalid Parameter 1, expected a GameObjectClass (and dead ones don't count)
+  0x008C0400  GalacticTaskForceClass::Lua_Launch_Units -- Planet: %s is now under blockade, can't launch units for TF: %s
+  0x008C0470  GalacticTaskForceClass::Lua_Land_Units -- No units in TaskForce %s, or no FleetObject
+  0x008C04D0  GalacticTaskForceClass::Invade -- No units in TaskForce %s, or no FleetObject
+  0x008C0520  GalacticTaskForceClass::Invade -- taskforce is not in orbit at a planet
+  0x008C0570  GalacticTaskForceClass::Invade -- surface of %s is not accessible
+  0x008C05C0  GalacticTaskForceClass::Invade -- No transports in Taskforce %s.
+  0x008C07C0  GalacticTaskForceClass::Raid -- TaskForce %s is not at any planet.
+  0x008C0810  GalacticTaskForceClass::Raid -- TaskForce %s is not raid capable.
+  0x008C0860  GalacticTaskForceClass::Raid -- No destination set for TaskForce %s
+  0x008C08B0  GalacticTaskForceClass::Raid -- Parameter 1 is not a valid destination for TaskForce %s
+  0x008C5B00  W_Cable.tga
+  0x008C64D8  TEXT_CORRUPTION_BEGIN
+  0x008C68B0  Error: The only activation style supported for %s is Galactic_Automatic.
+  0x008C7E30  Error: (%s) The only currently supported Activation_Style is Galactic_Automatic.
+  0x008CB4D0  Error: (%s) is Galactic_Automatic but has a Duration_In_Secs of %g
+  0x008E9848  ERROR_INTERNAL_DB_CORRUPTION
+  0x008FCA28  W_Laser_Pill.tga
+  0x008FCB7F  >lensflare.tga
+  0x008FCFF8  $URL: www.lua.org $
+  0x008FE068  ?;?.lua
+  0x008FEB18  Petroglyph:
+  0x008FF068  W_Space_FOW_Grid.tga
+  0x008FF080  W_Space_Reinforce_FOW_Grid.tga
+  0x009DEF45  ~Copyright (c) Village Type & Design LLC, 2005. All rights reserved.Empire At War LightRegular5.000;VLLG;EmpireAtWar-LightEmpireAtWar-LightVersion 5.000 2005EmpireAtWar-LightVillage Type & Design LLCEmpire At WarLight
+  0x009EEFED  qCopyright (c) Village Type & Design LLC, 2005. All rights reserved.Empire At War BoldRegular5.000;VLLG;EmpireAtWar-BoldEmpireAtWar-BoldVersion 5.000 2005EmpireAtWar-BoldVillage Type & Design LLCEmpire At WarBold
+  0x009FF3EA  Copyright (c) Village Type & Design LLC, 2005. All rights reserved.Empire At War MediumRegular5.000;VLLG;EmpireAtWar-MediumEmpireAtWar-MediumVersion 5.000 2005EmpireAtWar-MediumVillage Type & Design LLCEmpire At WarMedium
+  0x00A0F6D2  Copyright (c) Village Type & Design LLC, 2005. All rights reserved.Empire At War StencilRegular5.000;VLLG;EmpireAtWar-StencilEmpireAtWar-StencilVersion 5.000 2005EmpireAtWar-StencilVillage Type & Design LLCEmpire At WarStencil
+  0x00A46A90  .?AV?$SingletonInstance@VGalacticPathFinderClass@@@@
+  0x00A4C3D0  .?AV?$DynamicVectorClass@VCorruptionChoiceProperties@@@@
+  0x00A4E000  .?AVGalacticCameraClass@@
+  0x00A4F4E0  .?AVStoryEventCorruptionLevelClass@@
+  0x00A50C28  .?AVGalacticModeClass@@
+  0x00A522E8  .?AVGalacticPerceptionSystemClass@@
+  0x00A52FC0  .?AVGalacticExecutionPathFinderClass@@
+  0x00A531D8  .?AVCorruptionAbilityClass@@
+  0x00A53440  .?AV?$EventFactoryClass@VGalacticSellEventClass@@$0CO@@@
+  0x00A53490  .?AVGalacticSellEventClass@@
+  0x00A53B68  .?AVEvaluateGalacticContextClass@@
+  0x00A57818  .?AVRemoveCorruptionAbilityClass@@
+  0x00A57850  .?AVGalacticSabotageAbilityClass@@
+  0x00A57F10  .?AV?$EnumConversionClass@W4CorruptionTypeEnum@@@@
+  0x00A5B970  .?AVGalacticPlayerPerceptualEvaluatorClass@@
+  0x00A5B9F0  .?AV?$VisiblePerceptualEvaluatorClass@VGalacticPlayerPerceptualEvaluatorClass@@@@
+  0x00A5BA60  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VGalacticPlayerPerceptualEvaluatorClass@@@@
+  0x00A5BB00  .?AVGalacticGamePerceptualEvaluatorClass@@
+  0x00A5BB40  .?AV?$VisiblePerceptualEvaluatorClass@VGalacticGamePerceptualEvaluatorClass@@@@
+  0x00A5BBA0  .?AV?$VisibleEvaluatorDiagnosticsNodeClass@VGalacticGamePerceptualEvaluatorClass@@@@
+  0x00A5C1B0  .?AVGalacticFreeStoreClass@@
+  0x00A5C1E0  .?AV?$LuaMemberFunctionWrapper@VGalacticFreeStoreClass@@@@
+  0x00A5C958  .?AVGalacticGoalSystemClass@@
+  0x00A5D148  .?AVGalacticTaskForceClass@@
+  0x00A5D180  .?AV?$LuaMemberFunctionWrapper@VGalacticTaskForceClass@@@@
+  0x00A5E530  .?AVGalacticStealthAbilityClass@@
+
+============================================================
+[D3D_RENDERER] — 575 hits
+============================================================
+  0x00427516  TEXTURE_I
+  0x00427685  SHADER_NL9
+  0x008004C0  GamePlayUIClass::Init -- Unable to load texture '%s'
+  0x008009A8  ./Data/art/Textures/
+  0x008030F0  data\art\shaders
+  0x00803108  ..\art\shaders
+  0x00803118  Data\Art\Textures
+  0x00803130  ..\Art\Textures
+  0x00803300  DATA\ART\SHADERS\
+  0x00803318  DATA\ART\SHADERS\TERRAIN\
+  0x00804448  IDC_TEXTURE_MIP_DETAIL_SLIDER
+  0x008044B8  IDC_SHADER_DETAIL_SLIDER
+  0x00805308  data\art\textures
+  0x008164C8  data\art\textures\
+  0x00817D30  temp_map_preview_texture
+  0x00819000  Water Texture scrolling
+  0x00819038  Ice Texture
+  0x00819048  Bump Texture
+  0x00819078  Lava Texture
+  0x00819088  Crust Texture
+  0x00819310  *** WARNING *** alGraphicsDriver::Load_Texture - Failed to find texture (tga/dds) %s
+  0x00819370  *** WARNING *** alGraphicsDriver::Load_Texture - Failed to find texture %s
+  0x00819C60  D3D9 Application
+  0x00819CE0  Could not initialize Direct3D. You may
+  0x00819DC8  Could not find any compatible Direct3D
+  0x00819EB8  No hardware-accelerated Direct3D devices
+  0x00819F20  not available on your Direct3D hardware
+  0x00819F60  Your Direct3D hardware accelerator cannot
+  0x00819FF0  Your Direct3D hardware accelerator cannot
+  0x0081A0E0  not available on your Direct3D hardware
+  0x0081A1B0  Could not reset the Direct3D device.
+  0x0081A1E0  A D3D object has a non-zero reference
+  0x0081A436  Direct3D feature set, but runs very slowly.
+  0x0081A4C8  alD3dVertN
+  0x0081A4D8  alD3dVertNC
+  0x0081A4E8  alD3dVertNU2
+  0x0081A4F8  alD3dVertNU2C
+  0x0081A508  alD3dVertNU2U3
+  0x0081A518  alD3dVertNU2U3U3
+  0x0081A530  alD3dVertNU2U3U3C
+  0x0081A548  alD3dVertRSkinNU2
+  0x0081A560  alD3dVertRSkinNU2C
+  0x0081A578  alD3dVertRSkinNU2U3U3
+  0x0081A590  alD3dVertB4I4NU2
+  0x0081A5A8  alD3dVertB4I4NU2C
+  0x0081A5C0  alD3dVertB4I4NU2U3U3
+  0x0081A5D8  alD3dVertB4I4NU2U3U3C
+  0x0081A5F0  alD3dVertGrass
+  0x0081AEE8  SceneTexture
+  0x0081AF38  DistortionTexture
+  0x0081AF70  PrevFrameTexture
+  0x0081AF88  missing_texture_xxx.tga
+  0x0081B0C0  TEXTURE
+  0x0081B218  Reloading shader: %s
+  0x0081B6F8  diffuseTexture
+  0x0081B708  blendTexture
+  0x0081B718  normalTexture
+  0x0081B728  Bump0Texture
+  0x0081B738  Bump1Texture
+  0x0081B748  ReflectionTexture
+  0x0081B760  RefractionTexture
+  0x0081B778  BaseTexture
+  0x0081B788  CrustTexture
+  0x0081B798  CrustBumpTexture
+  0x0081B7B0  IceTexture
+  0x0081B7C0  BumpTexture
+  0x0081C0F0  D3DFMT_UNKNOWN
+  0x0081C100  D3DFMT_R8G8B8
+  0x0081C110  D3DFMT_A8R8G8B8
+  0x0081C120  D3DFMT_X8R8G8B8
+  0x0081C130  D3DFMT_R5G6B5
+  0x0081C140  D3DFMT_X1R5G5B5
+  0x0081C150  D3DFMT_A1R5G5B5
+  0x0081C160  D3DFMT_A4R4G4B4
+  0x0081C170  D3DFMT_R3G3B2
+  0x0081C180  D3DFMT_A8
+  0x0081C190  D3DFMT_A8R3G3B2
+  0x0081C1A0  D3DFMT_X4R4G4B4
+  0x0081C1B0  D3DFMT_A2B10G10R10
+  0x0081C1C8  D3DFMT_A8B8G8R8
+  0x0081C1D8  D3DFMT_X8B8G8R8
+  0x0081C1E8  D3DFMT_G16R16
+  0x0081C1F8  D3DFMT_A2R10G10B10
+  0x0081C210  D3DFMT_A16B16G16R16
+  0x0081C228  D3DFMT_A8P8
+  0x0081C238  D3DFMT_P8
+  0x0081C248  D3DFMT_L8
+  0x0081C258  D3DFMT_A8L8
+  0x0081C268  D3DFMT_A4L4
+  0x0081C278  D3DFMT_V8U8
+  0x0081C288  D3DFMT_L6V5U5
+  0x0081C298  D3DFMT_X8L8V8U8
+  0x0081C2A8  D3DFMT_Q8W8V8U8
+  0x0081C2B8  D3DFMT_V16U16
+  0x0081C2C8  D3DFMT_A2W10V10U10
+  0x0081C2E0  D3DFMT_UYVY
+  0x0081C2F0  D3DFMT_YUY2
+  0x0081C300  D3DFMT_DXT1
+  0x0081C310  D3DFMT_DXT2
+  0x0081C320  D3DFMT_DXT3
+  0x0081C330  D3DFMT_DXT4
+  0x0081C340  D3DFMT_DXT5
+  0x0081C350  D3DFMT_D16_LOCKABLE
+  0x0081C368  D3DFMT_D32
+  0x0081C378  D3DFMT_D15S1
+  0x0081C388  D3DFMT_D24S8
+  0x0081C398  D3DFMT_D24X8
+  0x0081C3A8  D3DFMT_D24X4S4
+  0x0081C3B8  D3DFMT_D16
+  0x0081C3C8  D3DFMT_L16
+  0x0081C3D8  D3DFMT_VERTEXDATA
+  0x0081C3F0  D3DFMT_INDEX16
+  0x0081C400  D3DFMT_INDEX32
+  0x0081C410  D3DFMT_Q16W16V16U16
+  0x0081C428  D3DFMT_MULTI2_ARGB8
+  0x0081C440  D3DFMT_R16F
+  0x0081C450  D3DFMT_G16R16F
+  0x0081C460  D3DFMT_A16B16G16R16F
+  0x0081C478  D3DFMT_R32F
+  0x0081C488  D3DFMT_G32R32F
+  0x0081C498  D3DFMT_A32B32G32R32F
+  0x0081C4B0  D3DFMT_CxV8U8
+  0x0081C4D0  D3DFMT_
+  0x0081C520   alD3dResource still allocated: %p
+  0x0081C548  D3DRS_ZENABLE
+  0x0081C558  D3DRS_FILLMODE
+  0x0081C568  D3DRS_SHADEMODE
+  0x0081C578  D3DRS_ZWRITEENABLE
+  0x0081C590  D3DRS_ALPHATESTENABLE
+  0x0081C5A8  D3DRS_LASTPIXEL
+  0x0081C5B8  D3DRS_SRCBLEND
+  0x0081C5C8  D3DRS_DESTBLEND
+  0x0081C5D8  D3DRS_CULLMODE
+  0x0081C5E8  D3DRS_ZFUNC
+  0x0081C5F8  D3DRS_ALPHAREF
+  0x0081C608  D3DRS_ALPHAFUNC
+  0x0081C618  D3DRS_DITHERENABLE
+  0x0081C630  D3DRS_ALPHABLENDENABLE
+  0x0081C648  D3DRS_FOGENABLE
+  0x0081C658  D3DRS_SPECULARENABLE
+  0x0081C670  D3DRS_FOGCOLOR
+  0x0081C680  D3DRS_FOGTABLEMODE
+  0x0081C698  D3DRS_FOGSTART
+  0x0081C6A8  D3DRS_FOGEND
+  0x0081C6B8  D3DRS_FOGDENSITY
+  0x0081C6D0  D3DRS_RANGEFOGENABLE
+  0x0081C6E8  D3DRS_STENCILENABLE
+  0x0081C700  D3DRS_STENCILFAIL
+  0x0081C718  D3DRS_STENCILZFAIL
+  0x0081C730  D3DRS_STENCILPASS
+  0x0081C748  D3DRS_STENCILFUNC
+  0x0081C760  D3DRS_STENCILREF
+  0x0081C778  D3DRS_STENCILMASK
+  0x0081C790  D3DRS_STENCILWRITEMASK
+  0x0081C7A8  D3DRS_TEXTUREFACTOR
+  0x0081C7C0  D3DRS_WRAP0
+  0x0081C7D0  D3DRS_WRAP1
+  0x0081C7E0  D3DRS_WRAP2
+  0x0081C7F0  D3DRS_WRAP3
+  0x0081C800  D3DRS_WRAP4
+  0x0081C810  D3DRS_WRAP5
+  0x0081C820  D3DRS_WRAP6
+  0x0081C830  D3DRS_WRAP7
+  0x0081C840  D3DRS_CLIPPING
+  0x0081C850  D3DRS_LIGHTING
+  0x0081C860  D3DRS_AMBIENT
+  0x0081C870  D3DRS_FOGVERTEXMODE
+  0x0081C888  D3DRS_COLORVERTEX
+  0x0081C8A0  D3DRS_LOCALVIEWER
+  0x0081C8B8  D3DRS_NORMALIZENORMALS
+  0x0081C8D0  D3DRS_DIFFUSEMATERIALSOURCE
+  0x0081C8F0  D3DRS_SPECULARMATERIALSOURCE
+  0x0081C910  D3DRS_AMBIENTMATERIALSOURCE
+  0x0081C930  D3DRS_EMISSIVEMATERIALSOURCE
+  0x0081C950  D3DRS_VERTEXBLEND
+  0x0081C968  D3DRS_CLIPPLANEENABLE
+  0x0081C980  D3DRS_POINTSIZE
+  0x0081C990  D3DRS_POINTSIZE_MIN
+  0x0081C9A8  D3DRS_POINTSPRITEENABLE
+  0x0081C9C0  D3DRS_POINTSCALEENABLE
+  0x0081C9D8  D3DRS_POINTSCALE_A
+  0x0081C9F0  D3DRS_POINTSCALE_B
+  0x0081CA08  D3DRS_POINTSCALE_C
+  0x0081CA20  D3DRS_MULTISAMPLEANTIALIAS
+  0x0081CA40  D3DRS_MULTISAMPLEMASK
+  0x0081CA58  D3DRS_PATCHEDGESTYLE
+  0x0081CA70  D3DRS_DEBUGMONITORTOKEN
+  0x0081CA88  D3DRS_POINTSIZE_MAX
+  0x0081CAA0  D3DRS_INDEXEDVERTEXBLENDENABLE
+  0x0081CAC0  D3DRS_COLORWRITEENABLE
+  0x0081CAD8  D3DRS_TWEENFACTOR
+  0x0081CAF0  D3DRS_BLENDOP
+  0x0081CB00  D3DRS_POSITIONDEGREE
+  0x0081CB18  D3DRS_NORMALDEGREE
+  0x0081CB30  D3DRS_SCISSORTESTENABLE
+  0x0081CB48  D3DRS_SLOPESCALEDEPTHBIAS
+  0x0081CB68  D3DRS_ANTIALIASEDLINEENABLE
+  0x0081CB88  D3DRS_MINTESSELLATIONLEVEL
+  0x0081CBA8  D3DRS_MAXTESSELLATIONLEVEL
+  0x0081CBC8  D3DRS_ADAPTIVETESS_X
+  0x0081CBE0  D3DRS_ADAPTIVETESS_Y
+  0x0081CBF8  D3DRS_ADAPTIVETESS_Z
+  0x0081CC10  D3DRS_ADAPTIVETESS_W
+  0x0081CC28  D3DRS_ENABLEADAPTIVETESSELLATION
+  0x0081CC50  D3DRS_TWOSIDEDSTENCILMODE
+  0x0081CC70  D3DRS_CCW_STENCILFAIL
+  0x0081CC88  D3DRS_CCW_STENCILZFAIL
+  0x0081CCA0  D3DRS_CCW_STENCILPASS
+  0x0081CCB8  D3DRS_CCW_STENCILFUNC
+  0x0081CCD0  D3DRS_COLORWRITEENABLE1
+  0x0081CCE8  D3DRS_COLORWRITEENABLE2
+  0x0081CD00  D3DRS_COLORWRITEENABLE3
+  0x0081CD18  D3DRS_BLENDFACTOR
+  0x0081CD30  D3DRS_SRGBWRITEENABLE
+  0x0081CD48  D3DRS_DEPTHBIAS
+  0x0081CD58  D3DRS_WRAP8
+  0x0081CD68  D3DRS_WRAP9
+  0x0081CD78  D3DRS_WRAP10
+  0x0081CD88  D3DRS_WRAP11
+  0x0081CD98  D3DRS_WRAP12
+  0x0081CDA8  D3DRS_WRAP13
+  0x0081CDB8  D3DRS_WRAP14
+  0x0081CDC8  D3DRS_WRAP15
+  0x0081CDD8  D3DRS_SEPARATEALPHABLENDENABLE
+  0x0081CDF8  D3DRS_SRCBLENDALPHA
+  0x0081CE10  D3DRS_DESTBLENDALPHA
+  0x0081CE28  D3DRS_BLENDOPALPHA
+  0x0081CE40  D3DTSS_COLOROP
+  0x0081CE50  D3DTSS_COLORARG1
+  0x0081CE68  D3DTSS_COLORARG2
+  0x0081CE80  D3DTSS_ALPHAOP
+  0x0081CE90  D3DTSS_ALPHAARG1
+  0x0081CEA8  D3DTSS_ALPHAARG2
+  0x0081CEC0  D3DTSS_BUMPENVMAT00
+  0x0081CED8  D3DTSS_BUMPENVMAT01
+  0x0081CEF0  D3DTSS_BUMPENVMAT10
+  0x0081CF08  D3DTSS_BUMPENVMAT11
+  0x0081CF20  D3DTSS_TEXCOORDINDEX
+  0x0081CF38  D3DTSS_BUMPENVLSCALE
+  0x0081CF50  D3DTSS_BUMPENVLOFFSET
+  0x0081CF68  D3DTSS_TEXTURETRANSFORMFLAGS
+  0x0081CF88  D3DTSS_COLORARG0
+  0x0081CFA0  D3DTSS_ALPHAARG0
+  0x0081CFB8  D3DTSS_RESULTARG
+  0x0081CFD0  D3DTSS_CONSTANT
+  0x0081CFE0  D3DSAMP_ADDRESSU
+  0x0081CFF8  D3DSAMP_ADDRESSV
+  0x0081D010  D3DSAMP_ADDRESSW
+  0x0081D028  D3DSAMP_BORDERCOLOR
+  0x0081D040  D3DSAMP_MAGFILTER
+  0x0081D058  D3DSAMP_MINFILTER
+  0x0081D070  D3DSAMP_MIPFILTER
+  0x0081D088  D3DSAMP_MIPMAPLODBIAS
+  0x0081D0A0  D3DSAMP_MAXMIPLEVEL
+  0x0081D0B8  D3DSAMP_MAXANISOTROPY
+  0x0081D0D0  D3DSAMP_SRGBTEXTURE
+  0x0081D0E8  D3DSAMP_ELEMENTINDEX
+  0x0081D100  D3DSAMP_DMAPOFFSET
+  0x0081D518  CLOUD_TEXTURE
+  0x0081D598  FOW_TEXTURE
+  0x0081D640  SKY_CUBE_TEXTURE
+  0x0081D760  alD3dEffect::Load
+  0x0081D7A0  *** WARNING *** alD3dEffect::Load - Failed to load effect %s [%s]
+  0x0081D7F0  *** WARNING *** alD3dEffect::Load - Shader Compile Errors detected on effect %s [%s]
+  0x0081DB28  texture_filename
+  0x0081DB78  PrevSceneTexture
+  0x0081DB90  GradientTexture
+  0x0084DFD0  DiffuseTexture0
+  0x0084DFE0  DiffuseTexture1
+  0x0084DFF0  NormalTexture0
+  0x0084E000  NormalTexture1
+  0x0084E010  BlendTexture
+  0x0084E0D0  float4 m_solidColor  = {0.0f, 1.0f, 0.0f, 1.0f};technique TNoShader<  string LOD="FIXEDFUNCTION";>{
+  0x0084E2DF  VertexShader = NULL;
+  0x0084E2F5  PixelShader  = NULL;
+  0x0084E310  texture inputTexture0 : RENDERCOLORTARGET< float2 ViewPortDimensions = { 1.0, 1.0 };string format = "A8R8G8B8"; >;texture inputTexture1 : RENDERCOLORTARGET< float2 ViewPortDimensions = { 1.0, 1.0 };string format = "A8R8G8B8"; >;sampler Sampler = sampler_state{Texture   = (inputTexture0);MipFilter = LINEAR;MinFilter = LINEAR;MagFilter = LINEAR;};struct VS_OUT{float4 hposition : POSITION;float2 texture0  : TEXCOORD0;};float4 myps( VS_OUT IN ): COLOR{
+  0x0084E4D5  return tex2D( Sampler, IN.texture0 );}technique SceneComposite{pass Pass0< int PassType =1;string ColorRenderTarget="inputTexture0";>{}pass Pass1< int PassType =0;string ColorRenderTarget="inputTexture1";string BindTargetTextures="inputTexture0";>{
+  0x0084E5CE  PixelShader  = compile ps_1_0 myps();   }}
+  0x0084E920  megatexture "%s" "%s" ALPHA EDGE_DOUBLED 2048
+  0x0084E9C0  ArtProcessClass::Copy_Shaders %s to %s
+  0x0084EA20  Compiling Shader: %s
+  0x0084EA80  data\Art\Textures
+  0x0084EB08  Error: texture %s not found in GUI megatexture.
+  0x0084EB40  Error: attempt to override default GUI textures for %s does not specify component textures.
+  0x0084EBA0  Error: unable to read component type when parsing GUI override textures for %s.
+  0x0084EC00  Error: unable to read texture name when parsing GUI override textures for %s.
+  0x008516E0  ShaderReloadingEnabled
+  0x00851710  TextureReloadingEnabled
+  0x00851870  ShaderDetail
+  0x00851890  TextureMipLevel
+  0x00858210  .\Data\Art\Shaders\
+  0x00858228  .\Data\Art\Shaders\Terrain\
+  0x00858260  Error: PGRender::Get_Texture can't Load_Texture() '%s' (allow_default = %d)
+  0x00858420   Texture memory: %10.2fMb
+  0x00858440   Vertex Shader version: 0x%x
+  0x00858460   Pixel Shader version: 0x%x
+  0x00858548    Texture reduction: %d
+  0x00858568    Shader detail level: %d
+  0x008587F0  Shader LOD: %d
+  0x00858F98  .\Data\Art\Textures\
+  0x00864EC8  data/art/textures/%s.mtd
+  0x008657C8  Data\Art\Textures\
+  0x00865D60  LineSubClass::Create_Line -- Unable to load texture '%s'
+  0x00869A10  Texture0
+  0x00869A20  Texture1
+  0x00877580  TERRAIN_TEXTURE_MODIFICATION
+  0x0087E6A8  Projectile_Texture_Slot
+  0x00881160  Terrain_Texture_Modifier_Material
+  0x00881188  Terrain_Texture_Modifier_Join_Distance
+  0x008811B0  Terrain_Texture_Modifier_Square
+  0x008834B0  Texture_Name
+  0x008834C0  Texture_Repeat
+  0x008834D0  Texture_Scroll
+  0x00883610  texture_name
+  0x00883730  Fleet_Movement_Line_Texture_Name
+  0x00883758  Fleet_Hyperspace_Band_Texture_Name
+  0x00883780  LoopWaypointLineTextureName
+  0x008837A0  WaypointLineTextureName
+  0x008846F0  HardPoint_Target_Reticle_Enemy_Texture
+  0x00884718  HardPoint_Target_Reticle_Enemy_Tracked_Texture
+  0x00884748  HardPoint_Target_Reticle_Friendly_Texture
+  0x00884778  HardPoint_Target_Reticle_Friendly_Tracked_Texture
+  0x008847B0  HardPoint_Target_Reticle_Friendly_Repairing_Texture
+  0x008847E8  HardPoint_Target_Reticle_Friendly_Disabled_Texture
+  0x00884820  HardPoint_Target_Reticle_Friendly_Disabled_Tracked_Texture
+  0x00884C80  Water_Render_Target_Resolution
+  0x00887498  Tractor_Beam_Texture
+  0x008874F8  Energy_Beam_Texture
+  0x008886C0  Selected_Texture_Name
+  0x008886D8  Blank_Texture_Name
+  0x008886F0  Icon_Texture_Name
+  0x00888708  Icon_Alternate_Texture_Name
+  0x00888728  Mouse_Over_Texture_Name
+  0x00888740  Disabled_Texture_Name
+  0x00888758  Flash_Texture_Name
+  0x00888770  Bar_Texture_Name
+  0x008887A0  Build_Texture_Name
+  0x008887D8  Cursor_Texture_Name
+  0x00888848  Lower_Effect_Texture_Name
+  0x00888868  Upper_Effect_Texture_Name
+  0x00888888  Overlay_Texture_Name
+  0x008888A0  Overlay2_Texture_Name
+  0x00888968  Swap_Texture
+  0x00888E70  Spark_Texture_Name
+  0x00888EF8  Space_Backdrop_Texture_Name
+  0x00888F18  Land_Backdrop_Texture_Name
+  0x00889080  Texture_Width_Pow_2
+  0x00889098  Texture_Height_Pow_2
+  0x00889100  Header_Texture_Width_Pow_2
+  0x00889120  Header_Texture_Height_Pow_2
+  0x00889140  Polygon_Shader_Name
+  0x00889310  ShaderDetailLevel
+  0x008893B0  TextureMemory
+  0x008893C0  PixelShaderVersionHEX
+  0x008893D8  VertexShaderVersionHEX
+  0x0088D5A8  Beam_Texture
+  0x0088DBB0  Cable_Texture_Name
+  0x0088E4A0  Beam_Texture_Name
+  0x0088F368  Base_Texture
+  0x0088F730  Laser_Beam_Texture
+  0x008AE840  TerrainTextureModificationBehaviorClass
+  0x008CC9E0  Error: (%s) Beam_Texture_Name has not been set.
+  0x008F6EE0  DDERR_NOTEXTUREHW
+  0x008F75A8  DDERR_D3DNOTINITIALIZED
+  0x008F8768  D3DERR_WRONGTEXTUREFORMAT
+  0x008F8788  D3DERR_UNSUPPORTEDCOLOROPERATION
+  0x008F87B0  D3DERR_UNSUPPORTEDCOLORARG
+  0x008F87D0  D3DERR_UNSUPPORTEDALPHAOPERATION
+  0x008F87F8  D3DERR_UNSUPPORTEDALPHAARG
+  0x008F8818  D3DERR_TOOMANYOPERATIONS
+  0x008F8838  D3DERR_CONFLICTINGTEXTUREFILTER
+  0x008F8858  D3DERR_UNSUPPORTEDFACTORVALUE
+  0x008F8878  D3DERR_CONFLICTINGRENDERSTATE
+  0x008F8898  D3DERR_UNSUPPORTEDTEXTUREFILTER
+  0x008F88B8  D3DERR_CONFLICTINGTEXTUREPALETTE
+  0x008F88E0  D3DERR_DRIVERINTERNALERROR
+  0x008F8900  D3DERR_NOTFOUND
+  0x008F8910  D3DERR_MOREDATA
+  0x008F8920  D3DERR_DEVICELOST
+  0x008F8938  D3DERR_DEVICENOTRESET
+  0x008F8950  D3DERR_NOTAVAILABLE
+  0x008F8968  D3DERR_OUTOFVIDEOMEMORY
+  0x008F8980  D3DERR_INVALIDDEVICE
+  0x008F8998  D3DERR_INVALIDCALL
+  0x008F89B0  D3DERR_DRIVERINVALIDCALL
+  0x008F89D0  D3DOK_NOAUTOGEN
+  0x008F89E0  D3DXERR_CANNOTMODIFYINDEXBUFFER
+  0x008F8A00  D3DXERR_INVALIDMESH
+  0x008F8A18  D3DXERR_CANNOTATTRSORT
+  0x008F8A30  D3DXERR_SKINNINGNOTSUPPORTED
+  0x008F8A50  D3DXERR_TOOMANYINFLUENCES
+  0x008F8A70  D3DXERR_INVALIDDATA
+  0x008F8A88  D3DXERR_LOADEDMESHASNODATA
+  0x008F8AA8  D3DXERR_DUPLICATENAMEDFRAGMENT
+  0x008F8AC8  D3DXERR_CANNOTREMOVELASTITEM
+  0x008F8AE8  D3DXERR_NOMEMORY
+  0x008F8B00  D3DXERR_NULLPOINTER
+  0x008F8B18  D3DXERR_INVALIDD3DXDEVICEINDEX
+  0x008F8B38  D3DXERR_NODIRECTDRAWAVAILABLE
+  0x008F8B58  D3DXERR_NODIRECT3DAVAILABLE
+  0x008F8B78  D3DXERR_NODIRECT3DDEVICEAVAILABLE
+  0x008F8BA0  D3DXERR_NOPRIMARYAVAILABLE
+  0x008F8BC0  D3DXERR_NOZBUFFERAVAILABLE
+  0x008F8BE0  D3DXERR_NOBACKBUFFERAVAILABLE
+  0x008F8C00  D3DXERR_COULDNTUPDATECAPS
+  0x008F8C20  D3DXERR_NOZBUFFER
+  0x008F8C38  D3DXERR_INVALIDMODE
+  0x008F8C50  D3DXERR_INVALIDPARAMETER
+  0x008F8C70  D3DXERR_INITFAILED
+  0x008F8C88  D3DXERR_STARTUPFAILED
+  0x008F8CA0  D3DXERR_D3DXNOTSTARTEDYET
+  0x008F8CC0  D3DXERR_NOTINITIALIZED
+  0x008F8CD8  D3DXERR_FAILEDDRAWTEXT
+  0x008F8CF0  D3DXERR_BADD3DXCONTEXT
+  0x008F8D08  D3DXERR_CAPSNOTSUPPORTED
+  0x008F8D28  D3DXERR_UNSUPPORTEDFILEFORMAT
+  0x008F8D48  D3DXERR_IFLERROR
+  0x008F8D60  D3DXERR_FAILEDGETCAPS
+  0x008F8D78  D3DXERR_CANNOTRESIZEFULLSCREEN
+  0x008F8D98  D3DXERR_CANNOTRESIZENONWINDOWED
+  0x008F8DB8  D3DXERR_FRONTBUFFERALREADYEXISTS
+  0x008F8DE0  D3DXERR_FULLSCREENPRIMARYEXISTS
+  0x008F8E00  D3DXERR_GETDCFAILED
+  0x008F8E18  D3DXERR_BITBLTFAILED
+  0x008F8E30  D3DXERR_NOTEXTURE
+  0x008F8E48  D3DXERR_MIPLEVELABSENT
+  0x008F8E60  D3DXERR_SURFACENOTPALETTED
+  0x008F8E80  D3DXERR_ENUMFORMATSFAILED
+  0x008F8EA0  D3DXERR_COLORDEPTHTOOLOW
+  0x008F8EC0  D3DXERR_INVALIDFILEFORMAT
+  0x008F8EE0  D3DXERR_NOMATCHFOUND
+  0x008F8EF8  D3DXFERR_BADOBJECT
+  0x008F8F10  D3DXFERR_BADVALUE
+  0x008F8F28  D3DXFERR_BADTYPE
+  0x008F8F40  D3DXFERR_NOTFOUND
+  0x008F8F58  D3DXFERR_NOTDONEYET
+  0x008F8F70  D3DXFERR_FILENOTFOUND
+  0x008F8F88  D3DXFERR_RESOURCENOTFOUND
+  0x008F8FA8  D3DXFERR_BADRESOURCE
+  0x008F8FC0  D3DXFERR_BADFILETYPE
+  0x008F8FD8  D3DXFERR_BADFILEVERSION
+  0x008F8FF0  D3DXFERR_BADFILEFLOATSIZE
+  0x008F9010  D3DXFERR_BADFILE
+  0x008F9028  D3DXFERR_PARSEERROR
+  0x008F9040  D3DXFERR_BADARRAYSIZE
+  0x008F9058  D3DXFERR_BADDATAREFERENCE
+  0x008F9078  D3DXFERR_NOMOREOBJECTS
+  0x008F9090  D3DXFERR_NOMOREDATA
+  0x008F90A8  D3DXFERR_BADCACHEFILE
+  0x008FF0A0  GridTexture
+  0x009CCF3A  Direct3DCreate9
+  0x009CCF4A  d3d9.dll
+  0x009CD3A4  D3DXCreateBuffer
+  0x009CD3B8  D3DXSaveSurfaceToFileA
+  0x009CD3D2  D3DXSaveSurfaceToFileInMemory
+  0x009CD3F2  D3DXCreateTextureFromFileInMemoryEx
+  0x009CD418  D3DXSaveTextureToFileInMemory
+  0x009CD438  D3DXVec4Transform
+  0x009CD44C  D3DXMatrixTranspose
+  0x009CD462  D3DXMatrixMultiply
+  0x009CD478  D3DXMatrixInverse
+  0x009CD48C  D3DXMatrixPerspectiveFovRH
+  0x009CD4AA  D3DXMatrixOrthoRH
+  0x009CD4BE  D3DXCreateTexture
+  0x009CD4D2  D3DXSaveTextureToFileA
+  0x009CD4EC  D3DXCreateEffectPool
+  0x009CD504  D3DXCreateEffectCompilerFromFileA
+  0x009CD528  D3DXLoadSurfaceFromSurface
+  0x009CD546  D3DXFilterTexture
+  0x009CD55A  D3DXVec4Normalize
+  0x009CD56E  D3DXVec4TransformArray
+  0x009CD588  D3DXCreateCubeTextureFromFileInMemory
+  0x009CD5B0  D3DXVec3Normalize
+  0x009CD5C4  D3DXMatrixTranslation
+  0x009CD5DC  D3DXMatrixRotationQuaternion
+  0x009CD5FC  D3DXMatrixLookAtLH
+  0x009CD612  D3DXMatrixPerspectiveFovLH
+  0x009CD630  D3DXQuaternionRotationAxis
+  0x009CD64E  D3DXQuaternionMultiply
+  0x009CD668  D3DXCreateTextureFromFileExA
+  0x009CD688  D3DXCreateEffect
+  0x009CD69A  d3dx9_43.dll
+  0x00A46B30  .?AV?$DynamicVectorClass@V?$SmartPtr@VTextureClass@@@@@@
+  0x00A478D0  .?AV?$DynamicVectorClass@PEAVTextureRectClass@@@@
+  0x00A48300  .?AV?$DynamicVectorClass@PEAValD3dVertexTypeInterface@@@@
+  0x00A48350  .?AV?$DynamicVectorClass@PEAUIDirect3DVertexDeclaration9@@@@
+  0x00A483A0  .?AValD3dVertexTypeInterface@@
+  0x00A483D0  .?AV?$alD3dVertexType@ValD3dVertN@@@@
+  0x00A48408  .?AV?$alD3dVertexType@ValD3dVertNC@@@@
+  0x00A48440  .?AV?$alD3dVertexType@ValD3dVertNU2@@@@
+  0x00A48478  .?AV?$alD3dVertexType@ValD3dVertNU2C@@@@
+  0x00A484B8  .?AV?$alD3dVertexType@ValD3dVertNU2U3@@@@
+  0x00A484F8  .?AV?$alD3dVertexType@ValD3dVertNU2U3U3@@@@
+  0x00A48538  .?AV?$alD3dVertexType@ValD3dVertNU2U3U3C@@@@
+  0x00A48578  .?AV?$alD3dVertexType@ValD3dVertRSkinNU2@@@@
+  0x00A485B8  .?AV?$alD3dVertexType@ValD3dVertRSkinNU2C@@@@
+  0x00A48600  .?AV?$alD3dVertexType@ValD3dVertRSkinNU2U3U3@@@@
+  0x00A48648  .?AV?$alD3dVertexType@ValD3dVertB4I4NU2@@@@
+  0x00A48688  .?AV?$alD3dVertexType@ValD3dVertB4I4NU2C@@@@
+  0x00A486D0  .?AV?$alD3dVertexType@ValD3dVertB4I4NU2U3U3@@@@
+  0x00A48710  .?AV?$alD3dVertexType@ValD3dVertB4I4NU2U3U3C@@@@
+  0x00A48758  .?AV?$alD3dVertexType@ValD3dVertGrass@@@@
+  0x00A48798  .?AValTexture@@
+  0x00A487B8  .?AValD3dTexture@@
+  0x00A48800  .?AValD3dMesh@@
+  0x00A48820  .?AV?$ReferenceListClass@ValD3dEffect@@@@
+  0x00A48860  .?AUID3DXEffectStateManager@@
+  0x00A488B0  .?AValD3dEffectStateManager@@
+  0x00A488E0  .?AValD3dEffectParamInterface@@
+  0x00A48910  .?AV?$alD3dEffectParam@M@@
+  0x00A48940  .?AV?$alD3dEffectParam@VVector2@@@@
+  0x00A48978  .?AV?$alD3dEffectParam@VVector3@@@@
+  0x00A489B0  .?AV?$alD3dEffectParam@VVector4@@@@
+  0x00A489E8  .?AValD3dTextureEffectParam@@
+  0x00A48A18  .?AValD3dEffectInstance@@
+  0x00A48A48  .?AValShaderInstance@@
+  0x00A48A70  .?AV?$alD3dEffectParam@H@@
+  0x00A48AA0  .?AValD3dTexture2D@@
+  0x00A48AF0  .?AValD3dTerrainRender@@
+  0x00A48B20  .?AV?$DynamicVectorClass@PEAValD3dTerrainPatch@@@@
+  0x00A48B68  .?AValD3dTerrainRenderTask@@
+  0x00A48BA0  .?AV?$PooledObjectClass@ValD3dTerrainRenderTask@@$00VEmptyLockerClass@@@@
+  0x00A48C00  .?AValD3dWaterRenderTask@@
+  0x00A48C30  .?AV?$PooledObjectClass@ValD3dWaterRenderTask@@$00VEmptyLockerClass@@@@
+  0x00A48C88  .?AValD3dTerrainDecorationRenderTask@@
+  0x00A48CC0  .?AV?$PooledObjectClass@ValD3dTerrainDecorationRenderTask@@$00VEmptyLockerClass@@@@
+  0x00A48DB8  .?AValD3dRenderTarget@@
+  0x00A48DE0  .?AValD3dResource@@
+  0x00A48E30  .?AValD3dDepthBuffer@@
+  0x00A48E58  .?AValD3dTextureCube@@
+  0x00A490C0  .?AValD3dEngineParamInterface@@
+  0x00A490F0  .?AValD3dSimpleEngineParam@@
+  0x00A49120  .?AV?$PooledObjectClass@ValD3dSimpleEngineParam@@$0BAA@VEmptyLockerClass@@@@
+  0x00A49180  .?AValD3dEyePosParam@@
+  0x00A491A8  .?AValD3dEyeObjPosParam@@
+  0x00A491D8  .?AValD3dCloudTextureEngineParam@@
+  0x00A49210  .?AValD3dCloudUEngineParam@@
+  0x00A49240  .?AValD3dCloudVEngineParam@@
+  0x00A49270  .?AValD3dSphLightAllParam@@
+  0x00A492A0  .?AValD3dSphLightFillParam@@
+  0x00A492D0  .?AValD3dTimeParam@@
+  0x00A492F8  .?AValD3dFogParam@@
+  0x00A49320  .?AValD3dDistanceFadeParam@@
+  0x00A49350  .?AValD3dFOWTextureEngineParam@@
+  0x00A49388  .?AValD3dFOWUEngineParam@@
+  0x00A493B8  .?AValD3dFOWVEngineParam@@
+  0x00A493E8  .?AValD3dResolutionConstantsParam@@
+  0x00A49420  .?AValD3dShadowExtrusionParam@@
+  0x00A494C8  .?AValD3dSkyCubeTextureEngineParam@@
+  0x00A49500  .?AV_EngineParam_Get_D3d_Model_Transform@@
+  0x00A49540  .?AV_EngineParam_Get_D3d_View_Transform@@
+  0x00A49580  .?AV_EngineParam_Get_D3d_Projection_Transform@@
+  0x00A495C0  .?AV_EngineParam_Get_D3d_View_Inverse_Transform@@
+  0x00A49610  .?AV_EngineParam_Get_D3d_View_Projection_Transform@@
+  0x00A49660  .?AV_EngineParam_Get_D3d_Model_Inverse_Transform@@
+  0x00A496B0  .?AV_EngineParam_Get_D3d_Model_Inverse_Transpose_Transform@@
+  0x00A49700  .?AV_EngineParam_Get_D3d_Model_View_Transform@@
+  0x00A49740  .?AV_EngineParam_Get_D3d_Model_View_Projection_Transform@@
+  0x00A49790  .?AV_EngineParam_Get_D3d_Model_View_Inverse_Transform@@
+  0x00A497D8  .?AValD3dEffect@@
+  0x00A49800  .?AV?$DynamicVectorClass@UEffectTex@alD3dEffect@@@@
+  0x00A49848  .?AValD3dTransitionEffect@@
+  0x00A49878  .?AValD3dTransitionEffectLinearWipe@@
+  0x00A498B0  .?AValD3dTransitionEffectAlphaFade@@
+  0x00A49970  .?AV?$DynamicVectorClass@PEAVPass@alD3dTerrainPatch@@@@
+  0x00A499C0  .?AV?$DynamicVectorClass@PEAVDualPass@alD3dTerrainPatch@@@@
+  0x00A49A10  .?AV?$DynamicVectorClass@UZbounds@alD3dTerrainPatch@@@@
+  0x00A49A58  .?AUID3DXInclude@@
+  0x00A49A80  .?AValD3dIncludeHandler@@
+  0x00A49B80  .?AVTextureRectClass@@
+  0x00A4B568  .?AVStringTextureClass@@
+  0x00A4B7B0  .?AV?$DynamicVectorClass@PEAVStringTextureClass@@@@
+  0x00A4B858  .?AVTextureClass@@
+  0x00A59400  .?AVTerrainTextureModificationBehaviorClass@@
+  0x00A59440  .?AV?$PooledObjectClass@VTerrainTextureModificationBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+
+============================================================
+[NETWORK] — 545 hits
+============================================================
+  0x000B1E70  HOST_GAMH9H
+  0x007FFCD8  IDD_INTERNET_LOBBY_DIALOG
+  0x007FFD88  IDC_INTERNET_HOST_GAME_BUTTON
+  0x007FFF08  TEXT_LAN_LOBBY_SELECT_GAME_FIRST
+  0x00800158  IDC_INTERNET_CONNECTION_TEST_BUTTON
+  0x00800290  TEXT_LAN_HOST_MISMATCHED_TEAMS
+  0x008002B0  TEXT_LAN_HOST_MIN_PLAYERS
+  0x008002D0  GUI_Common_Chat_Send
+  0x008003A8  Connect_Player_Web - Initiating connection to %ls at %s
+  0x008003E8  Connect_Player_Web - Sending dummy packet to %ls at %s
+  0x00802448   %d : CONNECTING
+  0x00802470  MaxAhead = %3d   FrameSendRate = %2d    WorstPing = %d
+  0x008024F0  LANPort
+  0x008024F8  InternetPort
+  0x00802518  DefaultInternetPort
+  0x00802530  NATPortRangeLow
+  0x00802540  NATPortRangeHigh
+  0x00802558  LastNATPort
+  0x008025A8  ConnectionSpeed
+  0x008025B8  LobbyLocale
+  0x008032A8  LOCALPORT=
+  0x00803428  Warning: Unsupported command line argument: %s
+  0x00803A20  SteamAsyncSocketImpl::On_Peer_Disconnect -- Address: %s
+  0x00803C80  SteamPeerLobbyClass::Set_Map_Name
+  0x00803D58  HO_HOSTSAVESLOT
+  0x00803F58  SteamPeerLobbyClass::Clear_Player_Lobby_Data
+  0x00803FF0  SteamPeerLobbyClass::On_Receive_Lobby_Message
+  0x00804058  SteamPeerLobbyClass::Send_Save_Game_Info
+  0x00804088  %s -- Broadcasting LAN SaveGame List [%s]
+  0x00805958  IDC_CONNECTION_QUALITY0
+  0x00805970  IDC_CONNECTION_QUALITY1
+  0x00805988  IDC_CONNECTION_QUALITY2
+  0x008059A0  IDC_CONNECTION_QUALITY3
+  0x008059B8  IDC_CONNECTION_QUALITY4
+  0x008059D0  IDC_CONNECTION_QUALITY5
+  0x008059E8  IDC_CONNECTION_QUALITY6
+  0x00805A00  IDC_CONNECTION_QUALITY7
+  0x00805A18  IDC_CONNECTION_QUALITY8
+  0x00805B08  IDD_DISCONNECT_DIALOG
+  0x00805B20  IDC_DISCONNECT_CHAT_EDIT
+  0x00805B40  IDC_DISCONNECT_CHAT_LIST
+  0x00806088  IDC_BUTTON_IN_GAME_CHAT_SEND
+  0x008061F8  IDD_INTERNET_HOST_OPTIONS_DIALOG
+  0x00806258  IDC_INTERNET_HOST_CLAN_COMBO
+  0x00806278  IDC_TEXT_HOST_CLAN
+  0x00815108  IDD_LAN_LOBBY_DIALOG
+  0x00815190  TEXT_LAN_LOBBY_PLAYER_JOINED
+  0x008151B0  TEXT_LAN_LOBBY_PLAYER_LEFT
+  0x00815228  TEXT_LAN_HOST_NOT_ENOUGH_TEAMS
+  0x00815248  TEXT_LAN_HOST_MISMATCHED_FACTIONS
+  0x00815270  TEXT_HOST_LEFT_GAME
+  0x00815288  Received LAN SaveGame List [%ls] from player %ls
+  0x008152C0  Broadcasting LAN SaveGame List [%ls]
+  0x00815300  Broadcasting LAN SaveGame Select [%ls]
+  0x008156C0  IDD_LOBBY_GAME_LIST_FILTER_DIALOG
+  0x008159F0  IDD_MP_CONNECT_DIALOG
+  0x00815A20  TEXT_CONNECTED
+  0x00815B60  Other player is host - applying random seed
+  0x00815BA0  Sending guaranteed load progress %3.1f%% packet to player %ls
+  0x00815BE0  Sending non-guaranteed load progress %3.1f%% packet to player %ls
+  0x00815C28  Received load progress packet from player %ls
+  0x00815D70  MPConnectDialogClass::Fixup_Connection_IDs_From_Load
+  0x00815DA8  %s -- Player: %s(%d) post load connection id change to %d
+  0x00815F70  IDC_CHECK_USE_DEFAULT_PORT
+  0x00815F90  IDC_NETWORK_PORT_NUMBER
+  0x008160D0  IDC_INTERNET_CONNECTION_SPEED_COMBO
+  0x008160F8  TEXT_INTERNET_CONNECTION_SPEED_MODEM
+  0x00816120  TEXT_INTERNET_CONNECTION_SPEED_BROADBAND
+  0x008161C0  IDC_TEXT_HOST_IP
+  0x0081D848  max_viewport
+  0x0084E310  texture inputTexture0 : RENDERCOLORTARGET< float2 ViewPortDimensions = { 1.0, 1.0 };string format = "A8R8G8B8"; >;texture inputTexture1 : RENDERCOLORTARGET< float2 ViewPortDimensions = { 1.0, 1.0 };string format = "A8R8G8B8"; >;sampler Sampler = sampler_state{Texture   = (inputTexture0);MipFilter = LINEAR;MinFilter = LINEAR;MagFilter = LINEAR;};struct VS_OUT{float4 hposition : POSITION;float2 texture0  : TEXCOORD0;};float4 myps( VS_OUT IN ): COLOR{
+  0x00851540  Supported language = %s
+  0x00851D50  PacketHandlerClass::Init
+  0x00851D70  PacketHandlerClass::Shutdown
+  0x00851D90  PacketHandlerClass::Rebind
+  0x00851DB0  PacketHandlerClass::Service
+  0x00851DD0  PacketHandlerClass::Service - recvfrom failed with error code %d - %s
+  0x00851E20  PacketHandlerClass::Service -- Received well formed packet from %s
+  0x00851E70  PacketHandlerClass::Service -- Received and processed raw packet from %s
+  0x00851EC0  PacketHandlerClass::Service -- Unrecognized packet received from %s
+  0x00851F08  PacketHandlerClass::Send_Raw_Packet
+  0x00851F30  PacketHandlerClass::Send_Raw_Packet - Sending packet to %s
+  0x00851F70  PacketHandlerClass::Send_Raw_Packet -- sendto failed with error code %d - %s
+  0x00851FE8  PacketHandler Thread
+  0x00852010  NetworkClass::Init_For_Custom_Socket
+  0x00852060  NetworkClass::Get_Local_Addresses - gethostbyname failed with error code %d - %s
+  0x008520B8  Local host is %s
+  0x00852120  ConnectionClass::Service -- Received connection response packet from %s - %s
+  0x00852170  ConnectionClass::Service -- CONNECT_HELLO: Connection established to %s - %s
+  0x008521C0  ConnectionClass::Service -- Connection attempt to %s:%s has failed!
+  0x00852210  ConnectionClass::Service -- CONNECT_HELLO: Sending a hello packet to %s - %s
+  0x00852260  ConnectionClass::Service -- CONNECT_RESPONSE: Connection established to %s - %s
+  0x008522B8  Received dummy packet from %s
+  0x008522D8     Dummy packet from %s
+  0x008522F8     Our connection name = %s, packet sender = %s
+  0x00852360  ConnectionClass::Formatted_Packet_Callback - Received connection request from %s - %s
+  0x008523C0  ConnectionClass::Error_Handler_Callback -- Connection to %s:%s has timed out!
+  0x00852410  ConnectionClass::Error_Handler_Callback -- Connection to %s:%s has become unreachable!
+  0x00852470  ConnectionClass::Error_Handler_Callback -- Ignoring ICMP port unreachable from %s:%s as connection hasn't yet been established
+  0x00853540  NATUtils: Removing mapping for %ls port %d
+  0x00853570  ERROR: NATUtilsClass Failed to remove %s mapping for port %d. Error code %08X
+  0x008535E0  Opening %ls port %d for host %s
+  0x00853608  Attempting to add UPnP port mapping for address %ls : %d
+  0x00853668  Opening %ls port %d in Windows firewall
+  0x008536E0  %ls port %d opened in Windows firewall
+  0x00853708  Closing %ls port %d in Windows firewall
+  0x00853740  NATUtils: Failed to remove port from %d, protocol %ls from collection - error code 0x%08X
+  0x008537A0  %ls port %d closed in Windows firewall
+  0x00853848  NATUtils: Removing windows firewall port %d for %ls
+  0x00853A80  %sConnection Type: '%ls'
+  0x00853AA0  %sConnection Status: '%ls'
+  0x00853AC0  %sExternal IP Address: '%ls'
+  0x00853AF8  %sRemote Host: '%ls'
+  0x00853B48  %sPort Mapping Enabled: '%s'
+  0x00854350  WSAEPROTONOSUPPORT
+  0x00854368  WSAESOCKTNOSUPPORT
+  0x00854390  WSAEPFNOSUPPORT
+  0x008543A0  WSAEAFNOSUPPORT
+  0x008544B8  WSAEHOSTDOWN
+  0x008544C8  WSAEHOSTUNREACH
+  0x00854548  WSAVERNOTSUPPORTED
+  0x00854668  WSAHOST_NOT_FOUND
+  0x008546C8  WSA_QOS_SENDERS
+  0x008546D8  WSA_QOS_NO_SENDERS
+  0x00854988  WinsockAsyncSocketImpl::Init
+  0x00854A80  %s - ioctlsocket failed setting socket to non-blocking. Error code %d - %s
+  0x00854B20  WinsockAsyncSocketImpl::Get_Read_Bytes_Available
+  0x00854B60  %s - ioctlsocket failed reading number of pending bytes. Error code %d - %s
+  0x00854E18  File Transfer: Sending chunk %d to %s (%s)
+  0x008558D0  PacketSequencerClass::Service -- Timed out connection to %s on packet %d - time since first send = %u
+  0x00855940  PacketSequencerClass::Unreachable_Port_Callback -- Received ICMP port unreachable on connection %s
+  0x00856650  LuaNetworkDebuggerClass::Send_Output_To_Debugger -- Message: %s
+  0x0085B7F8  Player %ls(%s) is hostile towards %ls(%s)
+  0x0085BFB0  TRANSPORT_LANDING
+  0x0085E8E8  BroadcasterClass::Formatted_Packet_Callback
+  0x0085E9B0  BroadcasterClass::Process_Packet
+  0x0085EAC0  Adding player %ls to lan list
+  0x0085EAE0  Removing player %ls from lan list
+  0x0085EC48  BroadcasterClass::Is_Duplicate_Packet
+  0x0085EC70  BroadcasterClass detected duplicate packet id %d from %s
+  0x00865060  WARNING - (RadarMapClass::Parse_Database) Unsupported type "%s" in definition .
+  0x00867260            3D Listener pos: %6.1f, %6.1f, %6.1f
+  0x00867290            Distance From 3D Listener: %6.1f
+  0x00868A28  %s: Obliterating %s player landed ground company transport...
+  0x00869290  Planet %s: Can't link newly built ground company transport to planet surface - slots full.
+  0x008692F0  Planet %s: Linking newly built ground company transport to planet surface.
+  0x00869340  Planet %s: Linking newly built ground company transport to orbit.
+  0x0086D000  CLASS_TRANSPORT
+  0x0086E180  STORY REWARD - ERROR!  Reward for event %s needs some code support!
+  0x00874418  GameScoring -- Listening to new Object: %s (%d)
+  0x00874518  TheGameScoringManagerClass::Send_Game_Mode_Ending_Signal
+  0x00874570  TheGameScoringManagerClass::Send_Game_Mode_Starting_Signal
+  0x008745B0  TheGameScoringManagerClass::Send_Game_Mode_Starting_Signal - map name is %s
+  0x00874650  TheGameScoringManagerClass::Send_Tactical_Unit_Destroyed_Signal
+  0x008746C0  TheGameScoringManagerClass::Send_Galactic_Unit_Destroyed_Signal
+  0x00874720  TheGameScoringManagerClass::Send_Player_Quit_Event
+  0x008747C8  TheGameScoringManagerClass::Send_Tactical_Production_End_Event
+  0x00875250  Cannot schedule the respawn of %s yet because its transport still contains active objects (%s).
+  0x00876951  Warning! Random story trigger %s currently unsupported!
+  0x00876A68  Warning!  Random story reward %s unsupported!
+  0x00877218  TRANSPORT
+  0x0087AD68             Landed transports : %d
+  0x0087AF60  TransportBehaviorClass
+  0x0087B540  Set_Transport_Ship_Formation -- Ship %d - %.2f, %.2f
+  0x0087D028  Company_Transport_Unit
+  0x0087E2F0  Use_Transported_Object_Bounds_For_Landing_Z
+  0x008803B0  Stay_In_Transport_During_Ground_Battle
+  0x00880D30  Landing_Transport_Variant
+  0x008813D8  Importance
+  0x00885E10  AutoResolveTransportLosses
+  0x008864A8  Transport_Refill_Threshold
+  0x00886CA0  Object_Importance_Decay_Factor
+  0x00886F30  Hardpoint_Recharge_Cutoff_For_Opportunity_Fire
+  0x00886F60  Battle_Load_Planet_Viewport
+  0x00888260  Audio_Galactic_3D_Listener_Z_Pullback_Dist
+  0x00888290  Audio_Space_3D_Listener_Z_Pullback_Dist
+  0x008882B8  Audio_Land_3D_Listener_Z_Pullback_Dist
+  0x00888B78  Should_Ghost
+  0x00888B88  Ghost_Base_Only
+  0x00889778  Allow_Opportunity_Fire_When_Idle
+  0x008897A0  Allow_Opportunity_Fire_When_Targeting
+  0x00889BA0  Supports_Custom_Settings
+  0x00889EE0  Ground_Transport_Icon_Name
+  0x0088CFB0  Supports_Autofire
+  0x0088FC70  transport
+  0x00891460  LandRetreatCoordinatorClass: Post-retreat - preserving TRANSPORT player object %s
+  0x00896A30  LuaCreateCinematicTransport -- Command only valid in a tactical game.
+  0x00896A80  LuaCreateCinematicTransport -- Command only valid in a land tactical game.
+  0x00896AD0  LuaCreateCinematicTransport -- Expected 8 parameters
+  0x00896B10  LuaCreateCinematicTransport -- invalid type for parameter 1.  Expected string.
+  0x00896B60  LuaCreateCinematicTransport -- Invalid parameter 2, expected a float value for player_id
+  0x00896BC0  LuaCreateCinematicTransport -- Invalid parameter 3, expected a position value.
+  0x00896C10  LuaCreateCinematicTransport -- Invalid parameter 4, expected a float value for z_angle
+  0x00896C70  LuaCreateCinematicTransport -- Invalid parameter 5, expected a float value for transport landing mode
+  0x00896CE0  LuaCreateCinematicTransport -- Invalid parameter 6, expected a float value for anim delta
+  0x00896D40  LuaCreateCinematicTransport -- Invalid parameter 7, expected a float value for idle time
+  0x00896DA0  LuaCreateCinematicTransport -- Invalid parameter 8, expected a float value for transport persisting
+  0x00896E10  LuaCreateCinematicTransport -- invalid type for parameter 9.  Expected string.
+  0x00898FA0  Create_Cinematic_Transport
+  0x0089A848  Is_Transport
+  0x0089AB58  Set_Importance
+  0x0089ADF8  Teleport
+  0x0089AE08  Teleport_And_Face
+  0x0089AEE8  Prevent_Opportunity_Fire
+  0x0089B2F0  GameObjectWrapper::Get_Hull -- this command is only supported in tactical modes.
+  0x0089B420  GameObjectWrapper::Get_Shield -- this command is only supported in tactical modes.
+  0x0089B480  GameObjectWrapper::Get_Energy -- this command is only supported in tactical modes.
+  0x0089B5D0  GameObjectWrapper::Attack_Target -- this command is only supported in tactical modes.
+  0x0089BDD0  GameObjectWrapper::Move_Internal -- this command is only supported in tactical modes.
+  0x0089CC20  GameObjectWrapper::Lock_Current_Orders - %s is immobile; locking not supported.
+  0x0089D060  GameObjectWrapper::Set_Importance -- invalid number of parameters.  Expected 1, got %d.
+  0x0089D0B8  GameObjectWrapper::Set_Importance -- this object is dead!
+  0x0089D100  GameObjectWrapper::Set_Importance -- invalid type for parameter 1.  Expected number.
+  0x0089E3F0  GameObjectWrapper::Activate_Ability -- unsupported unit ability %s.
+  0x0089EDF0  GameObjectWrapper::Is_Under_Effects_Of_Ability -- ability %s is not yet supported.  You'll need some programming help if you think it should be.
+  0x0089F270  GameObjectWrapper::Teleport -- this function may only be used in tactical modes.
+  0x0089F2D0  GameObjectWrapper::Teleport -- invalid number of parameters.  Expected 1, got %d.
+  0x0089F330  GameObjectWrapper:: Teleport -- unable to deduce a position from parameter 1.
+  0x0089F380  GameObjectWrapper::Teleport_And_Face -- this function may only be used in tactical modes.
+  0x0089F3E0  GameObjectWrapper::Teleport_And_Face -- invalid number of parameters.  Expected 1, got %d.
+  0x0089F440  GameObjectWrapper:: Teleport_And_Face -- Expected game object for parameter 1, got position instead.
+  0x0089F4B0  GameObjectWrapper::Teleport_And_Face -- Invalid game object given for parameter 1.
+  0x0089F510  GameObjectWrapper:: Teleport_And_Face -- Expected game object for parameter 1.
+  0x0089FF80  GameObjectWrapper::Prevent_Opportunity_Fire -- invalid number of parameters.  Expected 1, got %d.
+  0x0089FFF0  GameObjectWrapper::Prevent_Opportunity_Fire -- invalid type for parameter 1.  Expected boolean.
+  0x008A1820  GameObjectWrapper;:Garrison - target is hostile.
+  0x008A1860  GameObjectWrapper::Garrison -- unit %s cannot have garrisons placed in it: it has no GARRISON_VEHICLE or GARRISON_STRUCTURE or GARRISON_HOVER_TRANSPORT behavior.
+  0x008A4100  Error: (%s) The only currently supported Activation_Style is Ground_Activated.
+  0x008A4BD0  FriendlyInternalConnectivity
+  0x008A4BF0  FriendlyExternalConnectivity
+  0x008A4C10  EnemyInternalConnectivity
+  0x008A4C30  EnemyExternalConnectivity
+  0x008A5158  ConnectsIsolatedPlanetsByLength
+  0x008A5178  ConnectsIsolatedPlanetsByForce
+  0x008A5250  IsConnectedTo
+  0x008A57D0  ConnectsLargestIslands
+  0x008A5C50  IsConnectedToCorruption
+  0x008A7418  Landing Transport
+  0x008A80C0  Single_Hop_Disconnected
+  0x008A8750  ERROR - Unsupported SurfaceFX Trigger "%s" in SurfaceFX definition.
+  0x008A87A0  WARNING - Unsupported surface type "%s" in SurfaceFX definition.
+  0x008A8C80  Hardpoint_Opportunity_Target_Acquired
+  0x008A9238  Add_Opportunity_Fire_Event_Subscription
+  0x008A9260  Remove_Opportunity_Fire_Event_Subscription
+  0x008A9290  Clear_Opportunity_Fire_Event_Subscriptions
+  0x008A9CC0  Add_Opportunity_Fire_Event_Subscription -- invalid number of paramters. Expected 1, got %d.
+  0x008A9D20  Add_Opportunity_Fire_Event_Subscription -- invalid type for parameter 1.  Expected string
+  0x008A9D80  Add_Opportunity_Fire_Event_Subscription -- unrecognized hard point type %s.
+  0x008A9DD0  Add_Opportunity_Fire_Event_Subscription -- hard point type %s is not a weapon hard point type.
+  0x008A9E30  Add_Opportunity_Fire_Event_Subscription -- events are already being received for opportunity targets acquired by hard points of type %s.
+  0x008A9EC0  Remove_Opportunity_Fire_Event_Subscription -- invalid number of paramters. Expected 1, got %d.
+  0x008A9F20  Remove_Opportunity_Fire_Event_Subscription -- invalid type for parameter 1.  Expected string
+  0x008A9F80  Remove_Opportunity_Fire_Event_Subscription -- unrecognized hard point type %s.
+  0x008A9FD0  Remove_Opportunity_Fire_Event_Subscription -- hard point type %s is not a weapon hard point type.
+  0x008AA040  Add_Opportunity_Fire_Event_Subscription -- events are not being received for opportunity targets acquired by hard points of type %s.
+  0x008ABEE8  Transport
+  0x008AC448  Income proportion: 
+  0x008AC460  Last Fiscal Cycle income proportion: 
+  0x008B1618  GarrisonHoverTransportBehaviorClass
+  0x008B3310  TransportLandingBehaviorClass
+  0x008B3330  Transport_Landing_Dust_Temperate
+  0x008B3358  Transport_Landing_Dust_Arctic
+  0x008B3378  Transport_Landing_Dust_Desert
+  0x008B3398  Transport_Landing_Dust_Forest
+  0x008B33B8  Transport_Landing_Dust_Swamp
+  0x008B33D8  Transport_Landing_Dust_Volcanic
+  0x008B33F8  Transport_Landing_Dust_Urban
+  0x008B3E18  BUILD_STATE_TRANSPORTS_TO_ORBIT
+  0x008B5848  TEXT_HOSTILE_ALLEGIANCE_CHANGE
+  0x008B6130  WARNING - Object Type '%s' not supported by XMLLoadableFactory!
+  0x008B78F0  Find_Best_Of -- unsupported entry in target list: these should be game objects or AI targets.
+  0x008B8CB0  Find_Path -- this script function is only supported in galactic mode.
+  0x008BAB00  Get_Static_Colliders -- function is nor supported in this game mode.
+  0x008BD920  Enable_Distance_Fog -- this command is not supported in the current game mode.
+  0x008C05C0  GalacticTaskForceClass::Invade -- No transports in Taskforce %s.
+  0x008C1810  Connects to: 
+  0x008C68B0  Error: The only activation style supported for %s is Galactic_Automatic.
+  0x008C6D20  Error: (%s) The only currently supported Activation_Style is Hero_Detected.
+  0x008C7E30  Error: (%s) The only currently supported Activation_Style is Galactic_Automatic.
+  0x008C86C0  Error: (%s) The only currently supported Activation_Style is Combat_Imminent.
+  0x008CAF00  Error: The only activation style supported for %s is Ground_Activated.
+  0x008CB528  Error: (%s) Unsupported Activation_Style.
+  0x008E2D48  CO_E_NOT_SUPPORTED
+  0x008E2DE8  OLE_E_ADVISENOTSUPPORTED
+  0x008E2E08  OLE_E_NOCONNECTION
+  0x008E3800  MK_E_INTERMEDIATEINTERFACENOTSUPPORTED
+  0x008E39C0  CO_E_OBJNOTCONNECTED
+  0x008E4530  RPC_E_CANTPOST_INSENDCALL
+  0x008E4598  RPC_E_CONNECTION_TERMINATED
+  0x008E45E8  RPC_E_INVALID_DATAPACKET
+  0x008E47C0  RPC_E_DISCONNECTED
+  0x008E5658  OSS_INDEFINITE_NOT_SUPPORTED
+  0x008E57E8  OSS_TYPE_NOT_SUPPORTED
+  0x008E5A60  CERTSRV_E_UNSUPPORTED_CERT_TYPE
+  0x008E6770  SCARD_E_READER_UNSUPPORTED
+  0x008E67B0  SCARD_E_CARD_UNSUPPORTED
+  0x008E6850  SCARD_E_UNSUPPORTED_FEATURE
+  0x008E69B0  SCARD_W_UNSUPPORTED_CARD
+  0x008E6E60  ERROR_NOT_SUPPORTED
+  0x008E77E0  ERROR_ATOMIC_LOCKS_NOT_SUPPORTED
+  0x008E7BB0  ERROR_PIPE_NOT_CONNECTED
+  0x008E7BE0  ERROR_VC_DISCONNECTED
+  0x008E7CF0  ERROR_EAS_NOT_SUPPORTED
+  0x008E7DD8  ERROR_PIPE_CONNECTED
+  0x008E7DF0  ERROR_PIPE_LISTENING
+  0x008E8208  ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
+  0x008E8A98  ERROR_DEVICE_NOT_CONNECTED
+  0x008E8AB8  ERROR_NOT_FOUND & E_PROP_ID_UNSUPPORTED
+  0x008E8AF0  ERROR_SET_NOT_FOUND & E_PROP_SET_UNSUPPORTED
+  0x008E8C60  ERROR_CONNECTION_UNAVAIL
+  0x008E8F08  ERROR_CONNECTION_REFUSED
+  0x008E8F28  ERROR_GRACEFUL_DISCONNECT
+  0x008E8F90  ERROR_CONNECTION_INVALID
+  0x008E8FB0  ERROR_CONNECTION_ACTIVE
+  0x008E8FE8  ERROR_HOST_UNREACHABLE
+  0x008E9020  ERROR_PORT_UNREACHABLE
+  0x008E9050  ERROR_CONNECTION_ABORTED
+  0x008E9080  ERROR_CONNECTION_COUNT_LIMIT
+  0x008EA658  RPC_S_PROTSEQ_NOT_SUPPORTED
+  0x008EA778  RPC_S_ALREADY_LISTENING
+  0x008EA7B0  RPC_S_NOT_LISTENING
+  0x008EA918  RPC_S_UNSUPPORTED_TRANS_SYN
+  0x008EA938  RPC_S_UNSUPPORTED_TYPE
+  0x008EA9B8  RPC_S_UNSUPPORTED_NAME_SYNTAX
+  0x008EAB88  RPC_S_NOTHING_TO_EXPORT
+  0x008EABF0  RPC_S_NOT_ALL_OBJS_UNEXPORTED
+  0x008EACA0  RPC_S_CANNOT_SUPPORT
+  0x008EB030  ERROR_UNKNOWN_PORT
+  0x008EB328  RPC_S_UNSUPPORTED_AUTHN_LEVEL
+  0x008EB5E8  RPC_S_SEND_INCOMPLETE
+  0x008EB738  ERROR_METAFILE_NOT_SUPPORTED
+  0x008EB758  ERROR_TRANSFORM_NOT_SUPPORTED
+  0x008EB778  ERROR_CLIPPING_NOT_SUPPORTED
+  0x008EB908  ERROR_CONNECTED_OTHER_PASSWORD
+  0x008EB940  ERROR_NOT_CONNECTED
+  0x008EB970  ERROR_ACTIVE_CONNECTIONS
+  0x008EBCE8  ERROR_WMI_GUID_DISCONNECTED
+  0x008EC098  ERROR_UNABLE_TO_INVENTORY_TRANSPORT
+  0x008EC0C0  ERROR_TRANSPORT_FULL
+  0x008EC0D8  ERROR_CONTROLLING_IEPORT
+  0x008EC318  ERROR_HOST_NODE_NOT_AVAILABLE
+  0x008EC438  ERROR_HOST_NODE_NOT_RESOURCE_OWNER
+  0x008EC460  ERROR_HOST_NODE_NOT_GROUP_OWNER
+  0x008EC768  ERROR_NOT_EXPORT_FORMAT
+  0x008ECAC0  ERROR_CTX_CONSOLE_DISCONNECT
+  0x008ECAE0  ERROR_CTX_CONSOLE_CONNECT
+  0x008ED110  ERROR_DS_AUTH_METHOD_NOT_SUPPORTED
+  0x008ED3F0  ERROR_DS_NOT_SUPPORTED
+  0x008EE600  ERROR_DS_DRA_CONNECTION_FAILED
+  0x008EE728  ERROR_DS_DRA_NOT_SUPPORTED
+  0x008EE8A8  ERROR_DS_DRA_EXTN_CONNECTION_FAILED
+  0x008EEBC0  DNS_ERROR_PACKET_FMT_BASE
+  0x008EEBF8  DNS_ERROR_BAD_PACKET
+  0x008EEC10  DNS_ERROR_NO_PACKET
+  0x008EEC38  DNS_ERROR_UNSECURE_PACKET
+  0x008EF500  WSAEPROTONOSUPPORT
+  0x008EF518  WSAESOCKTNOSUPPORT
+  0x008EF540  WSAEPFNOSUPPORT
+  0x008EF550  WSAEAFNOSUPPORT
+  0x008EF668  WSAEHOSTDOWN
+  0x008EF678  WSAEHOSTUNREACH
+  0x008EF6F8  WSAVERNOTSUPPORTED
+  0x008EF818  WSAHOST_NOT_FOUND
+  0x008EF878  WSA_QOS_SENDERS
+  0x008EF888  WSA_QOS_NO_SENDERS
+  0x008EFC78  XACT_E_NOTSUPPORTED
+  0x008EFCE8  XACT_E_NOIMPORTOBJECT
+  0x008EFD98  XACT_E_CONNECTION_DOWN
+  0x008EFDB0  XACT_E_CONNECTION_DENIED
+  0x008EFDE8  XACT_E_TIP_CONNECT_FAILED
+  0x008F0548  SCHED_E_UNSUPPORTED_ACCOUNT_OPTION
+  0x008F0748  SEC_E_UNSUPPORTED_FUNCTION
+  0x008F0808  SEC_E_QOP_NOT_SUPPORTED
+  0x008F0BF8  SEC_E_STRONG_CRYPTO_NOT_SUPPORTED
+  0x008F0D10  SEC_E_UNSUPPORTED_PREAUTH
+  0x008F1410  XENROLL_E_KEY_NOT_EXPORTABLE
+  0x008F1F58  COMADMIN_E_CAN_NOT_EXPORT_APP_PROXY
+  0x008F1FA0  COMADMIN_E_CAN_NOT_EXPORT_SYS_APP
+  0x008F2128  COMADMIN_E_CAT_IMPORTED_COMPONENTS_NOT_ALLOWED
+  0x008F2228  COMADMIN_E_MIG_VERSIONNOTSUPPORTED
+  0x008F22D8  COMADMIN_E_CAT_PAUSE_RESUME_NOT_SUPPORTED
+  0x008F2890  ERROR_ONLY_IF_CONNECTED
+  0x008F28E0  ERROR_NOT_SUPPORTED_ON_SBS
+  0x008F2928  ERROR_HOST_DOWN
+  0x008F2AB8  ERROR_INVALID_IMPORT_OF_NON_DLL
+  0x008F2BE8  ERROR_INSTALL_LANGUAGE_UNSUPPORTED
+  0x008F2CB8  ERROR_UNSUPPORTED_TYPE
+  0x008F2D08  ERROR_INSTALL_PLATFORM_UNSUPPORTED
+  0x008F2D88  ERROR_PATCH_PACKAGE_UNSUPPORTED
+  0x008F2EA8  RPC_S_NOT_ALL_OBJS_EXPORTED
+  0x008F2EC8  RPC_S_INTERFACE_NOT_EXPORTED
+  0x008F2FA0  ERROR_CONNECTED_OTHER_PASSWORD_DEFAULT
+  0x008F3040  ERROR_NO_SUPPORTING_DRIVES
+  0x008F35B8  ERROR_NODE_CANT_HOST_RESOURCE
+  0x008F36E8  ERROR_CLUSTER_RESTYPE_NOT_SUPPORTED
+  0x008F3AC8  ERROR_VOLUME_NOT_SUPPORT_EFS
+  0x008F3B00  ERROR_EFS_VERSION_NOT_SUPPORT
+  0x008F44B8  ERROR_DS_NO_PKT_PRIVACY_ON_CONNECTION
+  0x008F4A10  ERROR_DS_NOT_SUPPORTED_SORT_ORDER
+  0x008F4C18  ERROR_NOT_SUPPORTED_ON_STANDARD_SERVER
+  0x008F5DE0  ERROR_IPSEC_TRANSPORT_FILTER_EXISTS
+  0x008F5E08  ERROR_IPSEC_TRANSPORT_FILTER_NOT_FOUND
+  0x008F5F80  ERROR_IPSEC_TRANSPORT_FILTER_PENDING_DELETION
+  0x008F6678  ERROR_IPSEC_IKE_NO_PEER_CERT
+  0x008F6698  ERROR_IPSEC_IKE_PEER_CRL_FAILED
+  0x008F6938  ERROR_IPSEC_IKE_UNSUPPORTED_ID
+  0x008F6DA0  DDERR_NODIRECTDRAWSUPPORT
+  0x008F70C0  DDERR_UNSUPPORTEDFORMAT
+  0x008F70D8  DDERR_UNSUPPORTEDMASK
+  0x008F7438  DDERR_UNSUPPORTEDMODE
+  0x008F75F8  DDERR_NODRIVERSUPPORT
+  0x008F7740  DIERR_HASEFFECTS & VFW_E_ALREADY_CONNECTED & DMO_E_NOTACCEPTING
+  0x008F7870  DIERR_UNPLUGGED & VFW_E_NOT_CONNECTED
+  0x008F7898  DIERR_REPORTFULL & VFW_E_NO_ALLOCATOR
+  0x008F7AF8  DVERR_CONNECTIONLOST
+  0x008F7B28  DVERR_CONNECTED
+  0x008F7B38  DVERR_NOTCONNECTED
+  0x008F7B50  DVERR_CONNECTABORTING
+  0x008F7B98  DVERR_TRANSPORTNOTHOST
+  0x008F7BB0  DVERR_COMPRESSIONNOTSUPPORTED
+  0x008F7C10  DVERR_CONNECTABORTED
+  0x008F7C68  DVERR_HOSTING
+  0x008F7C78  DVERR_NOTHOSTING
+  0x008F7CE0  DVERR_SENDERROR
+  0x008F7D50  DVERR_NOTRANSPORT
+  0x008F7D80  DVERR_TRANSPORTNOTINIT
+  0x008F7D98  DVERR_TRANSPORTNOSESSION
+  0x008F7DB8  DVERR_TRANSPORTNOPLAYER
+  0x008F7DE0  DVERR_NORECVOLAVAILABLE
+  0x008F7E68  DPNERR_ALREADYCONNECTED
+  0x008F7E80  DPNERR_ALREADYDISCONNECTING
+  0x008F7F60  DPNERR_CONNECTING
+  0x008F7F78  DPNERR_CONNECTIONLOST
+  0x008F80A0  DPNERR_HOSTING
+  0x008F80B0  DPNERR_HOSTREJECTEDCONNECTION
+  0x008F80D0  DPNERR_HOSTTERMINATEDSESSION
+  0x008F81E8  DPNERR_INVALIDHOSTADDRESS
+  0x008F82F0  DPNERR_NOCONNECTION
+  0x008F8308  DPNERR_NOHOSTPLAYER
+  0x008F8370  DPNERR_NOTHOST
+  0x008F8418  DPNERR_SENDTOOLARGE
+  0x008F8788  D3DERR_UNSUPPORTEDCOLOROPERATION
+  0x008F87B0  D3DERR_UNSUPPORTEDCOLORARG
+  0x008F87D0  D3DERR_UNSUPPORTEDALPHAOPERATION
+  0x008F87F8  D3DERR_UNSUPPORTEDALPHAARG
+  0x008F8858  D3DERR_UNSUPPORTEDFACTORVALUE
+  0x008F8898  D3DERR_UNSUPPORTEDTEXTUREFILTER
+  0x008F8A30  D3DXERR_SKINNINGNOTSUPPORTED
+  0x008F8D08  D3DXERR_CAPSNOTSUPPORTED
+  0x008F8D28  D3DXERR_UNSUPPORTEDFILEFORMAT
+  0x008F91E8  DSERR_SENDLOOP
+  0x008F91F8  DSERR_BADSENDBUFFERGUID
+  0x008F9350  DMUS_E_PORTS_OPEN
+  0x008F94B8  DMUS_E_NOT_DOWNLOADED_TO_PORT
+  0x008F9510  DMUS_E_SET_UNSUPPORTED
+  0x008F9528  DMUS_E_GET_UNSUPPORTED
+  0x008F96E0  DMUS_E_PORT_NOT_CAPTURE
+  0x008F96F8  DMUS_E_PORT_NOT_RENDER
+  0x008F9760  DMUS_E_WAVEFORMATNOTSUPPORTED
+  0x008F97D0  DMUS_E_UNSUPPORTED_STREAM
+  0x008F98F8  DMUS_E_TYPE_UNSUPPORTED
+  0x008F9940  DMUS_E_TRACK_NO_CLOCKTIME_SUPPORT
+  0x008F99D0  DMUS_E_LOADER_FORMATNOTSUPPORTED
+  0x008F9AF0  DMUS_E_CANNOT_OPEN_PORT
+  0x008F9B80  DMUS_E_SCRIPT_UNSUPPORTED_VARTYPE
+  0x008F9CD0  DMUS_E_SCRIPT_VALUE_NOT_SUPPORTED
+  0x008F9E80  DMUS_E_AUDIOPATH_NOPORT
+  0x008FA000  VFW_E_CANNOT_CONNECT
+  0x008FA060  VFW_E_NOT_OVERLAY_CONNECTION
+  0x008FA080  VFW_E_NOT_SAMPLE_CONNECTION
+  0x008FA4A0  VFW_S_CONNECTIONS_DEFERRED
+  0x008FA688  VFW_E_UNSUPPORTED_AUDIO
+  0x008FA6A0  VFW_E_UNSUPPORTED_VIDEO
+  0x008FA750  VFW_E_UNSUPPORTED_STREAM
+  0x008FA770  VFW_E_NO_TRANSPORT
+  0x008FAB20  VFW_E_FRAME_STEP_UNSUPPORTED
+  0x008FAEB8  WBEM_E_NOT_SUPPORTED
+  0x008FAFC8  WBEM_E_TRANSPORT_FAILURE
+  0x008FB360  WBEM_E_UNSUPPORTED_PARAMETER
+  0x008FB460  WBEM_E_UNSUPPORTED_PUT_EXTENSION
+  0x008FB4A8  WBEM_E_UNKNOWN_PACKET_TYPE
+  0x008FB5C0  WBEM_E_UNSUPPORTED_CLASS_UPDATE
+  0x008FB988  WBEM_E_UNSUPPORTED_LOCALE
+  0x008FB9C8  WBEM_E_CONNECTION_FAILED
+  0x008FBBA0  WBEM_E_FATAL_TRANSPORT_ERROR
+  0x008FBBC0  WBEM_E_ENCRYPTED_CONNECTION_REQUIRED
+  0x008FBE28  WBEMMOF_E_TYPEDEF_NOT_SUPPORTED
+  0x008FC200  WBEMMOF_E_UNSUPPORTED_CIMV22_QUAL_VALUE
+  0x008FC228  WBEMMOF_E_UNSUPPORTED_CIMV22_DATA_TYPE
+  0x008FC8A0  XAPO_E_FORMAT_UNSUPPORTED
+  0x008FF850  address family not supported
+  0x008FF870  connection already in progress
+  0x008FF8B8  connection aborted
+  0x008FF8D0  connection refused
+  0x008FF8E8  connection reset
+  0x008FF920  host unreachable
+  0x008FF968  already connected
+  0x008FFA68  not connected
+  0x008FFA90  not a socket
+  0x008FFAA0  not supported
+  0x008FFAB0  operation not supported
+  0x008FFAF8  protocol not supported
+  0x009CC526  SendMessageA
+  0x009CD1DE  AIL_set_listener_3D_position
+  0x009CD1FE  AIL_set_listener_3D_orientation
+  0x00A46650  .?AV?$SingletonInstance@VSteamPeerLobbyClass@@@@
+  0x00A469B0  .?AV?$SingletonInstance@VSteamLobbyDialogClass@@@@
+  0x00A47108  .?AVPGNetAsyncSocketImpl@@
+  0x00A47168  .?AVSteamAsyncSocketImpl@@
+  0x00A47250  .?AV?$CCallback@VSteamCallbacksImpl@@UP2PSessionConnectFail_t@@$0A@@@
+  0x00A47320  .?AV?$CCallback@VSteamPeerLobbyClass@@ULobbyInvite_t@@$0A@@@
+  0x00A473A0  .?AV?$CCallback@VSteamPeerLobbyClass@@ULobbyKicked_t@@$0A@@@
+  0x00A473F0  .?AV?$CCallback@VSteamPeerLobbyClass@@ULobbyChatMsg_t@@$0A@@@
+  0x00A47440  .?AV?$CCallback@VSteamPeerLobbyClass@@ULobbyDataUpdate_t@@$0A@@@
+  0x00A474A0  .?AV?$CCallback@VSteamPeerLobbyClass@@ULobbyChatUpdate_t@@$0A@@@
+  0x00A47530  .?AV?$CCallback@VSteamPeerLobbyClass@@UItemInstalled_t@@$0A@@@
+  0x00A475B0  .?AV?$CCallResult@VSteamPeerLobbyClass@@ULobbyMatchList_t@@@@
+  0x00A47600  .?AV?$CCallResult@VSteamPeerLobbyClass@@ULobbyCreated_t@@@@
+  0x00A47650  .?AV?$CCallResult@VSteamPeerLobbyClass@@ULobbyEnter_t@@@@
+  0x00A476A0  .?AV?$CCallResult@VSteamPeerLobbyClass@@USteamUGCQueryCompleted_t@@@@
+  0x00A47808  .?AV?$DynamicVectorClass@PEAVPacketClass@@@@
+  0x00A4A0F0  .?AVPacketHandlerClass@@
+  0x00A4A1A0  .?AV?$DynamicVectorClass@P6A_NPEAVPacketClass@@PEAX@Z@@
+  0x00A4A1F0  .?AV?$DynamicVectorClass@P6AXPEAVPacketHandlerClass@@PEAXAEAVIPAddressClass@@@Z@@
+  0x00A4A260  .?AV?$DynamicVectorClass@UtPacketMagicStruct@PacketTypeClass@@@@
+  0x00A4A2C0  .?AV?$DynamicVectorClass@PEAVConnectionClass@@@@
+  0x00A4A350  .?AV?$ReferenceListClass@VPacketClass@@@@
+  0x00A4A5D0  .?AV?$DynamicVectorClass@PEAUIStaticPortMapping@@@@
+  0x00A4A6A8  .?AVWinsockAsyncSocketImpl@@
+  0x00A4A788  .?AVPacketClass@@
+  0x00A4A7B0  .?AV?$PooledObjectClass@VPacketClass@@$0BE@VFastThreadLockClass@@@@
+  0x00A4A890  .?AV?$MultiLinkedListClass@VSignalListenerClass@@@@
+  0x00A4B340  .?AVSignalListenerClass@@
+  0x00A4CAF0  .?AV?$DynamicVectorClass@UPacketIdentifierStruct@BroadcasterClass@@@@
+  0x00A4D4A8  .?AVOpportunityTargetAcquiredDataClass@@
+  0x00A4D870  .?AV?$LinkedListEntryClass@VEventClass@@@@
+  0x00A52678  .?AVTransportDataPackClass@@
+  0x00A526B0  .?AV?$PooledObjectClass@VTransportDataPackClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A52830  .?AVTransportBehaviorClass@@
+  0x00A52860  .?AV?$PooledObjectClass@VTransportBehaviorClass@@$0BE@VEmptyLockerClass@@@@
+  0x00A548C0  .?AVLuaCreateCinematicTransport@@
+  0x00A5A330  .?AVGarrisonTransportBehaviorClass@@
+  0x00A5A408  .?AVGarrisonHoverTransportBehaviorClass@@
+  0x00A5ADE8  .?AVTransportLandingBehaviorClass@@
+  0x00A5AE20  .?AV?$PooledObjectClass@VTransportLandingBehaviorClass@@$0BE@VEmptyLockerClass@@@@

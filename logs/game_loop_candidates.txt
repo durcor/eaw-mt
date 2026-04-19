@@ -1,0 +1,66 @@
+=== Entry Point ===
+entry: 0x76a428
+  -> entry
+
+=== Callers of Sleep ===
+  Sleep @ 0xfffffffec0000013
+    called from: FUN_0x8e9a0 (call site 0x8ecbf)
+    called from: FUN_0x22e560 (call site 0x22e598)
+    called from: FUN_0x5d990 (call site 0x5f16b)
+    called from: FUN_0x1bdd40 (call site 0x1bde15)
+    called from: FUN_0x2d640 (call site 0x2d685)
+    called from: FUN_0xcc1a0 (call site 0xcc1b5)
+    called from: FUN_0xc9900 (call site 0xc9c51)
+    called from: FUN_0xc9900 (call site 0xc9d89)
+    called from: FUN_0x1797f0 (call site 0x17990a)
+    called from: FUN_0x2060b0 (call site 0x2060d9)
+    called from: FUN_0x225450 (call site 0x2254a8)
+    called from: FUN_0x224b90 (call site 0x224d57)
+    called from: FUN_0x224b90 (call site 0x224e07)
+    called from: FUN_0x224b90 (call site 0x224eb7)
+    called from: FUN_0x224b90 (call site 0x224f48)
+    called from: FUN_0x224b90 (call site 0x224ff7)
+    called from: FUN_0x224b90 (call site 0x2250a7)
+    called from: FUN_0x224b90 (call site 0x225157)
+    called from: FUN_0x224b90 (call site 0x225207)
+    called from: FUN_0x224b90 (call site 0x2252b7)
+    called from: FUN_0x224b90 (call site 0x225367)
+    called from: FUN_0x223e40 (call site 0x223e87)
+    called from: FUN_0x72210 (call site 0x72292)
+    called from: FUN_0x60330 (call site 0x60814)
+
+=== Callers of QueryPerformanceCounter ===
+  QueryPerformanceCounter @ 0xfffffffec000007c
+    called from: FUN_0x76ab1c (call site 0x76ab72)
+    called from: FUN_0x1a7370 (call site 0x1a73ef)
+    called from: FUN_0x216490 (call site 0x216499)
+    called from: FUN_0x222e20 (call site 0x222e6c)
+    called from: FUN_0x222e90 (call site 0x222ea7)
+    called from: FUN_0x222ed0 (call site 0x222f2a)
+    called from: FUN_0x222f50 (call site 0x222f67)
+    called from: FUN_0x222fa0 (call site 0x222fb7)
+
+=== Callers of QueryPerformanceFrequency ===
+  QueryPerformanceFrequency @ 0xfffffffec0000015
+    called from: FUN_0x1a7370 (call site 0x1a7398)
+    called from: FUN_0x222e20 (call site 0x222e29)
+    called from: FUN_0x222ed0 (call site 0x222ee2)
+    called from: FUN_0x51d10 (call site 0x51fcb)
+
+=== Functions referencing 'Main Thread' string ===
+  "Main Thread" referenced in FUN_0x14fa0
+
+=== Functions referencing 'LoadThread' string ===
+  "LoadThread" referenced in FUN_0x8df00
+
+=== Functions referencing 'FrameSynchronizer' string ===
+  "FrameSynchronizer waiting for player %ls. My frame = %d, their frame = %d, MaxAhead = %d
+" referenced in FUN_0x27c5f0
+  "FrameSynchronizer waiting for player %ls. received_commands = %d, their_commands = %d
+" referenced in FUN_0x27c5f0
+  "FrameSynchronizerClass::Register_Frame_Information:	player %d (%ls), frame %d, command_count %d
+" referenced in FUN_0x27d400
+  "FrameSynchronizerClass::Calculate_Frame_CRC -- GOM:0x%8.8X, RND:0x%8.8X, PLR:0x%8.8X
+" referenced in FUN_0x27c3d0
+  "FrameSynchronizerClass::Calculate_Frame_CRC -- no_scoring_crc = 0x%8.8X
+" referenced in FUN_0x27c3d0

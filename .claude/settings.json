@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "deny": [
+      "Write(/home/ty/)",
+      "Edit(/home/ty/)"
+    ],
+    "allow": [
+      "Write(/home/ty/src/eaw-reverse-engineering/)",
+      "Edit(/home/ty/src/eaw-reverse-engineering/)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/run/current-system/sw/bin/python3 /home/ty/src/eaw-reverse-engineering/.claude/hooks/check-write-scope.py",
+            "statusMessage": "Checking write scope..."
+          }
+        ]
+      }
+    ]
+  }
+}
