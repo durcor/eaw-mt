@@ -1,6 +1,6 @@
 # Renderer
 
-**Status:** Phase 2 complete — flush entry point and call chain confirmed.
+**Status:** Phase 4 Step 2 — render thread separation implemented (serialized baseline).
 **Last verified:** 2026-04-19
 
 ---
@@ -72,18 +72,37 @@ The geometry limit message confirms render tasks carry vertex/index budget metad
 - **Size:** 2078 bytes
 - **Signature (inferred):** `void FUN_140180dc0(alGraphicsDriver *driver, uint pass_mask)`
 
-### Call Chain (Phase 2 — confirmed)
+### Call Chain (confirmed)
 
 ```
 WinMain game loop
-  └─ FUN_0x180d90  (32 bytes, thin wrapper)
-       ├─ FUN_140180dc0(param_1, 0xbff)   ← render flush, 12 passes
-       └─ FUN_140149650(param_1)           ← post-flush (present / swap)
+  └─ thunk → FUN_140180d90  (RVA 0x180d90, 32 bytes, thin wrapper)
+                ├─ FUN_140180dc0(param_1, 0xbff)   ← flush body, 12 passes
+                └─ FUN_140149650(param_1)           ← drain/free all task lists
 ```
 
-`FUN_0x180d90` is the only caller of `FUN_0x180dc0`. It passes bitmask `0xbff` (all passes except bit 10),
-then calls `FUN_140149650` which is the present/swap-chain step. The wrapper is called from the scene
-manager / always-path section of the main loop (not gated on game-active).
+`FUN_140180d90` is the only caller of `FUN_140180dc0`. It passes bitmask `0xbff` (all 12 passes),
+then calls `FUN_140149650` which destructs all render tasks and resets the 12 pass sentinels.
+
+### WinMain Frame Structure (confirmed — Phase 4)
+
+WinMain performs **two render flushes per frame** with no sim tick between them:
+
+```
+sim_tick (line 556)        ← game logic, writes render tasks
+flush#1 (line 571)         ← FUN_140180d90 call #1
+  [inter-flush work]       ← lines 571–626, modifies render task data
+flush#2 (line 627)         ← FUN_140180d90 call #2
+  [post-flush cleanup]     ← zeroes sentinel.next pointers
+```
+
+`FUN_140149650` (drain/free) must run between flush#1 and flush#2 in the original design.
+It destructs all 12 pass lists and resets `sentinel.next = sentinel` on each pass.
+
+### Render Task List Layout
+
+12 pass sentinels at `driver + 0x6c2f0`, stride `0x48`, doubly-linked circular lists.
+`sentinel.next == sentinel` means an empty pass list.
 
 ### Flush Structure
 
@@ -106,8 +125,22 @@ produced here when a task's pverts/lverts/indices exceeds 0xffff.
 
 ## Parallelization Assessment
 
-- **Rating:** High (blueprint Model A — lowest risk)
-- **Approach:** Double-buffer render task list; game logic thread writes, render thread reads+flushes
-- **Blocker resolved:** `FUN_0x180d90` is called from the always-path of the main loop; the accumulate phase (game-active path) runs first, then flush. Fully serialized — no current pipelining.
-- **D3D9 constraint:** D3D9 device calls must remain on the thread that created the device — render thread must own D3D context
-- **Model A insertion point:** Between the game-active accumulate phase and the `FUN_0x180d90` flush call. Double-buffer the `MultiLinkedListClass<alRenderTask>` list; main thread writes, render thread drains.
+### Phase 4 Step 2 — Serialized render thread (implemented)
+
+The winmm.dll proxy DLL hooks `FUN_140180d90` at RVA `0x180d90` via a 14-byte inline JMP. A dedicated render thread receives a kick event, calls the full trampoline (flush body + drain), then signals render_done. The main thread blocks on render_done before returning from `render_flush_hook`.
+
+**Result:** Stable at 300+ frames. Profiling log available every 300 frames via OutputDebugString.
+
+### Why true flush#1 async is blocked
+
+Confirmed by disassembly at RVA `0x180e80` (FUN_140180dc0 +0xC0/+0xC9) and WinMain frame analysis:
+
+1. **TOCTOU race in flush body:** `FUN_140180dc0` performs two loads of `sentinel.next` — one at `[R9+8]` (guard check) and one at `[RAX+8]` (actual load into RDI). The post-flush cleanup code (WinMain lines 627→next sim_tick) zeroes `sentinel.next` between these two reads, producing a null-deref at `[RDI+0x18]` (RVA `0x180e80`) or garbage read at `[RBX+0x5C]` (RVA `0x180e89`).
+
+2. **Inter-flush data race:** WinMain lines 571–626 run concurrently with an async flush#1 and modify render task data read by the flush body. Confirmed empirically: async flush#1 produced visual flickering (lighting/texture corruption) before crashing at RVA `0x180637` (a task draw call reading `-1`).
+
+**To enable true async:** double-buffer the 12 pass lists so that inter-flush WinMain writes land in a back-buffer while the render thread reads the front-buffer. Requires allocating a second `driver + 0x6c2f0` block and patching all task submission sites to target the back-buffer — significant surgery.
+
+### D3D9 constraint
+
+D3D9 device calls must remain on the thread that created the device. The render thread must own D3D context for the lifetime of the game.

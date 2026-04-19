@@ -1,13 +1,17 @@
 /*
  * winmm_proxy.c — proxy winmm.dll for EaW hook injection
  *
- * Phase 4 Step 2: Model A render thread separation.
+ * Phase 4 Step 2: Model A render thread separation (serialized baseline).
  *
  * Installs an inline hook on FUN_140180d90 (render flush wrapper, RVA 0x180d90).
- * The render flush (12-pass D3D9 draw + present) runs on a dedicated render thread
- * instead of the main thread. Main thread signals the render thread and waits for
- * completion (serialized for now — enables true frame overlap later by removing
- * the wait and double-buffering the render task list).
+ * The render flush (12-pass D3D9 draw + present + task drain) runs on a
+ * dedicated render thread.  The main thread signals the render thread then
+ * blocks on render_done — fully serialized, no concurrent access to render
+ * task lists.
+ *
+ * True frame overlap requires double-buffering the render task lists so that
+ * inter-flush WinMain code (lines 571-626) cannot race with flush#1 reads.
+ * That investigation is deferred; this build establishes the stable baseline.
  *
  * Hook mechanics:
  *   - First 14 bytes of FUN_140180d90 are position-independent (verified):
@@ -18,13 +22,7 @@
  *   - Replaced with: FF 25 00 00 00 00 <abs addr of render_flush_hook>
  *   - Trampoline (VirtualAlloc exec): saved 14 bytes + JMP to RVA+14 (0x180d9e)
  *
- * Build (from inside nix develop):
- *   x86_64-w64-mingw32-gcc -shared -O2 -o patches/experimental/winmm.dll \
- *     hooks/winmm_proxy.c -lkernel32
- *
- * Deploy:
- *   cp patches/experimental/winmm.dll \
- *     ~/gam/steam/steamapps/common/"Star Wars Empire at War"/corruption/
+ * Build: just build-winmm
  *
  * Steam launch options:
  *   WINEDLLOVERRIDES="winmm=n,b" PROTON_USE_NTSYNC=1 %command% STEAMMOD=...
@@ -67,26 +65,82 @@ static volatile LONG g_shutdown = 0;
 /* param_1 passed to FUN_140180d90 (alGraphicsDriver*) */
 static volatile void *g_render_param = NULL;
 
-/* Trampoline: saved prologue bytes + absolute JMP back to RVA+14 */
+/*
+ * Trampoline: saved prologue bytes + absolute JMP back to FUN_140180d90+14.
+ * Calling g_trampoline(p) executes the real FUN_140180d90 from the start,
+ * which calls FUN_140180dc0 (flush body) then FUN_140149650 (task drain).
+ */
 typedef void (WINAPI *RenderFlushFn)(void *);
 static RenderFlushFn g_trampoline = NULL;
 
-static volatile LONG g_param_log_count = 0;
-static void log_param(void *param_1) {
-    LONG n = InterlockedIncrement(&g_param_log_count);
-    if (n <= 10) {
-        char buf[128];
-        sprintf(buf, "[eaw-mt] flush call #%ld param_1=%p\n", (long)n, param_1);
-        OutputDebugStringA(buf);
+/* =========================================================================
+ * Sim tick vtable hook state
+ *
+ * The game mode's virtual Tick() (vtable offset 0x158, index 43) runs once per
+ * frame before both render flushes.  We intercept it here so that when true
+ * async is later enabled, we have the infrastructure to enforce render_done
+ * before sim tick N+1.  In fully serialized mode this hook is a pass-through.
+ *
+ * DAT_140b15418 (RVA 0xb15418) is the current game-mode pointer.  We re-patch
+ * whenever the active vtable changes (galactic ↔ tactical ↔ cinematic, etc.).
+ * ========================================================================= */
+#define GAME_MODE_PTR_RVA  0xb15418ULL
+#define SIM_TICK_VTBL_IDX  (0x158 / 8)    /* = 43 */
+
+typedef void (WINAPI *SimTickFn)(void *, void *, void *, void *);
+static SimTickFn  g_saved_sim_tick = NULL;
+static void     **g_patched_vtable = NULL;
+
+static void WINAPI sim_tick_hook(void *a, void *b, void *c, void *d)
+{
+    g_saved_sim_tick(a, b, c, d);
+}
+
+/* Called from render_flush_hook on every frame.  Patches the active game
+ * mode's vtable[SIM_TICK_VTBL_IDX] with sim_tick_hook, re-patching when the
+ * vtable pointer changes on mode transitions. */
+static void try_patch_sim_tick(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return;
+
+    void *game_mode = *(void **)((BYTE *)exe + GAME_MODE_PTR_RVA);
+    if (!game_mode) return;
+
+    void **vtable = *(void ***)game_mode;
+    if (!vtable || vtable == g_patched_vtable) return;
+
+    /* Restore previous vtable entry on mode transition */
+    if (g_patched_vtable && g_saved_sim_tick) {
+        DWORD old;
+        VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8,
+                       PAGE_EXECUTE_READWRITE, &old);
+        g_patched_vtable[SIM_TICK_VTBL_IDX] = (void *)g_saved_sim_tick;
+        VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8, old, &old);
+        g_patched_vtable = NULL;
+        g_saved_sim_tick = NULL;
     }
+
+    DWORD old;
+    if (!VirtualProtect(&vtable[SIM_TICK_VTBL_IDX], 8,
+                        PAGE_EXECUTE_READWRITE, &old)) {
+        OutputDebugStringA("[eaw-mt] WARN: VirtualProtect for sim tick vtable failed\n");
+        return;
+    }
+    g_saved_sim_tick = (SimTickFn)vtable[SIM_TICK_VTBL_IDX];
+    vtable[SIM_TICK_VTBL_IDX] = (void *)sim_tick_hook;
+    VirtualProtect(&vtable[SIM_TICK_VTBL_IDX], 8, old, &old);
+    g_patched_vtable = vtable;
+    OutputDebugStringA("[eaw-mt] Sim tick hook patched\n");
 }
 
 /* =========================================================================
  * Profiling
  *
- * Timing is split across two threads but there is no race: the implementation
- * is serialized — render_done is signaled before the main thread reads any
- * render-thread timing values on the next call to render_flush_hook.
+ * Timing is split across two threads but there is no race: the render thread
+ * writes g_flush_start/end before signaling render_done; render_flush_hook
+ * reads the timing values after waiting for render_done — so reads are always
+ * after the writes.
  *
  * Logged every PROFILE_WINDOW frames via OutputDebugString.
  * ========================================================================= */
@@ -148,6 +202,9 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
         if (InterlockedCompareExchange(&g_shutdown, 0, 0)) break;
 
         QueryPerformanceCounter(&g_flush_start);
+        /* Full flush+drain via trampoline (FUN_140180dc0 + FUN_140149650).
+         * Main thread is blocked on render_done so there is no concurrent
+         * access to render task lists or the allocator pools. */
         g_trampoline((void *)g_render_param);
         QueryPerformanceCounter(&g_flush_end);
 
@@ -163,9 +220,12 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
  * ========================================================================= */
 
 static void WINAPI render_flush_hook(void *param_1) {
-    log_param(param_1);
+    /* Ensure sim tick vtable is hooked for this game mode */
+    try_patch_sim_tick();
 
-    /* --- record timing from the previous frame (render_done already fired) --- */
+    /* Record timing from the previous frame.
+     * Safe: main thread always waited for render_done before reaching here,
+     * so g_flush_end is valid (render thread wrote it before signaling). */
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     double freq = (double)g_qpc_freq.QuadPart / 1000.0;
@@ -189,7 +249,8 @@ static void WINAPI render_flush_hook(void *param_1) {
     g_frame_start       = now;
     g_frame_start_valid = TRUE;
 
-    /* --- kick render thread --- */
+    /* Kick render thread and block until flush+drain is complete.
+     * Both flushes per frame go through this path — fully serialized. */
     g_render_param = param_1;
     SetEvent(g_render_kick);
     WaitForSingleObject(g_render_done, INFINITE);
@@ -308,7 +369,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             return FALSE;
         }
 
-        /* Install inline hook */
+        /* Install inline hook (also builds g_trampoline) */
         if (!install_render_hook()) return FALSE;
 
         /* Start render thread */
@@ -319,12 +380,20 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         }
         CloseHandle(thread);
 
-        OutputDebugStringA("[eaw-mt] Model A render thread active\n");
+        OutputDebugStringA("[eaw-mt] Model A render thread active (serialized)\n");
     }
 
     if (fdwReason == DLL_PROCESS_DETACH) {
         InterlockedExchange(&g_shutdown, 1);
         if (g_render_kick) SetEvent(g_render_kick);
+        /* Restore vtable entry so the game doesn't call our hook after unload */
+        if (g_patched_vtable && g_saved_sim_tick) {
+            DWORD old;
+            VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8,
+                           PAGE_EXECUTE_READWRITE, &old);
+            g_patched_vtable[SIM_TICK_VTBL_IDX] = (void *)g_saved_sim_tick;
+            VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8, old, &old);
+        }
         if (real_winmm) FreeLibrary(real_winmm);
     }
 
