@@ -1,6 +1,11 @@
 # Large binary originals — tracked via CHECKSUMS.txt only
-# Uncomment if you want to exclude them from git history:
-# binaries/
+binaries/original/*.exe
+binaries/original/*.dll
+binaries/original/*.bin
+!binaries/original/CHECKSUMS.txt
+patches/experimental/*.exe
+patches/experimental/*.dll
+patches/experimental/*.bin
 
 # Ghidra project files
 *.gpr
