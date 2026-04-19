@@ -1,0 +1,25 @@
+=== TOOLCHAIN CHECK — 2026-04-18 ===
+
+Status: ALL CRITICAL TOOLS CONFIRMED
+
+Tool                    Status    Version / Notes
+----------------------  --------  -----------------------------------------------
+python3                 OK        3.13.12
+pefile                  OK        2024.8.26
+capstone                OK        5.0.7
+frida (Python API)      OK        17.5.1
+frida CLI               MISSING   Use: pip install frida-tools  (Python API sufficient for scripting)
+analyzeHeadless         OK        Ghidra 12.0.4 — /nix/store/.../ghidra-12.0.4/lib/ghidra/support/analyzeHeadless
+x86_64-w64-mingw32-gcc  OK        GCC 15.2.0  (MinGW cross-compiler)
+radare2                 OK        6.1.2
+git                     OK        2.53.0
+wine (system)           OK        11.6 (Staging)
+
+Dev environment: nix develop (flake.lock pinned 2026-04-18, nixpkgs nixos-unstable 4bd9165)
+
+Notable binary findings (pre-analysis):
+- tbbR.dll present in game dir — Intel TBB already in use by the engine
+- StarWarsG.exe (12M) is the actual engine binary; swfoc.exe (1.7M) is the launcher/stub
+- sweaw.exe (1.7M) is the base EaW game launcher
+
+Next: Phase 1.1 — PE Header Analysis

@@ -1,0 +1,23 @@
+# Large binary originals — tracked via CHECKSUMS.txt only
+# Uncomment if you want to exclude them from git history:
+# binaries/
+
+# Ghidra project files
+*.gpr
+*.rep/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Nix
+result
+result-*
+
+# Logs (optional — keep for reference)
+# logs/
+
+# OS
+.DS_Store
