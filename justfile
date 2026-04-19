@@ -3,6 +3,15 @@ game-dir := env('HOME') + "/gam/steam/steamapps/common/'Star Wars Empire at War'
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
 
+ghidra-script script:
+  nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
+    ghidra_projects EawProject \
+    -process StarWarsG.exe \
+    -noanalysis \
+    -scriptPath tools/ghidra_scripts \
+    -postScript {{script}}.java \
+    -log logs/{{script}}.log
+
 build-winmm:
   nix develop --command x86_64-w64-mingw32-gcc -shared -o patches/experimental/winmm.dll hooks/winmm_proxy.c -lkernel32
   cp patches/experimental/winmm.dll {{game-dir}}
@@ -24,3 +33,6 @@ remove-hook:
   {{wine}} reg delete \
     "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows" \
     /v AppInit_DLLs /f
+
+run-game:
+  WINEDLLOVERRIDES="winmm=n,b" WINEDEBUG=+debugstr PROTON_USE_NTSYNC=1 %command% STEAMMOD=1125571106
