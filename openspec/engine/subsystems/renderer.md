@@ -1,7 +1,7 @@
 # Renderer
 
-**Status:** Phase 1.2 complete — class/task structure identified. RVAs pending Phase 1.3.
-**Last verified:** 2026-04-18
+**Status:** Phase 2 complete — flush entry point and call chain confirmed.
+**Last verified:** 2026-04-19
 
 ---
 
@@ -71,7 +71,19 @@ The geometry limit message confirms render tasks carry vertex/index budget metad
 - **RVA:** `0x180dc0`
 - **Size:** 2078 bytes
 - **Signature (inferred):** `void FUN_140180dc0(alGraphicsDriver *driver, uint pass_mask)`
-- **Called from:** somewhere in the game-active update path (not directly from WinMain — Phase 2 will trace the exact call chain)
+
+### Call Chain (Phase 2 — confirmed)
+
+```
+WinMain game loop
+  └─ FUN_0x180d90  (32 bytes, thin wrapper)
+       ├─ FUN_140180dc0(param_1, 0xbff)   ← render flush, 12 passes
+       └─ FUN_140149650(param_1)           ← post-flush (present / swap)
+```
+
+`FUN_0x180d90` is the only caller of `FUN_0x180dc0`. It passes bitmask `0xbff` (all passes except bit 10),
+then calls `FUN_140149650` which is the present/swap-chain step. The wrapper is called from the scene
+manager / always-path section of the main loop (not gated on game-active).
 
 ### Flush Structure
 
@@ -96,5 +108,6 @@ produced here when a task's pverts/lverts/indices exceeds 0xffff.
 
 - **Rating:** High (blueprint Model A — lowest risk)
 - **Approach:** Double-buffer render task list; game logic thread writes, render thread reads+flushes
-- **Blocker:** Must verify game logic and render are currently serialized (not already pipelined)
+- **Blocker resolved:** `FUN_0x180d90` is called from the always-path of the main loop; the accumulate phase (game-active path) runs first, then flush. Fully serialized — no current pipelining.
 - **D3D9 constraint:** D3D9 device calls must remain on the thread that created the device — render thread must own D3D context
+- **Model A insertion point:** Between the game-active accumulate phase and the `FUN_0x180d90` flush call. Double-buffer the `MultiLinkedListClass<alRenderTask>` list; main thread writes, render thread drains.

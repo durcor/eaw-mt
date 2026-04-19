@@ -89,9 +89,14 @@ The `LuaScriptClass` structure stores coroutine data at:
 - `+0x58`: primary `lua_State*`
 - `+0x60`: active coroutine index (−1 = main state)
 
-## Entry Point / Tick RVA
+## Lua Object Pool Tick — RVA `0x24bb80`
 
-**TODO** — Phase 2. The Lua tick will be somewhere in the main-thread game-active update path; exact RVA pending call-graph tracing.
+- **Size:** 351 bytes
+- **Called:** every frame, unconditionally (WinMain main loop)
+- **Purpose:** Maintains a pool of `LuaValue` objects. Each tick, allocates objects up to a cap of `0x200` (512). This is a pre-allocation / free-list top-up, not a GC step.
+- **Shared state:** Writes to the `LuaValue` pool heap. If Lua is moved to its own thread, this tick must move with it — or be guarded if it ever shares the pool with C++ callers.
+
+The actual Lua coroutine scheduler tick (where scripts run) is not yet identified. It is likely inside the scene manager (`FUN_0x30c3b0`) or the game-active branch, not in the unconditional ticks.
 
 ## Parallelization Assessment
 
