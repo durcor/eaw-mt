@@ -1,0 +1,24 @@
+// RVA 0x180d90  VA 0x140180d90
+// Instructions:
+  +00  180d90  40 53                           PUSH RBX
+  +02  180d92  48 83 ec 20                     SUB RSP,0x20
+  +06  180d96  ba ff 0b 00 00                  MOV EDX,0xbff
+  +11  180d9b  48 8b d9                        MOV RBX,RCX
+  +14  180d9e  e8 1d 00 00 00                  CALL 0x140180dc0
+  +19  180da3  48 8b cb                        MOV RCX,RBX
+  +22  180da6  48 83 c4 20                     ADD RSP,0x20
+  +26  180daa  5b                              POP RBX
+  +27  180dab  e9 a0 88 fc ff                  JMP 0x140149650
+
+// RVA 0x13d3f0  VA 0x14013d3f0
+// Instructions:
+  +00  13d3f0  e9 9b 39 04 00                  JMP 0x140180d90
+  +05  13d400  48 89 5c 24 08                  MOV qword ptr [RSP + 0x8],RBX
+  +10  13d405  48 89 74 24 10                  MOV qword ptr [RSP + 0x10],RSI
+  +15  13d40a  57                              PUSH RDI
+  +16  13d40b  48 83 ec 20                     SUB RSP,0x20
+  +20  13d40f  41 0f b6 f9                     MOVZX EDI,R9B
+  +24  13d413  8b f1                           MOV ESI,ECX
+  +26  13d415  41 0f b6 d8                     MOVZX EBX,R8B
+  +30  13d419  e8 12 a8 03 00                  CALL 0x140177c30
+
