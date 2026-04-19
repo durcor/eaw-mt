@@ -299,6 +299,8 @@ For each file in `openspec/engine/subsystems/`, produce this minimum spec entry:
 
 **Do not begin until Phase 2 is at least 60% complete and has been human-reviewed.**
 
+Phase 2 is complete. Phase 3 reverse engineering (GOM/simulation tick drill-down) is complete. Architecture design is now the active work.
+
 Evaluate these models in order of risk. Choose the lowest-risk viable option first:
 
 ### Model A — Render Thread Separation (Lowest Risk)
@@ -306,15 +308,21 @@ Separate render submission from game logic. Game logic thread writes a command b
 
 **Gate:** Renderer must read game state in a way that can be snapshotted or double-buffered.
 
-### Model B — Script Engine Offload (Medium Risk)
-Move Lua tick to a worker thread running one frame ahead or behind. Removes stall from main thread at the cost of one frame of script latency.
+### Model B — Lua Coroutine Pump Offload (Medium Risk)
+Move `FUN_140247a90` (Pump_Threads) to a worker thread. The coroutine array (`this+0x40`) appears independently iterable — each slot holds one unit's Lua coroutine state. One frame of script latency is acceptable for Thrawn's Revenge AI.
 
-**Gate:** Scripts must not require synchronous same-frame reads/writes to shared state.
+**Gate (open — partially cleared):**
+- ✅ `thunk_FUN_1407bc310` confirmed as Lua 5.1 `lua_resume` — coroutines are independent lua_State objects.
+- ✅ `ServiceRate`/`LastService`: Lua globals read at start of `FUN_140488660` before entering Pump_Threads — snapshot before dispatch is straightforward.
+- ✅ Signal listener list: read-only during Pump_Threads execution; only written during subscribe/unsubscribe (init/shutdown).
+- ⚠️ **OPEN HAZARD**: `FUN_140247700` case 1 traverses C++ entity hierarchy (reads `entity->list[4]`, `entity->list[5]`). Main-thread command queue processor `FUN_1403b08c0` writes game-object state. These overlap and must be synchronized (or coroutine execution must be guaranteed to run before command queue processes writes, which is already the case given current call order: mode vtable[0x158] fires before `FUN_1403b08c0` in WinMain). If offloaded to a separate thread, a snapshot or read-lock of game-object state is required for yield type 1.
+
+**Specific insertion point:** After rate-check passes in `FUN_140488660` (TheGameScoringManagerClass::Service), before the `FUN_140247a90` call. Snapshot the coroutine array pointer + count, dispatch to thread pool, join before next frame's rate-check.
 
 ### Model C — AI Faction Parallelism (Higher Risk)
 Fork-join per faction AI update. Snapshot world state, dispatch worker per faction, join before write-back.
 
-**Gate:** Faction AI updates must be sufficiently isolated during the tick.
+**Gate:** Faction AI updates must be sufficiently isolated during the tick. Phase 3 confirms AI is entirely Lua-based; faction isolation depends on whether Lua coroutines share any mutable C++ game-object state during a single pump cycle.
 
 Document chosen architecture in `openspec/engine/threading_model.md` with full rationale. **Human approval required before Phase 4.**
 
@@ -418,12 +426,69 @@ At the start of every session, before any work:
 7. ✅ Phase 1.2 complete — 21K functions exported, string survey done, thread roster + render task system documented.
 8. ✅ Phase 1.3 complete — WinMain identified at `0x5d990`, game loop structure documented, frame timing confirmed as `timeGetTime()`-based.
 
-### Current Task — Phase 2 Subsystem Mapping
+### Completed (Phase 2) ✅
 
-Phase 1 is complete. Begin Phase 2 per Section 5 priority order:
-1. Renderer — render flush RVA known (`0x180dc0`); trace call chain from main loop
-2. Script engine — Lua coroutine model confirmed; audit Lua ↔ C++ shared-state bindings
-3. AI update loop
-4. Pathfinding
-5. Entity/unit state update
-6. Galactic map tick
+Phase 2 subsystem mapping complete. All per-frame callees identified:
+
+- ✅ **Renderer** — call chain confirmed: `FUN_0x180d90` wraps `FUN_0x180dc0`. Accumulate + flush are serialized. Model A insertion point confirmed.
+- ✅ **Audio** — 4 game-active callees are all audio: MSS core tick, music/speech event managers, camera listener update. GOM tick is **not** in the game-active list.
+- ✅ **Networking** — BroadcasterClass, multiplayer sync (59 objects/player/frame), dialog voting, session timeouts, event queue cleaner all mapped.
+- ✅ **UI** — Tooltip system (33ms throttle), timed callback queue + tweening, command queue processor.
+- ✅ **Game mode state machine** — `FUN_0x30c3b0` dispatches to 10+ galactic/space/land subsystem ticks per mode. GOM tick is likely inside the mode-1 galactic map dispatch.
+- ✅ **Script engine** — Lua pool tick at `0x24bb80`. Coroutine scheduler tick location still unknown.
+
+### Completed (Phase 3) ✅
+
+Phase 3 GOM / simulation tick drill-down complete.
+
+**Key finding: There is no native C++ per-unit iterate-and-call loop.** All per-unit AI is Lua-based, driven by a coroutine pump.
+
+#### WinMain loop order (corrected)
+Simulation tick runs **before** the Win32 message pump each frame:
+```
+mode->vtable[0x2B]  (offset 0x158)  ← simulation tick, runs FIRST
+Win32 message pump
+Render flush
+```
+
+#### Complete per-unit AI call chain
+```
+WinMain
+  → (*DAT_140b15418 + 0x158)()  [mode vtable slot 43]
+  → FUN_14035cc10               [combat mode per-frame tick]
+      fires event 0x23 via FUN_140220ed0 → FUN_140240940 (signal dispatcher)
+  → FUN_140488660               [TheGameScoringManagerClass::Service]
+      reads Lua globals "ServiceRate" / "LastService" to rate-limit
+  → FUN_140247a90               [Pump_Threads — 953 bytes]
+      iterates DVC at this+0x40..+0x48, stride 0x40 per slot
+  → thunk_FUN_1407bc310         [lua_resume equivalent, per coroutine]
+```
+
+#### TheGameScoringManagerClass layout (0x20 bytes)
+| Offset | Field | Notes |
+|--------|-------|-------|
+| +0x00 | vftable | RVA 0x8742b8 |
+| +0x08 | (padding) | — |
+| +0x10 | lua_script | pointer to Lua script object |
+| +0x18 | flags | 2-byte field (shutdown flag at +0x121 in manager) |
+
+Singleton getter: `FUN_14004fd50`; constructor: `FUN_140485340` (28 bytes); shutdown: `FUN_1402488e0` (754 bytes).
+
+#### Three-layer AI architecture
+- **Layer 1 — Lua coroutines** (rate-limited by `ServiceRate` global): high-level AI decisions
+- **Layer 2 — Command queue** `FUN_1403b08c0` (every frame): low-level command execution
+- **Layer 3 — Combat schedulers** (bombing/bombardment, called directly from `FUN_14035cc10`): combat-specific timers
+
+#### Parallelization implications for Model B / Model C
+- `FUN_140247a90` (Pump_Threads) is the **primary candidate** for Model B offload — it iterates an array of Lua coroutines with no obvious inter-coroutine dependencies during a single pump.
+- `FUN_1403b08c0` (command queue) is a secondary candidate; needs shared-state audit.
+- Signal dispatch (`FUN_140240940`) is single-threaded; listener list is shared mutable state — must be read-locked before any threading patch.
+- `ServiceRate` / `LastService` Lua globals are written by the main thread each frame; offloading the pump requires snapshotting these before dispatch.
+
+### Current Tasks — Phase 3 Loose Ends + Phase 4 Prep
+
+1. ⚠️ **Map LoadThread scope** — thread creation mechanism fully traced (`FUN_14022e490` → `_beginthreadex(FUN_14022e400)` → `LoadingThreadClass::vftable[1]`). Front-end trigger: `FUN_1400c5250` (button handler). LoadThread sync with main thread: `ThreadLockMutexClass` (Win32 mutex, 10-second deadlock detection), concentrated in RVA `0x219xxx–0x21exxx`. **Remaining**: decompile `LoadingThreadClass::vftable[1]` to confirm asset types and main-thread sync points.
+2. ✅ **Confirm `FUN_140215b90`** — frame profiler (writes `Slow_Frame_Profile_NNN.xml` on slow frames, only called from WinMain). Not a timer subsystem.
+3. ✅ **Identify mode vtable[43] for non-combat modes** — all three mode classes (`GalacticModeClass`, `LandModeClass`, `SpaceModeClass`) have `FUN_14035cc10` at vtable slot 43. Signal 0x23 only has registered listeners in combat (when `DAT_140b15b10 != 0`). Mode IDs: 0=Galactic, 1=Land, 2=Space.
+4. ✅ **Trace `thunk_FUN_1407bc310`** — confirmed Lua 5.1 `lua_resume`. Coroutines are independent `lua_State*` objects; each slot in the DVC is a separate coroutine.
+5. ✅ **Shared-state audit for Pump_Threads** — primary hazard: `FUN_140247700` case 1 traverses C++ entity hierarchy (reads game objects). Main thread `FUN_1403b08c0` writes game-object state. Must synchronize for Model B. See §6 Model B gate conditions.
