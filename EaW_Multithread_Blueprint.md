@@ -332,46 +332,52 @@ Document chosen architecture in `openspec/engine/threading_model.md` with full r
 
 **Do not begin until threading architecture is human-approved.**
 
-### Hook DLL on Wine/Linux
+### Hook DLL on Wine/Linux — VALIDATED approach (2026-04-19)
 
-```c
-// hooks/eaw-mt-hook.c
-#include <windows.h>
+**Injection method:** proxy `winmm.dll` — the only reliable approach under Proton.
+`AppInit_DLLs` and bare `WINEDLLOVERRIDES` with a novel DLL name are both silently
+ignored by Proton. A proxy for an imported DLL is the only method confirmed to work.
 
-BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
-    if (fdwReason == DLL_PROCESS_ATTACH) {
-        OutputDebugStringA("[eaw-mt] Hook DLL loaded successfully\n");
-    }
-    return TRUE;
-}
-```
+**Why winmm.dll:** StarWarsG.exe imports exactly 4 functions from WINMM:
+`timeEndPeriod`, `timeBeginPeriod`, `timeGetDevCaps`, `timeGetTime`.
+All 4 are forwarded to the real `C:\windows\system32\winmm.dll` loaded dynamically.
 
+**Source:** `hooks/winmm_proxy.c`
+
+**Build (from inside nix develop):**
 ```bash
-# 64-bit build:
-x86_64-w64-mingw32-gcc -shared -o patches/experimental/eaw-mt-hook.dll \
-  hooks/eaw-mt-hook.c -lkernel32
-
-# 32-bit build:
-i686-w64-mingw32-gcc -shared -o patches/experimental/eaw-mt-hook.dll \
-  hooks/eaw-mt-hook.c -lkernel32
+x86_64-w64-mingw32-gcc -shared -o patches/experimental/winmm.dll \
+  hooks/winmm_proxy.c -lkernel32
 ```
 
-Inject via Steam launch options:
-```
-WINEDLLOVERRIDES="eaw-mt-hook=n,b" %command%
-```
-
-Verify load with Frida:
+**Deploy:**
 ```bash
-frida -n swfoc.exe -e \
-  "Process.enumerateModules().forEach(m => { if(m.name.includes('hook')) console.log('Hook loaded:', m.name); })"
+cp patches/experimental/winmm.dll \
+  ~/gam/steam/steamapps/common/"Star Wars Empire at War"/corruption/
 ```
+
+**Steam launch options:**
+```
+WINEDLLOVERRIDES="winmm=n,b" PROTON_USE_NTSYNC=1 %command% STEAMMOD=1125571106
+```
+
+**Verify load** (Wine debug output — add `WINEDEBUG=+debugstr` to launch options):
+```
+0184:warn:debugstr:OutputDebugStringA "[eaw-mt] winmm proxy loaded ..." 
+```
+
+Or check `/proc/$(pgrep StarWarsG.exe)/maps` for two winmm entries (proxy + real).
+
+**Do NOT use:**
+- `AppInit_DLLs` registry key — Proton ignores it
+- `WINEDLLOVERRIDES` with a DLL name not already imported by the game — Wine won't load it
+- Frida attach — crashes Wine processes; use spawn or /proc/maps for verification
 
 ### Implementation Order
 
 Each step requires human validation before proceeding:
 
-1. **Scaffold only:** Load DLL, confirm it prints, exit cleanly. No behavior changes.
+1. **Scaffold only:** ✅ COMPLETE (2026-04-19) — winmm proxy loads, OutputDebugString confirmed.
 2. **Render thread separation (Model A):** Validate over 30+ minute session. Human sign-off required.
 3. **Profile:** Use Frida to measure where remaining frame time goes after Model A.
 4. **Second thread:** Implement Model B or C based on profiling. One at a time.
