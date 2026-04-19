@@ -130,7 +130,7 @@ On every 64th frame (`frame_counter & 0x3f == 0x3f`), a 1-second `timeGetTime` c
 | `0x215b90` | every frame | Timer subsystem tick — takes `delta_ms * scale` |
 | `0x339bc0` | every frame | Unknown subsystem tick, takes abs time |
 | `0x22c50`  | every frame | Unknown subsystem tick, takes abs time |
-| `0x21caf0` | game active | **Primary game-state update** — takes abs time + viewport/camera params |
+| `0x21caf0` | game active | **Audio system tick** (Miles Sound System) — `AIL_set_listener_3D_position/Orientation`, music/SFX ticks, `AIL_serve()` |
 | `0x2d72c0` | game active | Subsystem tick — takes abs time + frame counter |
 | `0x2d2ab0` | game active | Subsystem tick — takes abs time + frame counter |
 | `0x321dc0` | game active | Subsystem tick — takes abs time + frame counter |
@@ -187,9 +187,18 @@ concurrent frame work is happening. This is the baseline Model A assumes.
 
 ---
 
-## TODOs for Phase 1.4
+## Phase 1.4 Findings (complete)
 
-- [ ] Identify render task flush function (xref from `alRenderTask` vftable or `MultiLinkedListClass<alRenderTask>`)
-- [ ] Confirm `FUN_14021caf0` is the game object manager tick (decompile + cross-reference with GOM strings)
+**1.4A — Render flush:** `FUN_0x180dc0` confirmed — 12-pass task list iterator, batch geometry flush, per-task `vftable[0x10]` Execute call. See `openspec/engine/subsystems/renderer.md`.
+
+**1.4B — GOM tick misidentification corrected:** `FUN_14021caf0` is the **Miles Sound System (MSS) audio tick** — calls `AIL_set_listener_3D_position`, `AIL_set_listener_3D_orientation`, `AIL_serve()`. The GOM tick is unidentified; the callee table above has been corrected.
+
+**1.4C — Lua confirmed as coroutines:** Only 4 OS threads in the entire binary. `LuaScriptThread` labels are Lua coroutine names, not OS thread names. See `openspec/engine/threading_model.md`.
+
+## TODOs for Phase 2
+
+- [ ] Find GOM tick — trace `FUN_1402d72c0`, `FUN_1402d2ab0`, `FUN_140321dc0`, `FUN_140325190`
+- [ ] Trace exact call chain from game-active path to render flush `FUN_0x180dc0`
+- [ ] Map LoadThread scope — what asset types, what sync with main thread
 - [ ] Map remaining unconditional per-frame callees (`0x24bb80`, `0x2505c0`, etc.) to subsystems
 - [ ] Determine whether `FUN_140215b90` is the same timer subsystem initialized at `0x1a7370`

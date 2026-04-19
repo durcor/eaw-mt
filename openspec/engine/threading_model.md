@@ -1,24 +1,24 @@
 # Threading Model
 
-**Status:** Phase 1.2 string survey complete. Named threads confirmed. Architecture TBD pending Phase 1.3 game loop analysis.
-**Last verified:** 2026-04-18
+**Status:** Phase 1.4 complete — OS thread roster fully mapped. Lua confirmed as coroutines.
+**Last verified:** 2026-04-19
 
 ---
 
-## Confirmed Thread Roster (from string evidence)
+## OS Thread Roster — COMPLETE (Phase 1.4C)
 
-| Thread Name | String RVA | Notes |
-|-------------|-----------|-------|
-| `Main Thread` | 0x00854DA8 | Primary game loop thread |
-| `LoadThread` | 0x00805150 | Asset loading (async I/O) |
-| `PacketHandler Thread` | 0x00851FE8 | Network packet processing |
-| `NATUtilsThread` | 0x00853530 | NAT traversal / networking util |
-| `LuaScriptThread: Main State` | 0x00855CD0 | Primary Lua state thread |
-| `LuaScriptThread: %s` | 0x00855CF0 | Named Lua coroutines/threads |
+All thread creation in `StarWarsG.exe` goes through a single wrapper `FUN_0x22e490` which calls `_beginthreadex`. That wrapper has exactly **5 call sites** creating **3 distinct thread types**:
 
-**Confidence:** High — these are named thread identifiers used in diagnostics and error messages.
+| Thread Name | Creation Site RVA | Thread Class | Notes |
+|-------------|-------------------|--------------|-------|
+| Main Thread | (WinMain entry) | — | Game loop, all Lua, all game logic |
+| LoadThread | `0x8df00` | `LoadingThreadClass` | Asset loading; owns loading screen loop |
+| PacketHandler Thread | `0x2056d0`, `0x205de0`, `0x2059f0` | `PacketHandlerClass` | Network packet processing; can be re-bound |
+| NATUtilsThread | `0x225bf0` | `NATUtilsClass::NATUtilsThreadClass` | NAT traversal |
 
-The engine already runs **multiple named threads**. It is not single-threaded. Threading primitives in the import table are in active use.
+**Total: 4 OS threads** (main + 3 workers). This is the complete picture — there are no other `CreateThread` or `_beginthreadex` calls anywhere in the binary.
+
+**LuaScriptThread strings are Lua coroutine labels, not OS thread names.** See script_engine.md.
 
 ---
 

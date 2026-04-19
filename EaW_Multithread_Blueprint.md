@@ -241,19 +241,13 @@ See `openspec/engine/threading_model.md` and `openspec/engine/subsystems/rendere
 
 **Key architectural finding:** The main loop is single-threaded — all subsystem ticks run sequentially on the main thread. Worker threads (`LoadThread`, etc.) are started at startup and run independently. This confirms the baseline that Model A assumes.
 
-### 1.4 — Focused Decompilation (Remaining) 🔲 IN PROGRESS
+### 1.4 — Focused Decompilation ✅ COMPLETE
 
-Three open questions from 1.3 that block Phase 2 spec entries:
+**A. Render flush RVA** — `FUN_0x180dc0` (2078 bytes). 12-pass render task list iterator; per-task `vftable[0x10]` Execute; batch geometry flush via `FUN_140183e80`; post-process scene/distortion texture handling. Takes `(alGraphicsDriver*, uint pass_mask)`. See `openspec/engine/subsystems/renderer.md`.
 
-**A. Render task flush RVA** — Find the function that drains `MultiLinkedListClass<alRenderTask>` and issues D3D draw calls. This is the exact split point for Model A. Without it, the renderer Phase 2 entry cannot be completed.
-- Strategy: xref from `alRenderTask` vftable or find `IDirect3DDevice9::DrawIndexedPrimitive` callers
+**B. Audio system, not GOM** — `FUN_14021caf0` is the **Miles Sound System audio tick** (calls `AIL_set_listener_3D_position`, `AIL_serve`, etc.), not the GOM tick. The GOM tick is unidentified; finding it is a Phase 2 task.
 
-**B. GOM tick confirmation** — Confirm `FUN_14021caf0` is the game object manager tick (decompile + cross-reference with GOM-related strings like `GameObjectManager`)
-
-**C. Lua threading** — Confirm whether `LuaScriptThread` entries are OS-level threads (`CreateThread`) or Lua coroutines on one OS thread. This is the critical gate for Phase 3 Model B.
-- Strategy: xref `LuaScriptThread` string to the function that creates it; check if it calls `CreateThread`
-
-Document results in `openspec/engine/subsystems/script_engine.md` (Lua) and `openspec/engine/subsystems/renderer.md` (flush RVA).
+**C. Lua confirmed as coroutines** — Only **4 OS threads** in the entire binary (main + LoadThread + PacketHandler + NATUtils). All `_beginthreadex` calls go through one wrapper (`FUN_0x22e490`), which has exactly 5 call sites. No Lua OS thread creation anywhere. `LuaScriptThread` labels are Lua coroutine names. This removes the Model B gate blocker — moving Lua to a dedicated OS thread is now confirmed viable (pending shared-state audit in Phase 2). See `openspec/engine/threading_model.md`.
 
 ---
 
@@ -424,14 +418,12 @@ At the start of every session, before any work:
 7. ✅ Phase 1.2 complete — 21K functions exported, string survey done, thread roster + render task system documented.
 8. ✅ Phase 1.3 complete — WinMain identified at `0x5d990`, game loop structure documented, frame timing confirmed as `timeGetTime()`-based.
 
-### Current Task — Phase 1.4
+### Current Task — Phase 2 Subsystem Mapping
 
-Complete the three targeted decompiles before beginning Phase 2:
-
-**A.** Find render task flush RVA (xref from `IDirect3DDevice9::DrawIndexedPrimitive` or `alRenderTask` vftable)
-**B.** Confirm `FUN_14021caf0` is the GOM tick (decompile it)
-**C.** Confirm Lua thread model — OS threads or coroutines (xref `LuaScriptThread` string → creation site → check for `CreateThread` call)
-
-### Next Phase — Phase 2 Subsystem Mapping
-
-Begin after Phase 1.4 is complete. Priority order per Section 5.
+Phase 1 is complete. Begin Phase 2 per Section 5 priority order:
+1. Renderer — render flush RVA known (`0x180dc0`); trace call chain from main loop
+2. Script engine — Lua coroutine model confirmed; audit Lua ↔ C++ shared-state bindings
+3. AI update loop
+4. Pathfinding
+5. Entity/unit state update
+6. Galactic map tick

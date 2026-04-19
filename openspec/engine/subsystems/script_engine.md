@@ -72,13 +72,31 @@ This is a non-trivial debug infrastructure — it confirms Lua threads are first
 | `LuaGetThreadID` | Lua API: get current thread ID |
 | `DatabaseObjectManagerClass<LuaScriptClass>` | Script registry |
 
+## Thread Model — CONFIRMED: Lua Coroutines
+
+**Phase 1.4C finding:** `LuaScriptThreads` are **Lua coroutines running on the main OS thread**, not OS-level threads.
+
+Evidence: all `_beginthreadex` calls in `StarWarsG.exe` go through a single wrapper (`FUN_0x22e490`). That wrapper is called from exactly 5 sites, creating exactly 3 named thread types:
+- `LoadingThreadClass` (LoadThread)
+- `PacketHandlerClass` (PacketHandler Thread)
+- `NATUtilsThreadClass` (NATUtilsThread)
+
+There is no `LuaScriptThread` OS thread creation anywhere. The "LuaScriptThread: Main State" and "LuaScriptThread: %s" strings appear only in error handlers and the `LuaNetworkDebuggerClass` callstack formatter — they are Lua coroutine *labels*, not OS thread names.
+
+The `LuaScriptClass` structure stores coroutine data at:
+- `+0x40`: array of coroutine descriptors (each 0x40 bytes)
+- `+0x48`: array end pointer
+- `+0x58`: primary `lua_State*`
+- `+0x60`: active coroutine index (−1 = main state)
+
 ## Entry Point / Tick RVA
 
-**TODO** — pending Phase 1.3 game loop analysis.
+**TODO** — Phase 2. The Lua tick will be somewhere in the main-thread game-active update path; exact RVA pending call-graph tracing.
 
 ## Parallelization Assessment
 
-- **Rating:** Medium risk (blueprint Model B)
-- **Blocker:** Must confirm whether Lua states are OS threads or coroutines
-- **If coroutines:** can be moved to a dedicated OS thread with minor synchronization work
-- **If OS threads already:** the engine already parallelizes scripts — focus instead on reducing lock contention
+- **Rating:** Medium risk (blueprint Model B) — **updated after Phase 1.4C**
+- **Confirmed:** Lua coroutines on one OS thread. Moving to a dedicated OS thread is viable.
+- **Approach:** Wrap all `lua_State` access behind a mutex or lock-free queue; move the Lua coroutine scheduler to a dedicated worker thread. Main thread posts events; Lua thread processes and posts results back.
+- **Key risk:** Scripts that call back into game object state synchronously (same-frame reads/writes to shared data structures). Must audit Lua ↔ C++ binding functions before implementing.
+- **No longer blocked** by the "OS threads vs coroutines" question — next blocker is the Lua ↔ C++ shared-state audit (Phase 2).

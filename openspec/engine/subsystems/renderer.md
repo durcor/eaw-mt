@@ -66,9 +66,31 @@ render task for %s exceeded the dynamic geometry limits (%d pverts, %d lverts, %
 
 The geometry limit message confirms render tasks carry vertex/index budget metadata.
 
-## Entry Point / Tick RVA
+## Render Flush Entry Point
 
-**TODO** — pending Phase 1.3.
+- **RVA:** `0x180dc0`
+- **Size:** 2078 bytes
+- **Signature (inferred):** `void FUN_140180dc0(alGraphicsDriver *driver, uint pass_mask)`
+- **Called from:** somewhere in the game-active update path (not directly from WinMain — Phase 2 will trace the exact call chain)
+
+### Flush Structure
+
+12 render passes per frame (`local_68 = 0xc` countdown loop), one per render pass type. For each pass:
+
+1. Check which passes are active via `pass_mask` bitmask
+2. Call pass vtable `[0x40]` — begin pass / set render target
+3. Iterate the render task linked list (at `driver + 0xd85e * 8`):
+   - Accumulate tasks into a batch array (`DAT_140a6fd98`)
+   - Geometry budget check: flush via `FUN_140183e80(driver, pverts, lverts, indices)` when 0xfffd limit approached
+   - For each task: call `vftable[0x10](task, driver)` — Execute/Draw
+4. Call `FUN_140183e80` for remaining batch
+5. Call pass vtable `[0x48]`, `[0x50]`, `[0x58]` — draw calls / end pass / post-pass
+
+After all 12 passes: handle scene texture + distortion texture for post-processing
+(`FUN_1401b0280(…,"SceneTexture",…)` / `"DistortionTexture"`).
+
+The geometry limit error string `"ERROR: render task for %s exceeded the dynamic geometry limits"` is
+produced here when a task's pverts/lverts/indices exceeds 0xffff.
 
 ## Parallelization Assessment
 
