@@ -153,6 +153,18 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
  * ========================================================================= */
 
 static void WINAPI render_flush_hook(void *param_1) {
+    /* Guard: log and skip if param_1 looks invalid (NULL or below 64KB).
+     * This catches transitions where the graphics driver is torn down or not
+     * yet initialized (e.g. land battle load). If this fires, the caller is
+     * invoking the render flush with a bad driver pointer — a game-side issue
+     * that the original code also had to handle somehow. */
+    if ((uintptr_t)param_1 < 0x10000) {
+        char buf[128];
+        sprintf(buf, "[eaw-mt] render_flush_hook: skipping bad param_1=%p\n", param_1);
+        OutputDebugStringA(buf);
+        return;
+    }
+
     /* --- record timing from the previous frame (render_done already fired) --- */
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);

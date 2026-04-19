@@ -1,0 +1,6 @@
+// All references to FUN_140180d90 (RVA 0x180d90)
+
+  RVA 0xb56478  type=DATA                       in (no function)
+  RVA 0x13d3f0  type=UNCONDITIONAL_JUMP         in thunk_FUN_140180d90 (fn RVA 0x13d3f0)
+
+// Total references: 2

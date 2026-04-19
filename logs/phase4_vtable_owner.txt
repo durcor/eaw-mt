@@ -1,0 +1,26 @@
+// DATA ref to FUN_140180d90 at RVA 0xb56478
+
+// Surrounding 8-byte pointer slots:
+  slot[-16]  slotRVA=0xb563f8  value=0x959b78001808fd (valueRVA=0x959b76c01808fd)
+  slot[-15]  slotRVA=0xb56400  value=0x180926001808fd (valueRVA=0x180924c01808fd)
+  slot[-14]  slotRVA=0xb56408  value=0x18093000959b8c (valueRVA=0x18092ec0959b8c)
+  slot[-13]  slotRVA=0xb56410  value=0x959b9c00180947 (valueRVA=0x959b9ac0180947)
+  slot[-12]  slotRVA=0xb56418  value=0x1809a500180947 (valueRVA=0x1809a3c0180947)
+  slot[-11]  slotRVA=0xb56420  value=0x1809a500959bac (valueRVA=0x1809a3c0959bac)
+  slot[-10]  slotRVA=0xb56428  value=0x959bc0001809a6 (valueRVA=0x959bbec01809a6)
+  slot[ -9]  slotRVA=0xb56430  value=0x1809c8001809b0 (valueRVA=0x1809c6c01809b0)
+  slot[ -8]  slotRVA=0xb56438  value=0x1809c800959bd0 (valueRVA=0x1809c6c0959bd0)
+  slot[ -7]  slotRVA=0xb56440  value=0x959bdc00180a32 (valueRVA=0x959bdac0180a32)
+  slot[ -6]  slotRVA=0xb56448  value=0x180a3300180a32 (valueRVA=0x180a31c0180a32)
+  slot[ -5]  slotRVA=0xb56450  value=0x180a4000959bf4 (valueRVA=0x180a3ec0959bf4)
+  slot[ -4]  slotRVA=0xb56458  value=0x959c0400180b7b (valueRVA=0x959c02c0180b7b)
+  slot[ -3]  slotRVA=0xb56460  value=0x180d0e00180b90 (valueRVA=0x180d0cc0180b90)
+  slot[ -2]  slotRVA=0xb56468  value=0x180d2000959c18 (valueRVA=0x180d1ec0959c18)
+  slot[ -1]  slotRVA=0xb56470  value=0x959c3400180d6e (valueRVA=0x959c32c0180d6e)
+  slot[ +0]  slotRVA=0xb56478  value=0x180db000180d90 (valueRVA=0x180daec0180d90)  <-- FUN_140180d90
+  slot[ +1]  slotRVA=0xb56480  value=0x180dc000959c3c (valueRVA=0x180dbec0959c3c)
+  slot[ +2]  slotRVA=0xb56488  value=0x959c44001815de (valueRVA=0x959c42c01815de)
+  slot[ +3]  slotRVA=0xb56490  value=0x181667001815f0 (valueRVA=0x181665c01815f0)
+  slot[ +4]  slotRVA=0xb56498  value=0x18167000959c60 (valueRVA=0x18166ec0959c60)
+
+// Symbols in RVA range [0xb56178, 0xb56578]:
