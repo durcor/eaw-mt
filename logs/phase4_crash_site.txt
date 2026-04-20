@@ -1,0 +1,82 @@
+// FUN_140180dc0 at RVA 0x180dc0
+// Disassembly from +0xA0 to +0xE0 (crash is at +0xC0 and +0xC9)
+
+  +0x0a0  RVA=0x180e60  TEST EBX,R8D
+  +0x0a3  RVA=0x180e63  JZ 0x140181039
+  +0x0a9  RVA=0x180e69  CMP qword ptr [R9 + 0x8],R9
+  +0x0ad  RVA=0x180e6d  JZ 0x140181039
+  +0x0b3  RVA=0x180e73  MOV RDI,qword ptr [RAX + 0x8]
+  +0x0b7  RVA=0x180e77  CMP RDI,RAX
+  +0x0ba  RVA=0x180e7a  JZ 0x140181039
+  +0x0c0  RVA=0x180e80  MOV RBX,qword ptr [RDI + 0x18]
+  +0x0c4  RVA=0x180e84  MOV qword ptr [RSP + 0x58],RBX
+  +0x0c9  RVA=0x180e89  MOV R15D,dword ptr [RBX + 0x5c]
+  +0x0cd  RVA=0x180e8d  MOV ESI,dword ptr [RBX + 0x58]
+  +0x0d0  RVA=0x180e90  MOV R14D,dword ptr [RBX + 0x60]
+  +0x0d4  RVA=0x180e94  TEST R15D,R15D
+  +0x0d7  RVA=0x180e97  JG 0x140180ea6
+  +0x0d9  RVA=0x180e99  TEST ESI,ESI
+  +0x0db  RVA=0x180e9b  JG 0x140180ea6
+  +0x0dd  RVA=0x180e9d  TEST R14D,R14D
+  +0x0e0  RVA=0x180ea0  JLE 0x140180f8d
+
+
+// FUN_14013d820 decompile (first callee in FUN_140180dc0)
+
+// Size: 39 bytes
+
+void FUN_14013d820(longlong param_1)
+
+{
+  FUN_14017f1d0();
+  FUN_140196bc0(*(undefined4 *)(param_1 + 0x40),*(undefined4 *)(param_1 + 0x3c));
+  FUN_140195bb0();
+  return;
+}
+
+
+
+
+// FUN_140180dc0 decompile lines 40-80 (loop entry area)
+
+  iVar19 = 0;
+  DAT_140a62740 = 1;
+  plVar23 = DAT_140a6fda0;
+  if ((longlong)DAT_140a6fda0 - (longlong)DAT_140a6fd98 >> 3 != 0) {
+    plVar23 = DAT_140a6fd98;
+  }
+  local_80 = param_1 + 0xd85e;
+  local_88 = 1;
+  local_68 = 0xc;
+  plVar9 = local_80;
+  plVar20 = local_80;
+  DAT_140a6fda0 = plVar23;
+  do {
+    if (((param_2 & local_88) != 0) && ((longlong *)plVar20[1] != plVar20)) {
+      plVar17 = (longlong *)plVar9[1];
+      while (plVar17 != plVar9) {
+        puVar4 = (undefined8 *)plVar17[3];
+        iVar1 = *(int *)((longlong)puVar4 + 0x5c);
+        iVar2 = *(int *)(puVar4 + 0xb);
+        iVar3 = *(int *)(puVar4 + 0xc);
+        local_60[0] = puVar4;
+        if (((iVar1 < 1) && (iVar2 < 1)) && (iVar3 < 1)) {
+LAB_140180f8d:
+          plVar17 = (longlong *)plVar17[1];
+          iVar19 = iVar12;
+        }
+        else {
+          if (((0xfffd < iVar1 + iVar21) || (0xfffd < iVar2 + iVar13)) || (0xfffd < iVar3 + iVar19))
+          {
+            FUN_140183e80(param_1,iVar21,iVar13);
+            if ((longlong)DAT_140a6fda0 - (longlong)DAT_140a6fd98 >> 3 != 0) {
+              DAT_140a6fda0 = DAT_140a6fd98;
+            }
+            iVar19 = 0;
+            iVar21 = 0;
+            iVar12 = 0;
+            iVar13 = 0;
+            local_res20 = 0;
+            plVar23 = DAT_140a6fda0;
+          }
+          if (((iVar1 < 0xffff) && (iVar2 < 0xffff)) && (iVar3 < 0xffff)) {
