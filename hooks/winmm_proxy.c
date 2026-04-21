@@ -261,6 +261,140 @@ static BOOL install_pump_hook(void)
 }
 
 /* =========================================================================
+ * Inter-flush decomposition hooks (Phase 5 Step 2)
+ *
+ * WinMain (RVA 0x5d990, 7440 bytes) lines 580–591 contain 8 calls between
+ * flush#1-done and flush#2-entry.  Each is call-site patched (E8 scan in
+ * WinMain body → near stub → hook) so that per-call QPC time is collected.
+ *
+ * A second OutputDebugStringA per profile window emits the breakdown.
+ * ========================================================================= */
+#define WINMAIN_RVA   0x5d990ULL
+#define WINMAIN_SIZE  7440
+#define N_IFC         8
+
+/* Per-call accumulators — main thread only. */
+static struct { LONG count; double sum_ms, min_ms, max_ms; } g_ifc[N_IFC] = {
+    {0,0,1e9,0},{0,0,1e9,0},{0,0,1e9,0},{0,0,1e9,0},
+    {0,0,1e9,0},{0,0,1e9,0},{0,0,1e9,0},{0,0,1e9,0}
+};
+static BYTE *g_ifc_site[N_IFC]; /* NULL if not installed */
+
+static const char * const g_ifc_name[N_IFC] = {
+    "24bb80","2505c0","2089e0","cmd_q",
+    "2c2910","2c0c70","4908c0","caa60"
+};
+static const uint64_t g_ifc_rva[N_IFC] = {
+    0x24bb80, 0x2505c0, 0x2089e0, 0x3b08c0,
+    0x2c2910, 0x2c0c70, 0x4908c0, 0xcaa60
+};
+
+static void ifc_sample(int i, LARGE_INTEGER t0, LARGE_INTEGER t1) {
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_ifc[i].sum_ms += ms;
+    if (ms < g_ifc[i].min_ms) g_ifc[i].min_ms = ms;
+    if (ms > g_ifc[i].max_ms) g_ifc[i].max_ms = ms;
+    g_ifc[i].count++;
+}
+
+#define IFC_WRAP(call, idx) do { \
+    LARGE_INTEGER _t0, _t1; \
+    QueryPerformanceCounter(&_t0); \
+    (call); \
+    QueryPerformanceCounter(&_t1); \
+    ifc_sample((idx), _t0, _t1); \
+} while (0)
+
+typedef void (*VV_t)(void);
+typedef void (*VP_t)(void *);
+typedef void (*VPU_t)(void *, uint32_t);
+
+static VV_t  g_ifc0=NULL; static VV_t  g_ifc1=NULL;
+static VV_t  g_ifc2=NULL; static VP_t  g_ifc3=NULL;
+static VPU_t g_ifc4=NULL; static VPU_t g_ifc5=NULL;
+static VP_t  g_ifc6=NULL; static VV_t  g_ifc7=NULL;
+
+static void ifc_hook0(void)                { IFC_WRAP(g_ifc0(),    0); }
+static void ifc_hook1(void)                { IFC_WRAP(g_ifc1(),    1); }
+static void ifc_hook2(void)                { IFC_WRAP(g_ifc2(),    2); }
+static void ifc_hook3(void *a)             { IFC_WRAP(g_ifc3(a),   3); }
+static void ifc_hook4(void *a, uint32_t b) { IFC_WRAP(g_ifc4(a,b), 4); }
+static void ifc_hook5(void *a, uint32_t b) { IFC_WRAP(g_ifc5(a,b), 5); }
+static void ifc_hook6(void *a)             { IFC_WRAP(g_ifc6(a),   6); }
+static void ifc_hook7(void)                { IFC_WRAP(g_ifc7(),    7); }
+
+static BYTE *g_inter_stub_block = NULL;
+
+static BOOL install_inter_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *winmain = (BYTE *)exe + WINMAIN_RVA;
+
+    g_ifc0 = (VV_t) ((BYTE*)exe + g_ifc_rva[0]);
+    g_ifc1 = (VV_t) ((BYTE*)exe + g_ifc_rva[1]);
+    g_ifc2 = (VV_t) ((BYTE*)exe + g_ifc_rva[2]);
+    g_ifc3 = (VP_t) ((BYTE*)exe + g_ifc_rva[3]);
+    g_ifc4 = (VPU_t)((BYTE*)exe + g_ifc_rva[4]);
+    g_ifc5 = (VPU_t)((BYTE*)exe + g_ifc_rva[5]);
+    g_ifc6 = (VP_t) ((BYTE*)exe + g_ifc_rva[6]);
+    g_ifc7 = (VV_t) ((BYTE*)exe + g_ifc_rva[7]);
+
+    g_inter_stub_block = alloc_near(winmain, N_IFC * 14);
+    if (!g_inter_stub_block) {
+        OutputDebugStringA("[eaw-mt] WARN: alloc_near failed for inter stubs\n");
+        return FALSE;
+    }
+
+    void *hook_fns[N_IFC] = {
+        ifc_hook0, ifc_hook1, ifc_hook2, ifc_hook3,
+        ifc_hook4, ifc_hook5, ifc_hook6, ifc_hook7
+    };
+
+    int n = 0;
+    for (int i = 0; i < N_IFC; i++) {
+        BYTE *target = (BYTE*)exe + g_ifc_rva[i];
+        BYTE *site   = NULL;
+
+        for (int j = 0; j <= WINMAIN_SIZE - 5; j++) {
+            if (winmain[j] == 0xE8) {
+                int32_t rel;
+                memcpy(&rel, winmain + j + 1, 4);
+                if (winmain + j + 5 + rel == target) { site = winmain + j; break; }
+            }
+        }
+
+        if (!site) {
+            char m[96];
+            sprintf(m, "[eaw-mt] WARN: inter hook [%s] not found in WinMain\n",
+                    g_ifc_name[i]);
+            OutputDebugStringA(m);
+            continue;
+        }
+
+        BYTE    *stub    = g_inter_stub_block + i * 14;
+        int32_t  new_rel = (int32_t)(stub - (site + 5));
+        DWORD    old;
+
+        write_abs_jmp(stub, (uint64_t)hook_fns[i]);
+
+        VirtualProtect(site + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+        memcpy(site + 1, &new_rel, 4);
+        VirtualProtect(site + 1, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), site, 5);
+
+        g_ifc_site[i] = site;
+        n++;
+    }
+
+    char m[64];
+    sprintf(m, "[eaw-mt] inter-flush hooks: %d/%d installed\n", n, N_IFC);
+    OutputDebugStringA(m);
+    return n > 0;
+}
+
+/* =========================================================================
  * Profiling
  *
  * FUN_140180d90 is called TWICE per frame (flush#1 then flush#2).  The
@@ -331,12 +465,36 @@ static void profile_report_and_reset(void) {
         g_pump_sum_ms  / pn,  g_pump_min_ms,  g_pump_max_ms, (long)g_pump_count);
     OutputDebugStringA(buf);
 
+    /* Inter-flush breakdown — second ODS call to avoid buffer overflow. */
+    {
+        char ibuf[640];
+        int off = sprintf(ibuf, "[eaw-mt] inter breakdown:");
+        for (int i = 0; i < N_IFC; i++) {
+            if (!g_ifc_site[i]) continue;
+            double n2 = (double)(g_ifc[i].count ? g_ifc[i].count : 1);
+            off += sprintf(ibuf + off, "\n  %-6s avg=%.2f max=%.2f ms (n=%ld)",
+                g_ifc_name[i],
+                g_ifc[i].sum_ms / n2,
+                g_ifc[i].max_ms,
+                (long)g_ifc[i].count);
+        }
+        ibuf[off++] = '\n';
+        ibuf[off]   = '\0';
+        OutputDebugStringA(ibuf);
+    }
+
     g_frame_count = 0;
     g_flush_count = 0;
     g_pump_count  = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
+    for (int i = 0; i < N_IFC; i++) {
+        g_ifc[i].count  = 0;
+        g_ifc[i].sum_ms = 0;
+        g_ifc[i].min_ms = 1e9;
+        g_ifc[i].max_ms = 0;
+    }
 }
 
 /* =========================================================================
@@ -555,6 +713,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* Install Pump_Threads call-site hook (non-fatal if scan fails) */
         install_pump_hook();
+
+        /* Install inter-flush decomposition hooks (non-fatal) */
+        install_inter_hooks();
 
         /* Start render thread */
         HANDLE thread = CreateThread(NULL, 0, render_thread_proc, NULL, 0, NULL);
