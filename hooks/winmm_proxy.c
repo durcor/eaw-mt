@@ -1,7 +1,7 @@
 /*
  * winmm_proxy.c — proxy winmm.dll for EaW hook injection
  *
- * Phase 4 Step 2: Model A render thread separation (serialized baseline).
+ * Phase 4 / Phase 5: Model A render thread (serialized) + Pump_Threads timing hook.
  *
  * Installs an inline hook on FUN_140180d90 (render flush wrapper, RVA 0x180d90).
  * The render flush (12-pass D3D9 draw + present + task drain) runs on a
@@ -79,7 +79,7 @@ static RenderFlushFn g_trampoline = NULL;
  * The game mode's virtual Tick() (vtable offset 0x158, index 43) runs once per
  * frame before both render flushes.  We intercept it here so that when true
  * async is later enabled, we have the infrastructure to enforce render_done
- * before sim tick N+1.  In fully serialized mode this hook is a pass-through.
+ * before sim tick N+1.  In fully serialized mode this hook adds QPC timing.
  *
  * DAT_140b15418 (RVA 0xb15418) is the current game-mode pointer.  We re-patch
  * whenever the active vtable changes (galactic ↔ tactical ↔ cinematic, etc.).
@@ -91,9 +91,17 @@ typedef void (WINAPI *SimTickFn)(void *, void *, void *, void *);
 static SimTickFn  g_saved_sim_tick = NULL;
 static void     **g_patched_vtable = NULL;
 
+/* Set in sim_tick_hook; read at flush#1 entry (same thread, no race). */
+static LARGE_INTEGER g_sim_tick_start;
+static LARGE_INTEGER g_sim_tick_end;
+static BOOL          g_sim_tick_valid = FALSE;
+
 static void WINAPI sim_tick_hook(void *a, void *b, void *c, void *d)
 {
+    QueryPerformanceCounter(&g_sim_tick_start);
     g_saved_sim_tick(a, b, c, d);
+    QueryPerformanceCounter(&g_sim_tick_end);
+    g_sim_tick_valid = TRUE;
 }
 
 /* Called from render_flush_hook on every frame.  Patches the active game
@@ -134,58 +142,201 @@ static void try_patch_sim_tick(void)
     OutputDebugStringA("[eaw-mt] Sim tick hook patched\n");
 }
 
+/* Forward declarations — definitions appear in later sections. */
+static void write_abs_jmp(BYTE *dst, uint64_t target);
+static LARGE_INTEGER g_qpc_freq;
+
+/* =========================================================================
+ * Pump_Threads call-site hook
+ *
+ * FUN_140247a90 (RVA 0x247a90) is called from FUN_140488660 (RVA 0x488660,
+ * TheGameScoringManagerClass::Service, 555 bytes) via a CALL rel32.  We
+ * scan for that instruction at init time and redirect it through a near
+ * stub → pump_threads_hook.
+ *
+ * Why call-site patch instead of inline trampoline:
+ *   FUN_140247a90's prologue has RSP-relative home-space saves
+ *   (MOV [RSP+8],RBX …).  If those bytes were copied into a CALL-based
+ *   trampoline, the CALL pushes a return address first (RSP -= 8), making
+ *   all three offsets wrong by 8 and corrupting the caller's saved regs.
+ *
+ * Why a near stub:
+ *   CALL rel32 only reaches ±2 GB.  pump_threads_hook lives in our DLL
+ *   which may be loaded far from the EXE.  A 14-byte FF 25 absolute JMP
+ *   stub is allocated near the call site via alloc_near, within 2 GB.
+ * ========================================================================= */
+#define SCORE_SERVICE_RVA   0x488660ULL  /* FUN_140488660, 555 bytes */
+#define SCORE_SERVICE_SIZE  555
+#define PUMP_THREADS_RVA    0x247a90ULL  /* FUN_140247a90 */
+
+typedef void (__fastcall *PumpThreadsFn)(void *);
+static PumpThreadsFn g_pump_threads_orig = NULL;
+
+/* Per-window Pump_Threads accumulators — main thread only. */
+static LONG   g_pump_count  = 0;
+static double g_pump_sum_ms = 0, g_pump_min_ms = 1e9, g_pump_max_ms = 0;
+
+static void __fastcall pump_threads_hook(void *param_1)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_pump_threads_orig(param_1);
+    QueryPerformanceCounter(&t1);
+
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_pump_sum_ms += ms;
+    if (ms < g_pump_min_ms) g_pump_min_ms = ms;
+    if (ms > g_pump_max_ms) g_pump_max_ms = ms;
+    g_pump_count++;
+}
+
+/* Allocate executable memory within ±2 GB of near_addr. */
+static BYTE *alloc_near(BYTE *near_addr, SIZE_T size)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    ptrdiff_t gran = (ptrdiff_t)si.dwAllocationGranularity;
+    const ptrdiff_t limit = 0x70000000;
+
+    for (ptrdiff_t delta = gran; delta < limit; delta += gran) {
+        BYTE *lo = near_addr - delta;
+        BYTE *hi = near_addr + delta;
+        void *p;
+        if (lo >= (BYTE *)si.lpMinimumApplicationAddress) {
+            p = VirtualAlloc(lo, size, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            if (p) return (BYTE *)p;
+        }
+        p = VirtualAlloc(hi, size, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (p) return (BYTE *)p;
+    }
+    return NULL;
+}
+
+static BOOL install_pump_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *service_fn  = (BYTE *)exe + SCORE_SERVICE_RVA;
+    BYTE *pump_target = (BYTE *)exe + PUMP_THREADS_RVA;
+
+    g_pump_threads_orig = (PumpThreadsFn)pump_target;
+
+    /* Scan FUN_140488660 for the E8 CALL targeting FUN_140247a90. */
+    BYTE *call_site = NULL;
+    for (int i = 0; i <= SCORE_SERVICE_SIZE - 5; i++) {
+        if (service_fn[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, service_fn + i + 1, 4);
+            if (service_fn + i + 5 + rel == pump_target) {
+                call_site = service_fn + i;
+                break;
+            }
+        }
+    }
+
+    if (!call_site) {
+        OutputDebugStringA("[eaw-mt] WARN: Pump_Threads CALL not found in ScoringManager::Service\n");
+        return FALSE;
+    }
+
+    /* Allocate a near stub: FF 25 00 00 00 00 <abs addr of pump_threads_hook> */
+    BYTE *stub = alloc_near(call_site, 14);
+    if (!stub) {
+        OutputDebugStringA("[eaw-mt] WARN: alloc_near failed for Pump_Threads stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)pump_threads_hook);
+
+    /* Patch call_site rel32 to target the stub. */
+    int32_t new_rel = (int32_t)(stub - (call_site + 5));
+    DWORD old;
+    VirtualProtect(call_site + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+    memcpy(call_site + 1, &new_rel, 4);
+    VirtualProtect(call_site + 1, 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), call_site, 5);
+
+    OutputDebugStringA("[eaw-mt] Pump_Threads call-site hook installed\n");
+    return TRUE;
+}
+
 /* =========================================================================
  * Profiling
  *
- * Timing is split across two threads but there is no race: the render thread
- * writes g_flush_start/end before signaling render_done; render_flush_hook
- * reads the timing values after waiting for render_done — so reads are always
- * after the writes.
+ * FUN_140180d90 is called TWICE per frame (flush#1 then flush#2).  The
+ * g_flush_serial counter (odd = flush#1, even = flush#2) lets us distinguish
+ * the two and anchor frame time on consecutive flush#1 entries.
  *
- * Logged every PROFILE_WINDOW frames via OutputDebugString.
+ * Metrics per PROFILE_WINDOW true frames:
+ *   flush_ms    — render thread round-trip for one flush (per flush, n≈2N)
+ *   frame_ms    — flush#1(k) entry → flush#1(k+1) entry = full frame
+ *   inter_ms    — flush#1 render_done → flush#2 entry
+ *                 (covers all WinMain 580-591 subsystems)
+ *   sim_tick_ms — vtable[43] dispatch duration (thin, < 5 µs; Pump_Threads
+ *                 is accounted by pump_ms below)
+ *   pump_ms     — FUN_140247a90 (Pump_Threads) per-invocation, n ≤ N
+ *                 (0 when ServiceRate gate skips it)
+ *
+ * Thread-safety: g_flush_start/end are written by the render thread before
+ * SetEvent(render_done); read by the main thread after WaitForSingleObject.
+ * All other profiling state is main-thread-only.
  * ========================================================================= */
 
 #define PROFILE_WINDOW 300
 
 static LARGE_INTEGER g_qpc_freq;
 
-/* Set by render thread, read by main thread after render_done (safe). */
+/* Incremented on each render_flush_hook entry; odd = flush#1, even = flush#2. */
+static volatile LONG g_flush_serial = 0;
+
+/* Written by render thread before signaling render_done; read after the wait. */
 static LARGE_INTEGER g_flush_start;
 static LARGE_INTEGER g_flush_end;
 
-/* Accumulators — only touched by main thread. */
-static LARGE_INTEGER g_frame_start;
-static BOOL          g_frame_start_valid = FALSE;
-static LONG          g_frame_count       = 0;
+/* Entry time of the most recent flush#1 (frame anchor). */
+static LARGE_INTEGER g_frame1_anchor;
+static BOOL          g_frame1_anchor_valid = FALSE;
+
+/* Time recorded after flush#1's WaitForSingleObject returns. */
+static LARGE_INTEGER g_flush1_done;
+static BOOL          g_flush1_done_valid = FALSE;
+
+/* Per-window accumulators — main thread only. */
+static LONG   g_frame_count = 0;
+static LONG   g_flush_count = 0;
 
 static double g_flush_sum_ms = 0, g_flush_min_ms = 1e9, g_flush_max_ms = 0;
 static double g_frame_sum_ms = 0, g_frame_min_ms = 1e9, g_frame_max_ms = 0;
+static double g_inter_sum_ms = 0, g_inter_min_ms = 1e9, g_inter_max_ms = 0;
+static double g_sim_sum_ms   = 0, g_sim_min_ms   = 1e9, g_sim_max_ms   = 0;
 
 static void profile_report_and_reset(void) {
-    double freq = (double)g_qpc_freq.QuadPart / 1000.0;
-    double n    = (double)PROFILE_WINDOW;
+    double fn  = (double)(g_frame_count ? g_frame_count : 1);
+    double fln = (double)(g_flush_count ? g_flush_count : 1);
+    double pn  = (double)(g_pump_count  ? g_pump_count  : 1);
 
-    double flush_avg = g_flush_sum_ms / n;
-    double frame_avg = g_frame_sum_ms / n;
-    double pct       = (frame_avg > 0.0) ? (flush_avg / frame_avg * 100.0) : 0.0;
-
-    char buf[256];
+    char buf[640];
     sprintf(buf,
-        "[eaw-mt] profile(%d frames): "
-        "flush avg=%.2f min=%.2f max=%.2f ms | "
-        "frame avg=%.2f min=%.2f max=%.2f ms | "
-        "flush=%.1f%% of frame\n",
-        PROFILE_WINDOW,
-        flush_avg, g_flush_min_ms, g_flush_max_ms,
-        frame_avg, g_frame_min_ms, g_frame_max_ms,
-        pct);
+        "[eaw-mt] profile(%ld frames):\n"
+        "  flush    avg=%.2f min=%.2f max=%.2f ms (per flush, n=%ld)\n"
+        "  frame    avg=%.2f min=%.2f max=%.2f ms\n"
+        "  inter    avg=%.2f min=%.2f max=%.2f ms (flush#1->flush#2)\n"
+        "  sim_tick avg=%.2f min=%.2f max=%.2f ms\n"
+        "  pump     avg=%.2f min=%.2f max=%.2f ms (Pump_Threads, n=%ld)\n",
+        (long)g_frame_count,
+        g_flush_sum_ms / fln, g_flush_min_ms, g_flush_max_ms, (long)g_flush_count,
+        g_frame_sum_ms / fn,  g_frame_min_ms, g_frame_max_ms,
+        g_inter_sum_ms / fn,  g_inter_min_ms, g_inter_max_ms,
+        g_sim_sum_ms   / fn,  g_sim_min_ms,   g_sim_max_ms,
+        g_pump_sum_ms  / pn,  g_pump_min_ms,  g_pump_max_ms, (long)g_pump_count);
     OutputDebugStringA(buf);
 
-    /* Reset accumulators */
-    g_frame_count   = 0;
-    g_flush_sum_ms  = g_frame_sum_ms  = 0;
-    g_flush_min_ms  = g_frame_min_ms  = 1e9;
-    g_flush_max_ms  = g_frame_max_ms  = 0;
+    g_frame_count = 0;
+    g_flush_count = 0;
+    g_pump_count  = 0;
+    g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
+    g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
+    g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
 }
 
 /* =========================================================================
@@ -223,37 +374,67 @@ static void WINAPI render_flush_hook(void *param_1) {
     /* Ensure sim tick vtable is hooked for this game mode */
     try_patch_sim_tick();
 
-    /* Record timing from the previous frame.
-     * Safe: main thread always waited for render_done before reaching here,
-     * so g_flush_end is valid (render thread wrote it before signaling). */
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    LARGE_INTEGER entry_now;
+    QueryPerformanceCounter(&entry_now);
     double freq = (double)g_qpc_freq.QuadPart / 1000.0;
 
-    if (g_frame_start_valid && g_frame_count < PROFILE_WINDOW) {
-        double flush_ms = (g_flush_end.QuadPart - g_flush_start.QuadPart) / freq;
-        double frame_ms = (now.QuadPart - g_frame_start.QuadPart) / freq;
+    LONG serial   = InterlockedIncrement(&g_flush_serial);
+    BOOL is_flush1 = (serial & 1) != 0;   /* odd = flush#1, even = flush#2 */
 
+    /* Accumulate previous flush's round-trip time.  g_flush_end is safe to
+     * read here because render_done was awaited on the preceding call.
+     * Skip serial==1 which has no predecessor. */
+    if (serial > 1) {
+        double flush_ms = (g_flush_end.QuadPart - g_flush_start.QuadPart) / freq;
         g_flush_sum_ms += flush_ms;
-        g_frame_sum_ms += frame_ms;
         if (flush_ms < g_flush_min_ms) g_flush_min_ms = flush_ms;
         if (flush_ms > g_flush_max_ms) g_flush_max_ms = flush_ms;
-        if (frame_ms < g_frame_min_ms) g_frame_min_ms = frame_ms;
-        if (frame_ms > g_frame_max_ms) g_frame_max_ms = frame_ms;
-
-        g_frame_count++;
-        if (g_frame_count == PROFILE_WINDOW)
-            profile_report_and_reset();
+        g_flush_count++;
     }
 
-    g_frame_start       = now;
-    g_frame_start_valid = TRUE;
+    if (is_flush1) {
+        /* Flush#1 entry: accumulate frame time (flush#1→flush#1) and sim_tick. */
+        if (g_frame1_anchor_valid) {
+            double frame_ms = (entry_now.QuadPart - g_frame1_anchor.QuadPart) / freq;
+            g_frame_sum_ms += frame_ms;
+            if (frame_ms < g_frame_min_ms) g_frame_min_ms = frame_ms;
+            if (frame_ms > g_frame_max_ms) g_frame_max_ms = frame_ms;
 
-    /* Kick render thread and block until flush+drain is complete.
-     * Both flushes per frame go through this path — fully serialized. */
+            if (g_sim_tick_valid) {
+                double sim_ms = (g_sim_tick_end.QuadPart - g_sim_tick_start.QuadPart) / freq;
+                g_sim_sum_ms += sim_ms;
+                if (sim_ms < g_sim_min_ms) g_sim_min_ms = sim_ms;
+                if (sim_ms > g_sim_max_ms) g_sim_max_ms = sim_ms;
+                g_sim_tick_valid = FALSE;
+            }
+
+            g_frame_count++;
+            if (g_frame_count == PROFILE_WINDOW)
+                profile_report_and_reset();
+        }
+        g_frame1_anchor       = entry_now;
+        g_frame1_anchor_valid = TRUE;
+    } else {
+        /* Flush#2 entry: accumulate inter-flush time (Pump_Threads et al.). */
+        if (g_flush1_done_valid) {
+            double inter_ms = (entry_now.QuadPart - g_flush1_done.QuadPart) / freq;
+            g_inter_sum_ms += inter_ms;
+            if (inter_ms < g_inter_min_ms) g_inter_min_ms = inter_ms;
+            if (inter_ms > g_inter_max_ms) g_inter_max_ms = inter_ms;
+        }
+    }
+
+    /* Kick render thread and block until this flush+drain completes. */
     g_render_param = param_1;
     SetEvent(g_render_kick);
     WaitForSingleObject(g_render_done, INFINITE);
+
+    /* After the wait, g_flush_end is valid for THIS flush.
+     * Record the inter-flush anchor now (time flush#1 finished). */
+    if (is_flush1) {
+        QueryPerformanceCounter(&g_flush1_done);
+        g_flush1_done_valid = TRUE;
+    }
 }
 
 
@@ -371,6 +552,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* Install inline hook (also builds g_trampoline) */
         if (!install_render_hook()) return FALSE;
+
+        /* Install Pump_Threads call-site hook (non-fatal if scan fails) */
+        install_pump_hook();
 
         /* Start render thread */
         HANDLE thread = CreateThread(NULL, 0, render_thread_proc, NULL, 0, NULL);
