@@ -32,6 +32,13 @@
 #include <stdint.h>
 #include <stdio.h>
 
+static FILE *g_log_fp = NULL;
+
+static void log_write(const char *s) {
+    OutputDebugStringA(s);
+    if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
+}
+
 /* =========================================================================
  * WINMM proxy — forward the 4 functions StarWarsG.exe imports
  * ========================================================================= */
@@ -132,14 +139,14 @@ static void try_patch_sim_tick(void)
     DWORD old;
     if (!VirtualProtect(&vtable[SIM_TICK_VTBL_IDX], 8,
                         PAGE_EXECUTE_READWRITE, &old)) {
-        OutputDebugStringA("[eaw-mt] WARN: VirtualProtect for sim tick vtable failed\n");
+        log_write("[eaw-mt] WARN: VirtualProtect for sim tick vtable failed\n");
         return;
     }
     g_saved_sim_tick = (SimTickFn)vtable[SIM_TICK_VTBL_IDX];
     vtable[SIM_TICK_VTBL_IDX] = (void *)sim_tick_hook;
     VirtualProtect(&vtable[SIM_TICK_VTBL_IDX], 8, old, &old);
     g_patched_vtable = vtable;
-    OutputDebugStringA("[eaw-mt] Sim tick hook patched\n");
+    log_write("[eaw-mt] Sim tick hook patched\n");
 }
 
 /* Forward declarations — definitions appear in later sections. */
@@ -236,14 +243,14 @@ static BOOL install_pump_hook(void)
     }
 
     if (!call_site) {
-        OutputDebugStringA("[eaw-mt] WARN: Pump_Threads CALL not found in ScoringManager::Service\n");
+        log_write("[eaw-mt] WARN: Pump_Threads CALL not found in ScoringManager::Service\n");
         return FALSE;
     }
 
     /* Allocate a near stub: FF 25 00 00 00 00 <abs addr of pump_threads_hook> */
     BYTE *stub = alloc_near(call_site, 14);
     if (!stub) {
-        OutputDebugStringA("[eaw-mt] WARN: alloc_near failed for Pump_Threads stub\n");
+        log_write("[eaw-mt] WARN: alloc_near failed for Pump_Threads stub\n");
         return FALSE;
     }
     write_abs_jmp(stub, (uint64_t)pump_threads_hook);
@@ -256,7 +263,7 @@ static BOOL install_pump_hook(void)
     VirtualProtect(call_site + 1, 4, old, &old);
     FlushInstructionCache(GetCurrentProcess(), call_site, 5);
 
-    OutputDebugStringA("[eaw-mt] Pump_Threads call-site hook installed\n");
+    log_write("[eaw-mt] Pump_Threads call-site hook installed\n");
     return TRUE;
 }
 
@@ -315,7 +322,7 @@ static BOOL install_wait_message_iat_hook(void) {
     DWORD iat_rva =
         nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
     if (!iat_rva) {
-        OutputDebugStringA("[eaw-mt] WARN: WaitMessage patch: no import directory\n");
+        log_write("[eaw-mt] WARN: WaitMessage patch: no import directory\n");
         return FALSE;
     }
 
@@ -323,7 +330,7 @@ static BOOL install_wait_message_iat_hook(void) {
     if (!user32) user32 = LoadLibraryA("user32.dll");
     FARPROC real_wm = user32 ? GetProcAddress(user32, "WaitMessage") : NULL;
     if (!real_wm) {
-        OutputDebugStringA("[eaw-mt] WARN: WaitMessage not found in user32\n");
+        log_write("[eaw-mt] WARN: WaitMessage not found in user32\n");
         return FALSE;
     }
 
@@ -337,13 +344,145 @@ static BOOL install_wait_message_iat_hook(void) {
                 VirtualProtect(thunk, 8, PAGE_READWRITE, &old);
                 *thunk = (ULONGLONG)(uintptr_t)wait_message_hook;
                 VirtualProtect(thunk, 8, old, &old);
-                OutputDebugStringA("[eaw-mt] WaitMessage IAT hook installed\n");
+                log_write("[eaw-mt] WaitMessage IAT hook installed\n");
                 return TRUE;
             }
         }
     }
-    OutputDebugStringA("[eaw-mt] WARN: WaitMessage not found in EXE IAT\n");
+    log_write("[eaw-mt] WARN: WaitMessage not found in EXE IAT\n");
     return FALSE;
+}
+
+/* =========================================================================
+ * File I/O IAT hooks (Phase 5 Step 4)
+ *
+ * Hypothesis: EaW loads unit assets synchronously on the main thread on
+ * first spawn (models, textures, audio).  LoadingThreadClass only runs
+ * during loading screens; gameplay spawns trigger blocking disk reads.
+ *
+ * Hook CreateFileA/W to record the last filename opened on the main thread.
+ * Hook ReadFile to measure call duration; emit "[eaw-mt] IO SPIKE" for
+ * calls >= 10ms.  Per-window totals reported as a separate ODS line.
+ * ========================================================================= */
+
+static DWORD g_main_thread_id = 0;
+static char  g_last_opened_file[MAX_PATH] = "";
+
+static double g_io_win_sum_ms = 0.0;
+static double g_io_win_max_ms = 0.0;
+static LONG   g_io_win_count  = 0;
+static LONG   g_io_win_bytes  = 0;
+
+typedef HANDLE (WINAPI *CreateFileA_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+typedef HANDLE (WINAPI *CreateFileW_t)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+typedef BOOL   (WINAPI *ReadFile_t)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+
+static CreateFileA_t real_CreateFileA_fn = NULL;
+static CreateFileW_t real_CreateFileW_fn = NULL;
+static ReadFile_t    real_ReadFile_fn    = NULL;
+
+static HANDLE WINAPI createfileA_hook(LPCSTR lpFileName, DWORD dwAccess,
+    DWORD dwShare, LPSECURITY_ATTRIBUTES lpSec, DWORD dwCreate,
+    DWORD dwFlags, HANDLE hTemplate)
+{
+    if (GetCurrentThreadId() == g_main_thread_id && lpFileName)
+        strncpy(g_last_opened_file, lpFileName, MAX_PATH - 1);
+    return real_CreateFileA_fn(lpFileName, dwAccess, dwShare, lpSec,
+                               dwCreate, dwFlags, hTemplate);
+}
+
+static HANDLE WINAPI createfileW_hook(LPCWSTR lpFileName, DWORD dwAccess,
+    DWORD dwShare, LPSECURITY_ATTRIBUTES lpSec, DWORD dwCreate,
+    DWORD dwFlags, HANDLE hTemplate)
+{
+    if (GetCurrentThreadId() == g_main_thread_id && lpFileName)
+        WideCharToMultiByte(CP_UTF8, 0, lpFileName, -1,
+                            g_last_opened_file, MAX_PATH, NULL, NULL);
+    return real_CreateFileW_fn(lpFileName, dwAccess, dwShare, lpSec,
+                               dwCreate, dwFlags, hTemplate);
+}
+
+static BOOL WINAPI readfile_hook(HANDLE hFile, LPVOID lpBuf, DWORD nToRead,
+    LPDWORD lpRead, LPOVERLAPPED lpOv)
+{
+    if (GetCurrentThreadId() != g_main_thread_id)
+        return real_ReadFile_fn(hFile, lpBuf, nToRead, lpRead, lpOv);
+
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    BOOL ok = real_ReadFile_fn(hFile, lpBuf, nToRead, lpRead, lpOv);
+    QueryPerformanceCounter(&t1);
+
+    double ms = (double)(t1.QuadPart - t0.QuadPart) /
+                ((double)g_qpc_freq.QuadPart / 1000.0);
+    DWORD bytes = (lpRead && *lpRead) ? *lpRead : nToRead;
+
+    g_io_win_sum_ms += ms;
+    if (ms > g_io_win_max_ms) g_io_win_max_ms = ms;
+    InterlockedIncrement(&g_io_win_count);
+    InterlockedExchangeAdd(&g_io_win_bytes, (LONG)bytes);
+
+    if (ms >= 10.0) {
+        char spike[MAX_PATH + 80];
+        sprintf(spike, "[eaw-mt] IO SPIKE %.1fms %luKB file=%s\n",
+                ms, (unsigned long)(bytes / 1024), g_last_opened_file);
+        log_write(spike);
+    }
+
+    return ok;
+}
+
+static void install_io_iat_hooks(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return;
+    BYTE *base = (BYTE *)exe;
+    IMAGE_DOS_HEADER   *dos = (IMAGE_DOS_HEADER *)base;
+    IMAGE_NT_HEADERS64 *nt  = (IMAGE_NT_HEADERS64 *)(base + dos->e_lfanew);
+    DWORD iat_rva =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!iat_rva) return;
+
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    if (!k32) k32 = LoadLibraryA("kernel32.dll");
+    if (!k32) return;
+
+    FARPROC real_cfa = GetProcAddress(k32, "CreateFileA");
+    FARPROC real_cfw = GetProcAddress(k32, "CreateFileW");
+    FARPROC real_rf  = GetProcAddress(k32, "ReadFile");
+
+    real_CreateFileA_fn = (CreateFileA_t)(uintptr_t)real_cfa;
+    real_CreateFileW_fn = (CreateFileW_t)(uintptr_t)real_cfw;
+    real_ReadFile_fn    = (ReadFile_t)(uintptr_t)real_rf;
+
+    int patched = 0;
+    IMAGE_IMPORT_DESCRIPTOR *iid = (IMAGE_IMPORT_DESCRIPTOR *)(base + iat_rva);
+    for (; iid->Name; iid++) {
+        ULONGLONG *thunk = (ULONGLONG *)(base + iid->FirstThunk);
+        for (; *thunk; thunk++) {
+            FARPROC fn = (FARPROC)(uintptr_t)*thunk;
+            DWORD old;
+            if (real_cfa && fn == real_cfa) {
+                VirtualProtect(thunk, 8, PAGE_READWRITE, &old);
+                *thunk = (ULONGLONG)(uintptr_t)createfileA_hook;
+                VirtualProtect(thunk, 8, old, &old);
+                patched++;
+            } else if (real_cfw && fn == real_cfw) {
+                VirtualProtect(thunk, 8, PAGE_READWRITE, &old);
+                *thunk = (ULONGLONG)(uintptr_t)createfileW_hook;
+                VirtualProtect(thunk, 8, old, &old);
+                patched++;
+            } else if (real_rf && fn == real_rf) {
+                VirtualProtect(thunk, 8, PAGE_READWRITE, &old);
+                *thunk = (ULONGLONG)(uintptr_t)readfile_hook;
+                VirtualProtect(thunk, 8, old, &old);
+                patched++;
+            }
+        }
+    }
+
+    char msg[80];
+    sprintf(msg, "[eaw-mt] IO IAT hooks: %d entries patched\n", patched);
+    log_write(msg);
 }
 
 /* =========================================================================
@@ -357,7 +496,7 @@ static BOOL install_wait_message_iat_hook(void) {
  * ========================================================================= */
 #define WINMAIN_RVA   0x5d990ULL
 #define WINMAIN_SIZE  7440
-#define N_IFC         26
+#define N_IFC         27
 
 /* Per-call accumulators — main thread only. */
 static struct { LONG count; double sum_ms, min_ms, max_ms; } g_ifc[N_IFC] = {
@@ -384,7 +523,9 @@ static const char * const g_ifc_name[N_IFC] = {
     /* lines 610-614: gap between hook 14 (339bc0) and hook 9 (2d72c0) */
     "022c50","067c80","6a1e0","25770","6d1d0",
     /* line 623: inside DAT_1409cf314 guard, between hooks 11 and 12 */
-    "325190"
+    "325190",
+    /* line 907: late-loop "more subsystems", fires when DAT_1409cf314==1 */
+    "27d800"
 };
 static const uint64_t g_ifc_rva[N_IFC] = {
     0x24bb80, 0x2505c0, 0x2089e0, 0x3b08c0,
@@ -394,7 +535,8 @@ static const uint64_t g_ifc_rva[N_IFC] = {
     0x339bc0,
     0x4fba0, 0x262b80, 0x3b1b50, 0x297e30, 0x1dc60,
     0x22c50, 0x67c80, 0x6a1e0, 0x25770, 0x6d1d0,
-    0x325190
+    0x325190,
+    0x27d800
 };
 
 /* Gap timers — 3 unhooked spans between adjacent hook pairs.
@@ -404,16 +546,19 @@ static LARGE_INTEGER g_gap_base_A;        /* set at exit of hook 24 (6d1d0)  */
 static LARGE_INTEGER g_gap_base_B;        /* set at exit of hook 12 (1c8420) */
 static LARGE_INTEGER g_gap_base_C;        /* set at exit of hook 13 (30c3b0) */
 static LARGE_INTEGER g_gap_base_D;        /* set at exit of hook 19 (1dc60)  */
+static LARGE_INTEGER g_gap_base_E;        /* set at exit of hook 17 (3b1b50) */
 static BOOL          g_gap_base_A_valid = FALSE;
 static BOOL          g_gap_base_B_valid = FALSE;
 static BOOL          g_gap_base_C_valid = FALSE;
 static BOOL          g_gap_base_D_valid = FALSE;
+static BOOL          g_gap_base_E_valid = FALSE;
 /* g_gap[0]=gapA: hook24_exit→hook9_entry    (FUN_14021caf0, 6-arg, unhookable)      */
 /* g_gap[1]=gapB: hook12_exit→hook13_entry   (thunk_1768f0 + FUN_14044d*)            */
 /* g_gap[2]=gapC: hook13_exit→hook15_entry   (FUN_14002ee40/305890/493f0)            */
 /* g_gap[3]=gapD: hook19_exit→flush#2_entry  (WinMain ~line 871 to flush#2)          */
-static struct { LONG count; double sum_ms, max_ms; } g_gap[4] = {
-    {0,0,0},{0,0,0},{0,0,0},{0,0,0}
+/* g_gap[4]=gapE: hook17_exit→hook8_entry    (lines 830→597 next frame: full back-half) */
+static struct { LONG count; double sum_ms, max_ms; } g_gap[5] = {
+    {0,0,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0}
 };
 
 static void ifc_sample(int i, LARGE_INTEGER t0, LARGE_INTEGER t1) {
@@ -464,6 +609,7 @@ static WIDE_t  g_ifc18=NULL; static WIDE_t  g_ifc19=NULL;  /* 297e30, 1dc60  */
 static WIDE_t  g_ifc20=NULL; static WIDES_t g_ifc21=NULL;  /* 022c50, 067c80 */
 static WIDE_t  g_ifc22=NULL; static WIDES_t g_ifc23=NULL;  /* 6a1e0,  25770  */
 static WIDE_t  g_ifc24=NULL; static WIDE_t  g_ifc25=NULL;  /* 6d1d0,  325190 */
+static WIDE_t  g_ifc26=NULL;                               /* 27d800 */
 
 static void ifc_hook0(void)                              { IFC_WRAP(g_ifc0(),         0); }
 static void ifc_hook1(void)                              { IFC_WRAP(g_ifc1(),         1); }
@@ -475,7 +621,20 @@ static void ifc_hook6(void *a)                           { IFC_WRAP(g_ifc6(a),  
 static void ifc_hook7(void)                              { IFC_WRAP(g_ifc7(),         7); }
 /* Hooks 8-13 pass all 4 register args through (int64_t) so Ghidra under-counting
    a parameter cannot corrupt the callee's argument registers. */
-static void ifc_hook8 (int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc8 (a,b,c,d), 8);}
+static void ifc_hook8(int64_t a, int64_t b, int64_t c, int64_t d) {
+    LARGE_INTEGER _t0, _t1;
+    QueryPerformanceCounter(&_t0);
+    if (g_gap_base_E_valid) {
+        double ms = (_t0.QuadPart - g_gap_base_E.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+        g_gap[4].sum_ms += ms;
+        if (ms > g_gap[4].max_ms) g_gap[4].max_ms = ms;
+        g_gap[4].count++;
+        g_gap_base_E_valid = FALSE;
+    }
+    g_ifc8(a, b, c, d);
+    QueryPerformanceCounter(&_t1);
+    ifc_sample(8, _t0, _t1);
+}
 static void ifc_hook9 (int64_t a,int64_t b,int64_t c,int64_t d){
     LARGE_INTEGER _t0, _t1;
     QueryPerformanceCounter(&_t0);
@@ -534,7 +693,15 @@ static int64_t ifc_hook15(void) {
     return r;
 }
 static void ifc_hook16(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc16(a,b,c,d),16);}
-static void ifc_hook17(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc17(a,b,c,d),17);}
+static void ifc_hook17(int64_t a, int64_t b, int64_t c, int64_t d) {
+    LARGE_INTEGER _t0, _t1;
+    QueryPerformanceCounter(&_t0);
+    g_ifc17(a, b, c, d);
+    QueryPerformanceCounter(&_t1);
+    ifc_sample(17, _t0, _t1);
+    g_gap_base_E = _t1;
+    g_gap_base_E_valid = TRUE;
+}
 static void ifc_hook18(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc18(a,b,c,d),18);}
 static void ifc_hook19(int64_t a,int64_t b,int64_t c,int64_t d){
     LARGE_INTEGER _t0, _t1;
@@ -559,6 +726,7 @@ static void    ifc_hook24(int64_t a,int64_t b,int64_t c,int64_t d){
     g_gap_base_A_valid = TRUE;
 }
 static void    ifc_hook25(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc25(a,b,c,d),25);}
+static void    ifc_hook26(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc26(a,b,c,d),26);}
 
 static BYTE *g_inter_stub_block = NULL;
 
@@ -595,10 +763,11 @@ static BOOL install_inter_hooks(void)
     g_ifc23 = (WIDES_t)((BYTE*)exe + g_ifc_rva[23]);
     g_ifc24 = (WIDE_t) ((BYTE*)exe + g_ifc_rva[24]);
     g_ifc25 = (WIDE_t) ((BYTE*)exe + g_ifc_rva[25]);
+    g_ifc26 = (WIDE_t) ((BYTE*)exe + g_ifc_rva[26]);
 
     g_inter_stub_block = alloc_near(winmain, N_IFC * 14);
     if (!g_inter_stub_block) {
-        OutputDebugStringA("[eaw-mt] WARN: alloc_near failed for inter stubs\n");
+        log_write("[eaw-mt] WARN: alloc_near failed for inter stubs\n");
         return FALSE;
     }
 
@@ -609,7 +778,8 @@ static BOOL install_inter_hooks(void)
         ifc_hook12, ifc_hook13, ifc_hook14, ifc_hook15,
         ifc_hook16, ifc_hook17, ifc_hook18, ifc_hook19,
         ifc_hook20, ifc_hook21, ifc_hook22, ifc_hook23,
-        ifc_hook24, ifc_hook25
+        ifc_hook24, ifc_hook25,
+        ifc_hook26
     };
 
     int n = 0;
@@ -620,6 +790,10 @@ static BOOL install_inter_hooks(void)
         /* Index 0 is a thunk: WinMain calls a stub wrapper, not 0x24bb80 directly.
            Skip the forward scan; handle via backtrack from site[1] after the loop. */
         if (i == 0) continue;
+
+        /* Index 26 (27d800): return value unknown — skip call-site patch until
+           decompiled. GapE (hook17→hook8) already brackets this region. */
+        if (i == 26) continue;
 
         /* Hooks 8-13 cover WinMain lines 597-648, which come AFTER hook 7 (caa60,
            line 591). Scanning from byte 0 would find earlier call sites for the
@@ -636,6 +810,8 @@ static BOOL install_inter_hooks(void)
             start_j = (int)(g_ifc_site[14] - winmain) + 5;
         else if (i == 25 && g_ifc_site[11])
             start_j = (int)(g_ifc_site[11] - winmain) + 5;
+        else if (i == 26 && g_ifc_site[17])
+            start_j = (int)(g_ifc_site[17] - winmain) + 5;
 
         for (int j = start_j; j <= WINMAIN_SIZE - 5; j++) {
             if (winmain[j] == 0xE8) {
@@ -649,7 +825,7 @@ static BOOL install_inter_hooks(void)
             char m[96];
             sprintf(m, "[eaw-mt] WARN: inter hook [%s] not found in WinMain\n",
                     g_ifc_name[i]);
-            OutputDebugStringA(m);
+            log_write(m);
             continue;
         }
 
@@ -687,15 +863,188 @@ static BOOL install_inter_hooks(void)
             FlushInstructionCache(GetCurrentProcess(), candidate, 5);
             g_ifc_site[0] = candidate;
             n++;
-            OutputDebugStringA("[eaw-mt] inter hook [24bb80] patched via thunk backtrack\n");
+            log_write("[eaw-mt] inter hook [24bb80] patched via thunk backtrack\n");
         } else {
-            OutputDebugStringA("[eaw-mt] WARN: inter hook [24bb80] thunk backtrack failed\n");
+            log_write("[eaw-mt] WARN: inter hook [24bb80] thunk backtrack failed\n");
         }
     }
 
     char m[64];
     sprintf(m, "[eaw-mt] inter-flush hooks: %d/%d installed\n", n, N_IFC);
-    OutputDebugStringA(m);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
+ * Slot-22 tail call hooks (Phase 5 Step 5)
+ *
+ * Both SpaceModeClass and LandModeClass vtable slot 22 end with an
+ * unconditional tail call to FUN_1403639d0 (RVA 0x3639d0, 3916 bytes).
+ * Patch both call sites to confirm this function carries the episodic
+ * 1000ms stall.  Also hook FUN_14028bf10 (GameModeManager signal dispatch,
+ * #1 suspect) and FUN_140343b90 (auto-resolve battle selection, #2 suspect)
+ * inside FUN_1403639d0 to attribute the stall within one run.
+ * ========================================================================= */
+#define SPACE_SLOT22_RVA   0x4d95a0ULL  /* FUN_1404d95a0, 358 bytes */
+#define LAND_SLOT22_RVA    0x3bb440ULL  /* FUN_1403bb440, 598 bytes */
+#define SLOT22_TAIL_RVA    0x3639d0ULL  /* FUN_1403639d0, 3916 bytes — shared tail call */
+#define SIGDISP_RVA        0x28bf10ULL  /* FUN_14028bf10 — GameModeManager signal dispatch */
+#define BATTLE_SELECT_RVA  0x343b90ULL  /* FUN_140343b90 — tactical auto-resolve selection */
+
+typedef void    (*Slot22TailFn)(int64_t, int64_t, int64_t, int64_t);
+typedef int64_t (*SignalDispFn)(void *, int32_t, int32_t, int32_t, int64_t, uint8_t);
+typedef int64_t (*BattleSelFn) (void *, void *);
+
+static Slot22TailFn g_slot22_tail_orig = NULL;
+static SignalDispFn g_sigdisp_orig     = NULL;
+static BattleSelFn  g_bsel_orig        = NULL;
+
+static LONG   g_tail22_count   = 0;
+static double g_tail22_sum_ms  = 0, g_tail22_max_ms  = 0;
+static LONG   g_sigdisp_count  = 0;
+static double g_sigdisp_sum_ms = 0, g_sigdisp_max_ms = 0;
+static LONG   g_bsel_count     = 0;
+static double g_bsel_sum_ms    = 0, g_bsel_max_ms    = 0;
+
+static void slot22_tail_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_slot22_tail_orig(a, b, c, d);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_tail22_sum_ms += ms;
+    if (ms > g_tail22_max_ms) g_tail22_max_ms = ms;
+    g_tail22_count++;
+    if (ms >= 100.0) {
+        char s[64];
+        sprintf(s, "[eaw-mt] TAIL22 %.1fms\n", ms);
+        log_write(s);
+    }
+}
+
+static int64_t signal_dispatch_hook(void *a, int32_t b, int32_t c, int32_t d, int64_t e, uint8_t f) {
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    int64_t r = g_sigdisp_orig(a, b, c, d, e, f);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_sigdisp_sum_ms += ms;
+    if (ms > g_sigdisp_max_ms) g_sigdisp_max_ms = ms;
+    g_sigdisp_count++;
+    return r;
+}
+
+static int64_t battle_select_hook(void *a, void *b) {
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    int64_t r = g_bsel_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_bsel_sum_ms += ms;
+    if (ms > g_bsel_max_ms) g_bsel_max_ms = ms;
+    g_bsel_count++;
+    return r;
+}
+
+static BOOL install_slot22_hooks(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *tail_target   = (BYTE *)exe + SLOT22_TAIL_RVA;
+    BYTE *sigdisp_target = (BYTE *)exe + SIGDISP_RVA;
+    BYTE *bsel_target   = (BYTE *)exe + BATTLE_SELECT_RVA;
+
+    g_slot22_tail_orig = (Slot22TailFn)tail_target;
+    g_sigdisp_orig     = (SignalDispFn)sigdisp_target;
+    g_bsel_orig        = (BattleSelFn) bsel_target;
+
+    /* Allocate 3 stubs near SpaceMode slot 22 (all scan targets within 2MB). */
+    BYTE *space_fn = (BYTE *)exe + SPACE_SLOT22_RVA;
+    BYTE *land_fn  = (BYTE *)exe + LAND_SLOT22_RVA;
+    BYTE *tail_fn  = (BYTE *)exe + SLOT22_TAIL_RVA;
+
+    BYTE *stub_block = alloc_near(space_fn, 14 * 3);
+    if (!stub_block) {
+        log_write("[eaw-mt] WARN: alloc_near failed for slot22 stubs\n");
+        return FALSE;
+    }
+    BYTE *tail_stub    = stub_block + 0 * 14;
+    BYTE *sigdisp_stub = stub_block + 1 * 14;
+    BYTE *bsel_stub    = stub_block + 2 * 14;
+
+    write_abs_jmp(tail_stub,    (uint64_t)slot22_tail_hook);
+    write_abs_jmp(sigdisp_stub, (uint64_t)signal_dispatch_hook);
+    write_abs_jmp(bsel_stub,    (uint64_t)battle_select_hook);
+
+    int n = 0;
+
+    /* Patch FUN_1403639d0 call site in SpaceMode slot 22 (358 bytes). */
+    for (int j = 0; j <= 358 - 5; j++) {
+        if (space_fn[j] == 0xE8) {
+            int32_t rel; memcpy(&rel, space_fn + j + 1, 4);
+            if (space_fn + j + 5 + rel == tail_target) {
+                int32_t nr = (int32_t)(tail_stub - (space_fn + j + 5));
+                DWORD old;
+                VirtualProtect(space_fn + j + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(space_fn + j + 1, &nr, 4);
+                VirtualProtect(space_fn + j + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), space_fn + j, 5);
+                n++; break;
+            }
+        }
+    }
+
+    /* Patch FUN_1403639d0 call site in LandMode slot 22 (598 bytes). */
+    for (int j = 0; j <= 598 - 5; j++) {
+        if (land_fn[j] == 0xE8) {
+            int32_t rel; memcpy(&rel, land_fn + j + 1, 4);
+            if (land_fn + j + 5 + rel == tail_target) {
+                int32_t nr = (int32_t)(tail_stub - (land_fn + j + 5));
+                DWORD old;
+                VirtualProtect(land_fn + j + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(land_fn + j + 1, &nr, 4);
+                VirtualProtect(land_fn + j + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), land_fn + j, 5);
+                n++; break;
+            }
+        }
+    }
+
+    /* Patch FUN_14028bf10 call site inside FUN_1403639d0 (3916 bytes). */
+    for (int j = 0; j <= 3916 - 5; j++) {
+        if (tail_fn[j] == 0xE8) {
+            int32_t rel; memcpy(&rel, tail_fn + j + 1, 4);
+            if (tail_fn + j + 5 + rel == sigdisp_target) {
+                int32_t nr = (int32_t)(sigdisp_stub - (tail_fn + j + 5));
+                DWORD old;
+                VirtualProtect(tail_fn + j + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(tail_fn + j + 1, &nr, 4);
+                VirtualProtect(tail_fn + j + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), tail_fn + j, 5);
+                n++; break;
+            }
+        }
+    }
+
+    /* Patch BOTH FUN_140343b90 call sites inside FUN_1403639d0. */
+    for (int j = 0; j <= 3916 - 5; j++) {
+        if (tail_fn[j] == 0xE8) {
+            int32_t rel; memcpy(&rel, tail_fn + j + 1, 4);
+            if (tail_fn + j + 5 + rel == bsel_target) {
+                int32_t nr = (int32_t)(bsel_stub - (tail_fn + j + 5));
+                DWORD old;
+                VirtualProtect(tail_fn + j + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(tail_fn + j + 1, &nr, 4);
+                VirtualProtect(tail_fn + j + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), tail_fn + j, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[80];
+    sprintf(m, "[eaw-mt] slot22 hooks: %d/5 patched (expect 2+1+2)\n", n);
+    log_write(m);
     return n > 0;
 }
 
@@ -770,7 +1119,7 @@ static void profile_report_and_reset(void) {
         g_sim_sum_ms   / fn,  g_sim_min_ms,   g_sim_max_ms,
         g_pump_sum_ms  / pn,  g_pump_min_ms,  g_pump_max_ms, (long)g_pump_count,
         (long)g_wait_msg_count, (long)g_wait_msg_timeout);
-    OutputDebugStringA(buf);
+    log_write(buf);
 
     /* Inter-flush breakdown — split into two ODS calls so Wine truncation doesn't hide hooks 8-13. */
     {
@@ -787,7 +1136,7 @@ static void profile_report_and_reset(void) {
         }
         ibuf[off++] = '\n';
         ibuf[off]   = '\0';
-        OutputDebugStringA(ibuf);
+        log_write(ibuf);
 
         off = sprintf(ibuf, "[eaw-mt] inter breakdown2:");
         for (int i = 8; i < 14; i++) {
@@ -801,7 +1150,7 @@ static void profile_report_and_reset(void) {
         }
         ibuf[off++] = '\n';
         ibuf[off]   = '\0';
-        OutputDebugStringA(ibuf);
+        log_write(ibuf);
 
         off = sprintf(ibuf, "[eaw-mt] inter breakdown3:");
         for (int i = 14; i < 20; i++) {
@@ -815,7 +1164,7 @@ static void profile_report_and_reset(void) {
         }
         ibuf[off++] = '\n';
         ibuf[off]   = '\0';
-        OutputDebugStringA(ibuf);
+        log_write(ibuf);
 
         off = sprintf(ibuf, "[eaw-mt] inter breakdown4:");
         for (int i = 20; i < N_IFC; i++) {
@@ -829,7 +1178,7 @@ static void profile_report_and_reset(void) {
         }
         ibuf[off++] = '\n';
         ibuf[off]   = '\0';
-        OutputDebugStringA(ibuf);
+        log_write(ibuf);
 
         /* Gap timers — unhooked spans between adjacent hooked calls. */
         off = sprintf(ibuf, "[eaw-mt] inter gaps:");
@@ -845,9 +1194,37 @@ static void profile_report_and_reset(void) {
         off += sprintf(ibuf + off, "\n  gapD[1dc60->f2] avg=%.2f max=%.2f ms (n=%ld)",
             g_gap[3].count ? g_gap[3].sum_ms / g_gap[3].count : 0.0,
             g_gap[3].max_ms, (long)g_gap[3].count);
+        off += sprintf(ibuf + off, "\n  gapE[3b1b50->51d10] avg=%.2f max=%.2f ms (n=%ld)",
+            g_gap[4].count ? g_gap[4].sum_ms / g_gap[4].count : 0.0,
+            g_gap[4].max_ms, (long)g_gap[4].count);
         ibuf[off++] = '\n';
         ibuf[off]   = '\0';
-        OutputDebugStringA(ibuf);
+        log_write(ibuf);
+    }
+
+    /* Slot-22 tail call breakdown. */
+    {
+        char ibuf[256];
+        double tn  = (double)(g_tail22_count  ? g_tail22_count  : 1);
+        double sdn = (double)(g_sigdisp_count ? g_sigdisp_count : 1);
+        double bn  = (double)(g_bsel_count    ? g_bsel_count    : 1);
+        sprintf(ibuf,
+            "[eaw-mt] tail22: avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  sigdisp(28bf10): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  bsel(343b90):    avg=%.2f max=%.2f ms (n=%ld)\n",
+            g_tail22_sum_ms  / tn,  g_tail22_max_ms,  (long)g_tail22_count,
+            g_sigdisp_sum_ms / sdn, g_sigdisp_max_ms, (long)g_sigdisp_count,
+            g_bsel_sum_ms    / bn,  g_bsel_max_ms,    (long)g_bsel_count);
+        log_write(ibuf);
+    }
+
+    /* File I/O summary — always a separate ODS call so Wine truncation can't hide it */
+    {
+        char ibuf[256];
+        sprintf(ibuf, "[eaw-mt] io_rd: total=%.1fms max=%.1fms (n=%ld reads, %ldKB) main-thread\n",
+                g_io_win_sum_ms, g_io_win_max_ms,
+                (long)g_io_win_count, (long)(g_io_win_bytes / 1024));
+        log_write(ibuf);
     }
 
     g_frame_count = 0;
@@ -855,6 +1232,13 @@ static void profile_report_and_reset(void) {
     g_pump_count  = 0;
     g_wait_msg_count   = 0;
     g_wait_msg_timeout = 0;
+    g_io_win_sum_ms = 0.0;
+    g_io_win_max_ms = 0.0;
+    g_io_win_count  = 0;
+    g_io_win_bytes  = 0;
+    g_tail22_count  = 0; g_tail22_sum_ms  = 0; g_tail22_max_ms  = 0;
+    g_sigdisp_count = 0; g_sigdisp_sum_ms = 0; g_sigdisp_max_ms = 0;
+    g_bsel_count    = 0; g_bsel_sum_ms    = 0; g_bsel_max_ms    = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -864,7 +1248,7 @@ static void profile_report_and_reset(void) {
         g_ifc[i].min_ms = 1e9;
         g_ifc[i].max_ms = 0;
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         g_gap[i].count  = 0;
         g_gap[i].sum_ms = 0;
         g_gap[i].max_ms = 0;
@@ -877,7 +1261,7 @@ static void profile_report_and_reset(void) {
 
 static DWORD WINAPI render_thread_proc(LPVOID unused) {
     (void)unused;
-    OutputDebugStringA("[eaw-mt] Render thread started\n");
+    log_write("[eaw-mt] Render thread started\n");
 
     while (!InterlockedCompareExchange(&g_shutdown, 0, 0)) {
         DWORD wait = WaitForSingleObject(g_render_kick, 1000);
@@ -894,7 +1278,7 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
         SetEvent(g_render_done);
     }
 
-    OutputDebugStringA("[eaw-mt] Render thread exiting\n");
+    log_write("[eaw-mt] Render thread exiting\n");
     return 0;
 }
 
@@ -1015,7 +1399,7 @@ static BOOL install_render_hook(void) {
 
     /* Sanity-check: verify the bytes we expect are actually there */
     if (memcmp(flush_fn, saved_prologue, sizeof(saved_prologue)) != 0) {
-        OutputDebugStringA("[eaw-mt] FATAL: FUN_140180d90 bytes don't match — wrong binary version?\n");
+        log_write("[eaw-mt] FATAL: FUN_140180d90 bytes don't match — wrong binary version?\n");
         return FALSE;
     }
 
@@ -1023,7 +1407,7 @@ static BOOL install_render_hook(void) {
     BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64,
         MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!tramp) {
-        OutputDebugStringA("[eaw-mt] FATAL: VirtualAlloc for trampoline failed\n");
+        log_write("[eaw-mt] FATAL: VirtualAlloc for trampoline failed\n");
         return FALSE;
     }
 
@@ -1036,7 +1420,7 @@ static BOOL install_render_hook(void) {
     /* Patch flush_fn: write JMP to render_flush_hook */
     DWORD old_prot;
     if (!VirtualProtect(flush_fn, 14, PAGE_EXECUTE_READWRITE, &old_prot)) {
-        OutputDebugStringA("[eaw-mt] FATAL: VirtualProtect failed\n");
+        log_write("[eaw-mt] FATAL: VirtualProtect failed\n");
         VirtualFree(tramp, 0, MEM_RELEASE);
         return FALSE;
     }
@@ -1048,7 +1432,7 @@ static BOOL install_render_hook(void) {
     /* Flush instruction cache so the CPU sees the patched bytes */
     FlushInstructionCache(GetCurrentProcess(), flush_fn, 14);
 
-    OutputDebugStringA("[eaw-mt] Render hook installed at FUN_140180d90\n");
+    log_write("[eaw-mt] Render hook installed at FUN_140180d90\n");
     return TRUE;
 }
 
@@ -1061,11 +1445,13 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
     if (fdwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hinstDLL);
+        g_main_thread_id = GetCurrentThreadId();
+        g_log_fp = fopen("eaw-mt.log", "w");
 
         /* Load real winmm */
         real_winmm = LoadLibraryA("C:\\windows\\system32\\winmm.dll");
         if (!real_winmm) {
-            OutputDebugStringA("[eaw-mt] FATAL: failed to load real winmm.dll\n");
+            log_write("[eaw-mt] FATAL: failed to load real winmm.dll\n");
             return FALSE;
         }
         real_timeEndPeriod   = (timeEndPeriod_t)   GetProcAddress(real_winmm, "timeEndPeriod");
@@ -1074,7 +1460,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         real_timeGetTime     = (timeGetTime_t)      GetProcAddress(real_winmm, "timeGetTime");
         if (!real_timeEndPeriod || !real_timeBeginPeriod ||
             !real_timeGetDevCaps || !real_timeGetTime) {
-            OutputDebugStringA("[eaw-mt] FATAL: failed to resolve winmm exports\n");
+            log_write("[eaw-mt] FATAL: failed to resolve winmm exports\n");
             return FALSE;
         }
 
@@ -1085,7 +1471,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         g_render_kick = CreateEventA(NULL, FALSE, FALSE, NULL);
         g_render_done = CreateEventA(NULL, FALSE, FALSE, NULL);
         if (!g_render_kick || !g_render_done) {
-            OutputDebugStringA("[eaw-mt] FATAL: CreateEvent failed\n");
+            log_write("[eaw-mt] FATAL: CreateEvent failed\n");
             return FALSE;
         }
 
@@ -1098,18 +1484,24 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         /* Replace WaitMessage with 1ms-capped equivalent via IAT patch */
         install_wait_message_iat_hook();
 
+        /* Hook CreateFileA/W + ReadFile to measure main-thread disk I/O */
+        install_io_iat_hooks();
+
         /* Install inter-flush decomposition hooks (non-fatal) */
         install_inter_hooks();
+
+        /* Install slot-22 tail call + sub-hooks (non-fatal) */
+        install_slot22_hooks();
 
         /* Start render thread */
         HANDLE thread = CreateThread(NULL, 0, render_thread_proc, NULL, 0, NULL);
         if (!thread) {
-            OutputDebugStringA("[eaw-mt] FATAL: CreateThread failed\n");
+            log_write("[eaw-mt] FATAL: CreateThread failed\n");
             return FALSE;
         }
         CloseHandle(thread);
 
-        OutputDebugStringA("[eaw-mt] Model A render thread active (serialized)\n");
+        log_write("[eaw-mt] Model A render thread active (serialized)\n");
     }
 
     if (fdwReason == DLL_PROCESS_DETACH) {
@@ -1124,6 +1516,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8, old, &old);
         }
         if (real_winmm) FreeLibrary(real_winmm);
+        if (g_log_fp) { fclose(g_log_fp); g_log_fp = NULL; }
     }
 
     return TRUE;
