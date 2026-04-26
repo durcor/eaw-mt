@@ -321,7 +321,66 @@ that trigger the 22s stall are fleet-AI functions (planet evaluation, unit
 assignment), increasing their ServiceRate (e.g., from 0.5s to 2s) reduces
 call frequency and amortizes cost — but doesn't eliminate the per-call stall.
 
-**Immediate mitigation**: hook the entity-level `Pump_Threads` call site inside
-`FUN_1403a6b80` to measure per-entity AI execution time and identify which
-entity type triggers the stall.  Add E8 hook for RVA `0x247a90` inside
-`FUN_1403a6b80` (2862 bytes) — the `pump_ms` counter only tracks WinMain.
+### Per-entity Pump_Threads confirmed — Phase 5 Step 10 (2026-04-25)
+
+`pumpe(247a90)` hook inside `FUN_1403a6b80` confirms per-entity Lua AI is
+the stall.  3-window dataset:
+
+| window | gsvc max | ta6b80 max | pumpe max | pumpe n | pumpe total / ta6b80 total |
+|---|---|---|---|---|---|
+| 1 (stall) | 22,001ms | 21,994ms | 21,994ms | 13 | 92% |
+| 2 (moderate) | 2,046ms | 1,050ms | **0.03ms** | 4 | ~0% |
+| 3 (quiet) | 3.36ms | 1.09ms | 0.04ms | 4 | — |
+
+Window 1: 13 entity AI firings in 300 frames, avg 1958ms each, one 22s outlier.
+pumpe total (25,463ms) / ta6b80 total (27,746ms) = 92% — Pump_Threads
+dominates when entities service.
+
+**Window 2 reveals a second, independent stall source:** `pumpe` is fast
+(0.03ms) but `ta6b80_max = 1050ms` and `gsvc_max = 2046ms`.  Two entity
+service calls each taking ~1000ms (compounding through two `FUN_1402be640`
+invocations) with zero Pump_Threads involvement.
+
+### Second stall source — inside FUN_1403a6b80 (non-Lua)
+
+`FUN_1403a6b80` contains several non-Pump_Threads paths that could produce
+the 1050ms window-2 max.  Candidates from decompile:
+
+- **Lines 132–136** — behavior vtable dispatch (most suspicious):
+  ```c
+  while (iVar5 = iVar5 + -1, -1 < iVar5) {
+      plVar6 = *(longlong **)(param_1[0x4f] + (longlong)(char)iVar5 * 8);
+      if ((*(uint *)(plVar6 + 6) <= param_2) &&
+          (FUN_1404c3700(plVar6) == '\x01'))
+          (**(code **)(*plVar6 + 0x30))(plVar6, param_1, param_2);
+  }
+  ```
+  Indirect vtable call — can be any behavior implementation.  Pathfinding,
+  formation logic, or targeting could take O(N) time.
+
+- **Line 361** — `FUN_1403a76b0(param_1, param_2)` — movement system, always
+  called when `param_1[0x5a] != 0`.
+
+- **Line 99** — `FUN_1403a9e30(...)` — pending command dispatch.
+
+- **Line 79** — `FUN_1405369e0(...)` — conditional preamble call.
+
+TODO: Add E8 hooks inside `FUN_1403a6b80` (2862 bytes) for:
+- `FUN_1403a9e30` (RVA from decompile line 99)
+- `FUN_1403a76b0` (RVA `0x3a76b0`, line 361)
+- `FUN_1405369e0` (RVA `0x5369e0`, line 79)
+Also consider timing the behavior-vtable block by instrumenting before/after
+the loop at lines 132–136 (requires inlined timer rather than E8 hook since
+the target is indirect).
+
+### Fix scope revised
+
+The Class-B hitches have two independent sources:
+1. **Pump_Threads (entity Lua AI)** — rate-gated, 92% of stall budget in
+   hitch windows.  Fix: offload to worker thread (Option A) or time-bound
+   execution (Option B).
+2. **Behavior vtable or movement** — 1050ms per entity with no Lua
+   involvement.  Distinct root cause; needs separate profiling pass to
+   isolate to a specific behavior type.
+
+Both sources must be addressed before Class-B hitches are eliminated.

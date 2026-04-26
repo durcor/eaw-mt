@@ -1195,6 +1195,8 @@ static BOOL install_space_unit_svc_hook(void)
 #define TA6B80_RVA        0x3a6b80ULL  /* FUN_1403a6b80 — per-entity inner loop call */
 #define TA62D0_RVA        0x2a62d0ULL  /* FUN_1402a62d0 — unconditional final call */
 #define T20ED70_RVA       0x20ed70ULL  /* FUN_14020ed70 — preamble loop call */
+#define A6B80_BODY_SIZE   2862         /* FUN_1403a6b80 body size for inner E8 scan */
+#define PUMPE_RVA         0x247a90ULL  /* FUN_140247a90 — Pump_Threads (entity-level call site) */
 
 static const BYTE tail22_prologue[19] = {
     0x40, 0x55,                              /* PUSH RBP (REX prefix)        */
@@ -1574,6 +1576,76 @@ static BOOL install_2be640_body_hooks(void)
 
     char m[96];
     sprintf(m, "[eaw-mt] 2be640 body hooks: %d patched (3a6b80xN, 2a62d0x1, 20ed70xM)\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
+ * Per-entity Pump_Threads hook inside FUN_1403a6b80 (Phase 5 Step 10)
+ *
+ * Root cause confirmed: FUN_1403a6b80 calls FUN_140247a90 (Pump_Threads)
+ * via a ServiceRate/LastService gate to execute entity Lua AI coroutines.
+ * One entity's coroutine takes 22,310ms.  This hook captures the per-entity
+ * Pump_Threads call time separately from the WinMain pump_ms metric.
+ * ========================================================================= */
+typedef void (*PumpEFn)(int64_t);
+static PumpEFn g_pumpe_orig   = NULL;
+static LONG    g_pumpe_count  = 0;
+static double  g_pumpe_sum_ms = 0, g_pumpe_max_ms = 0;
+
+static void pumpe_hook(int64_t a)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_pumpe_orig(a);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_pumpe_sum_ms += ms;
+    if (ms > g_pumpe_max_ms) g_pumpe_max_ms = ms;
+    g_pumpe_count++;
+    if (ms >= 100.0) {
+        char s[64];
+        sprintf(s, "[eaw-mt] PUMPE %.1fms (entity Lua AI)\n", ms);
+        log_write(s);
+    }
+}
+
+static BOOL install_pumpe_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_a6b80  = (BYTE *)exe + TA6B80_RVA;
+    BYTE *fn_pumpe  = (BYTE *)exe + PUMPE_RVA;
+
+    g_pumpe_orig = (PumpEFn)fn_pumpe;
+
+    BYTE *stub = alloc_near(fn_a6b80, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for pumpe stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)pumpe_hook);
+
+    int n = 0;
+    for (int i = 0; i <= A6B80_BODY_SIZE - 5; i++) {
+        if (fn_a6b80[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, fn_a6b80 + i + 1, 4);
+            if (fn_a6b80 + i + 5 + rel == fn_pumpe) {
+                int32_t new_rel = (int32_t)(stub - (fn_a6b80 + i + 5));
+                DWORD old;
+                VirtualProtect(fn_a6b80 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(fn_a6b80 + i + 1, &new_rel, 4);
+                VirtualProtect(fn_a6b80 + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), fn_a6b80 + i, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[80];
+    sprintf(m, "[eaw-mt] pumpe (Pump_Threads in 3a6b80): %d call site(s) patched\n", n);
     log_write(m);
     return n > 0;
 }
@@ -2079,14 +2151,16 @@ static void profile_report_and_reset(void) {
         double a6n  = (double)(g_ta6b80_count  ? g_ta6b80_count  : 1);
         double a6d0 = (double)(g_ta62d0_count  ? g_ta62d0_count  : 1);
         double e70n = (double)(g_t20ed70_count ? g_t20ed70_count : 1);
+        double pen  = (double)(g_pumpe_count   ? g_pumpe_count   : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  tail22i(3639d0): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  t364920(364920): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  t490580(490580): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  t364920(364920): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  t490580(490580): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta62d0(2a62d0):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t20ed70(20ed70): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  a1a240(41a240):  avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -2100,10 +2174,11 @@ static void profile_report_and_reset(void) {
             g_gsvc_sum_ms    / gn,   g_gsvc_max_ms,    (long)g_gsvc_count,
             g_sslot22_sum_ms / ssn,  g_sslot22_max_ms, (long)g_sslot22_count,
             g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
-            g_t364920_sum_ms / t36n, g_t364920_max_ms, (long)g_t364920_count,
             g_t2be640_sum_ms / t2bn, g_t2be640_max_ms, (long)g_t2be640_count,
-            g_t490580_sum_ms / t49n, g_t490580_max_ms, (long)g_t490580_count,
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
+            g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count,
+            g_t364920_sum_ms / t36n, g_t364920_max_ms, (long)g_t364920_count,
+            g_t490580_sum_ms / t49n, g_t490580_max_ms, (long)g_t490580_count,
             g_ta62d0_sum_ms  / a6d0, g_ta62d0_max_ms,  (long)g_ta62d0_count,
             g_t20ed70_sum_ms / e70n, g_t20ed70_max_ms, (long)g_t20ed70_count,
             g_a1a240_sum_ms  / a1n,  g_a1a240_max_ms,  (long)g_a1a240_count,
@@ -2152,6 +2227,7 @@ static void profile_report_and_reset(void) {
     g_ta6b80_count  = 0; g_ta6b80_sum_ms  = 0; g_ta6b80_max_ms  = 0;
     g_ta62d0_count  = 0; g_ta62d0_sum_ms  = 0; g_ta62d0_max_ms  = 0;
     g_t20ed70_count = 0; g_t20ed70_sum_ms = 0; g_t20ed70_max_ms = 0;
+    g_pumpe_count   = 0; g_pumpe_sum_ms   = 0; g_pumpe_max_ms   = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -2426,6 +2502,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* E8 hooks inside FUN_1402be640 body — 3a6b80, 2a62d0, 20ed70 (non-fatal) */
         install_2be640_body_hooks();
+
+        /* Per-entity Pump_Threads call site inside FUN_1403a6b80 (non-fatal) */
+        install_pumpe_hook();
 
         /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();
