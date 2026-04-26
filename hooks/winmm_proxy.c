@@ -1200,6 +1200,8 @@ static BOOL install_space_unit_svc_hook(void)
 #define A76B0_RVA         0x3a76b0ULL  /* FUN_1403a76b0 — movement system (line 361 of 3a6b80) */
 #define A9E30_RVA         0x3a9e30ULL  /* FUN_1403a9e30 — command dispatch (line 99 of 3a6b80) */
 #define E369E0_RVA        0x5369e0ULL  /* FUN_1405369e0 — preamble call (line 79 of 3a6b80) */
+#define A76B0_BODY_SIZE   499          /* FUN_1403a76b0 body size for inner E8 scan */
+#define B87010_RVA        0x387010ULL  /* FUN_140387010 — per-movement-component call (line 74 of 3a76b0) */
 
 static const BYTE tail22_prologue[19] = {
     0x40, 0x55,                              /* PUSH RBP (REX prefix)        */
@@ -1774,6 +1776,70 @@ static BOOL install_a6b80_stall2_hooks(void)
 }
 
 /* =========================================================================
+ * Per-movement-component hook inside FUN_1403a76b0 (Phase 5 Step 12)
+ *
+ * FUN_140387010 (RVA 0x387010) is called for every movement component
+ * unconditionally at line 74 of FUN_1403a76b0.  The a76b0 max=1236ms with
+ * n=200 implies one movement component takes 1236ms on some entity.
+ * ========================================================================= */
+typedef void (*B87010Fn)(int64_t, int32_t);
+static B87010Fn g_b87010_orig   = NULL;
+static LONG     g_b87010_count  = 0;
+static double   g_b87010_sum_ms = 0, g_b87010_max_ms = 0;
+
+static void b87010_hook(int64_t a, int32_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_b87010_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b87010_sum_ms += ms;
+    if (ms > g_b87010_max_ms) g_b87010_max_ms = ms;
+    g_b87010_count++;
+}
+
+static BOOL install_b87010_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_a76b0  = (BYTE *)exe + A76B0_RVA;
+    BYTE *fn_b87010 = (BYTE *)exe + B87010_RVA;
+
+    g_b87010_orig = (B87010Fn)fn_b87010;
+
+    BYTE *stub = alloc_near(fn_a76b0, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for b87010 stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)b87010_hook);
+
+    int n = 0;
+    for (int i = 0; i <= A76B0_BODY_SIZE - 5; i++) {
+        if (fn_a76b0[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, fn_a76b0 + i + 1, 4);
+            if (fn_a76b0 + i + 5 + rel == fn_b87010) {
+                int32_t new_rel = (int32_t)(stub - (fn_a76b0 + i + 5));
+                DWORD old;
+                VirtualProtect(fn_a76b0 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(fn_a76b0 + i + 1, &new_rel, 4);
+                VirtualProtect(fn_a76b0 + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), fn_a76b0 + i, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[80];
+    sprintf(m, "[eaw-mt] b87010 (387010 in 3a76b0): %d call site(s) patched\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
  * FUN_14028a4d0 sub-hook (Phase 5 Step 7a)
  *
  * FUN_14028a4d0 (RVA 0x28a4d0) is called from FUN_14028d400 when the frame
@@ -2256,7 +2322,7 @@ static void profile_report_and_reset(void) {
 
     /* Game-service + slot-22 breakdown. */
     {
-        char ibuf[1536];
+        char ibuf[1664];
         double gn   = (double)(g_gsvc_count    ? g_gsvc_count    : 1);
         double g22  = (double)(g_gslot22_count ? g_gslot22_count : 1);
         double a4n  = (double)(g_ga4d0_count   ? g_ga4d0_count   : 1);
@@ -2278,6 +2344,7 @@ static void profile_report_and_reset(void) {
         double a76n = (double)(g_a76b0_count  ? g_a76b0_count   : 1);
         double a9n  = (double)(g_a9e30_count  ? g_a9e30_count   : 1);
         double e36n = (double)(g_e369e0_count ? g_e369e0_count  : 1);
+        double b87n = (double)(g_b87010_count ? g_b87010_count  : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -2286,6 +2353,7 @@ static void profile_report_and_reset(void) {
             "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  a76b0(3a76b0):   avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b87010(387010):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  a9e30(3a9e30):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  e369e0(5369e0):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t364920(364920): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -2307,6 +2375,7 @@ static void profile_report_and_reset(void) {
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
             g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count,
             g_a76b0_sum_ms   / a76n, g_a76b0_max_ms,   (long)g_a76b0_count,
+            g_b87010_sum_ms  / b87n, g_b87010_max_ms,  (long)g_b87010_count,
             g_a9e30_sum_ms   / a9n,  g_a9e30_max_ms,   (long)g_a9e30_count,
             g_e369e0_sum_ms  / e36n, g_e369e0_max_ms,  (long)g_e369e0_count,
             g_t364920_sum_ms / t36n, g_t364920_max_ms, (long)g_t364920_count,
@@ -2363,6 +2432,7 @@ static void profile_report_and_reset(void) {
     g_a76b0_count   = 0; g_a76b0_sum_ms   = 0; g_a76b0_max_ms   = 0;
     g_a9e30_count   = 0; g_a9e30_sum_ms   = 0; g_a9e30_max_ms   = 0;
     g_e369e0_count  = 0; g_e369e0_sum_ms  = 0; g_e369e0_max_ms  = 0;
+    g_b87010_count  = 0; g_b87010_sum_ms  = 0; g_b87010_max_ms  = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -2643,6 +2713,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* Second stall source hooks inside FUN_1403a6b80 — movement, cmd, preamble (non-fatal) */
         install_a6b80_stall2_hooks();
+
+        /* Per-movement-component hook inside FUN_1403a76b0 (non-fatal) */
+        install_b87010_hook();
 
         /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();

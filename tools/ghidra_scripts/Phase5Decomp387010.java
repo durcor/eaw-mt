@@ -1,0 +1,56 @@
+// Phase5Decomp387010.java
+// Decompile FUN_140387010 (RVA 0x387010) — confirmed terminal stall carrier in movement path.
+// Called from FUN_1403a76b0 (movement, 499 bytes) for EVERY movement component unconditionally.
+// b87010 max ≈ a76b0 max (Δ<1ms) in 4/5 non-Lua stall windows → single call takes 1+ seconds.
+//
+// Output: logs/phase5_387010.c
+
+import ghidra.app.script.GhidraScript;
+import ghidra.app.decompiler.*;
+import ghidra.program.model.address.*;
+import ghidra.program.model.listing.*;
+import java.io.*;
+
+public class Phase5Decomp387010 extends GhidraScript {
+
+    static final long[] RVAS  = { 0x387010L };
+    static final String[] NAMES = { "FUN_140387010" };
+
+    @Override
+    public void run() throws Exception {
+        DecompInterface decomp = new DecompInterface();
+        decomp.openProgram(currentProgram);
+
+        PrintWriter out = new PrintWriter(new FileWriter("logs/phase5_387010.c"));
+        long base = currentProgram.getImageBase().getOffset();
+
+        for (int k = 0; k < RVAS.length; k++) {
+            Address addr = currentProgram.getAddressFactory()
+                .getDefaultAddressSpace().getAddress(base + RVAS[k]);
+            Function fn = currentProgram.getListing().getFunctionAt(addr);
+            if (fn == null) {
+                out.printf("/* %s (RVA 0x%x) — no function at address */\n\n", NAMES[k], RVAS[k]);
+                continue;
+            }
+            out.printf("/* =========================================================\n");
+            out.printf(" * %s  (RVA 0x%x)\n", NAMES[k], RVAS[k]);
+            out.printf(" * size: %d bytes  params: %d  return: %s\n",
+                fn.getBody().getNumAddresses(),
+                fn.getParameterCount(),
+                fn.getReturnType().getName());
+            out.printf(" * ========================================================= */\n\n");
+
+            DecompileResults res = decomp.decompileFunction(fn, 120, monitor);
+            if (res.decompileCompleted()) {
+                out.println(res.getDecompiledFunction().getC());
+            } else {
+                out.printf("/* decompile failed: %s */\n\n", res.getErrorMessage());
+            }
+            out.println();
+        }
+
+        out.close();
+        decomp.dispose();
+        println("Done — logs/phase5_387010.c");
+    }
+}

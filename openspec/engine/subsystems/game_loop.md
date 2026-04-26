@@ -394,7 +394,110 @@ param_1[0x2d0] → movement array (iVar1 entries)
 
 **Line 74: `FUN_140387010(lVar6, param_2)`** is called unconditionally for every movement component — prime suspect for the 1236ms per-entity spike.
 
-TODO: Add E8 hook for `FUN_140387010` (RVA `0x387010`) inside `FUN_1403a76b0` (499 bytes).
+### FUN_140387010 confirmed as terminal stall carrier — Phase 5 Step 12 (2026-04-26)
+
+E8 hook for `FUN_140387010` (RVA `0x387010`) added inside `FUN_1403a76b0` (499 bytes).
+
+| Window | pumpe max | a76b0 max | b87010 max | Δ |
+|---|---|---|---|---|
+| W2 (non-Lua stall) | 0.03ms | 1,108ms | **1,108ms** | 0.02ms |
+| W5 (non-Lua stall) | 0.11ms | 2,037ms | 1,067ms | multi-call sum |
+| W8 (non-Lua stall) | 0.03ms | 1,063ms | **1,062ms** | 1ms |
+| W11 (non-Lua stall) | 0.03ms | 1,070ms | **1,070ms** | 0.06ms |
+| W12 (non-Lua stall) | 0.04ms | 1,079ms | **1,079ms** | 0.44ms |
+
+In 4 of 5 non-Lua stall windows, a single `FUN_140387010` call accounts for ≥99.9% of the `a76b0` time.  `n ≈ 11,000–19,000` calls per 300-frame window (≈55 calls per `a76b0` invocation = movement components per entity).  `a9e30` never fires, `e369e0` eliminated.
+
+**`FUN_140387010` (RVA `0x387010`, 344 bytes) confirmed as terminal stall carrier — single call takes 1+ seconds.**
+
+### FUN_140387010 — Structure (decompiled, Phase 5 Step 12)
+
+Per-movement-component tick.  Arguments: `(component, frame_counter)`.
+
+```
+param_1 = movement component ptr
+param_2 = frame counter (int)
+
+Guards (early return if any false):
+  param_1+0x20 (entity ptr) != 0
+  param_1+0x10 (owner ptr) != 0
+  *(owner+0x3a0) & 2 == 0        (entity not flagged as suspended)
+  DAT_140b15418 == 0 || FUN_14035f790() == 0  (global pause flag)
+
+Tick:
+  iVar7 = param_2 − param_1+0x60   (delta ticks)
+  param_1+0x60 = param_2            (store current tick)
+
+  if (entity+0x48 in [5,10]) && param_1+0x6c == 1:
+    FUN_140387400(component, iVar7)   (path-following update)
+
+  if entity+0x4e==1 && param_1+0x6c==1 && owner!=0 && param_1+0x28>0.0:
+    if param_1+0x94 < 0:            (cold cache — no path slot yet)
+      lVar5 = FUN_140385cf0(param_1)  (path-system lookup by entity name)
+      if lVar5 == 0: goto tail
+      iVar3 = FUN_14012d2a0(lVar5, entity+0x1c0_string)  (name→slot index)
+      if iVar3 < 0: goto tail       (not found — STAYS uncached, retries every tick)
+      param_1+0x94 = iVar3          (cache slot index)
+      FUN_14012d430(lVar5, iVar3, 1)
+      [if entity+0x1f0 != 0: same for secondary slot → param_1+0x98]
+    FUN_140381ff0(param_1)            (main movement step — calls FUN_140385cf0 again)
+
+tail:
+  if param_1+0x6f == 1:
+    FUN_140387170(component, iVar7)   (rotation update)
+```
+
+**Cold-cache failure bug:** if `FUN_14012d2a0` returns -1 (name not found in path system), `param_1+0x94` is never updated from -1.  The cold-cache block re-runs every tick for that component, calling `FUN_140385cf0` twice per tick (once in the cold-cache branch, once inside `FUN_140381ff0`).
+
+### FUN_140385cf0 — Structure (decompiled, Phase 5 Step 12)
+
+Path-system name lookup (RVA `0x385cf0`, 376 bytes).  Called from cold-cache branch and from `FUN_140381ff0`.
+
+```
+Guards: entity valid, entity+0x4e (move-enabled), owner valid, owner+0x2a0 (nav ptr) != 0
+lVar4 = FUN_1402648b0()            (get global nav/physics manager singleton)
+FUN_14001e680(local_138, entity+0x60)  (copy entity name string, SSO pattern)
+if local_128 == 0: return lVar4    (empty name → return manager as-is)
+if param_1+0x90 < 0:               (inner cold cache)
+  _strupr(local_118)               (uppercase name)
+  strip at DAT_140819540 delimiter
+  iVar3 = FUN_14012d520(lVar4, local_118)  (name→index in manager)
+  param_1+0x90 = iVar3
+  if iVar3 < 0: return 0
+lVar4 = FUN_14012d6f0(lVar4, iVar3)  (get object by cached index)
+return lVar4
+```
+
+`FUN_14012d520` (name→index lookup in global nav manager) is the prime stall suspect inside `FUN_140385cf0`.  If it performs a linear scan of a large registry, it could account for 1+ seconds.
+
+### FUN_140381ff0 — Structure (decompiled, Phase 5 Step 12)
+
+Main movement step (RVA `0x381ff0`, 746 bytes).
+
+```
+lVar2 = FUN_140385cf0()            (path-system lookup — second call per tick)
+if lVar2 == 0: return 0
+FUN_140383650(param_1, local_98)   (compute position/direction)
+cVar1 = FUN_140386170(local_98, param_1+0x9c)  (at destination?)
+if not at destination:
+  [speed interpolation math using entity+0x4c0 acceleration]
+  FUN_14012d480(lVar2, param_1+0x94, &position_vec)  (write position to path system)
+  if param_1+0x98 >= 0:
+    FUN_14012d480(lVar2, param_1+0x98, &rotation_vec) (write rotation to path system)
+return 1
+```
+
+`FUN_14012d480` writes position/rotation into the path system.  If the path system is physics-backed, this may synchronize with a background physics thread — a second candidate stall point.
+
+### Candidates for stall inside FUN_140387010 (Phase 5 Step 13 — TBD)
+
+| Suspect | Why | How to confirm |
+|---|---|---|
+| `FUN_14012d520` inside `FUN_140385cf0` | Name→index lookup, possibly linear scan | E8 hook inside FUN_140385cf0 |
+| `FUN_14012d480` inside `FUN_140381ff0` | Writes to physics path system, may sync with background thread | E8 hook inside FUN_140381ff0 |
+| Cold-cache retry loop | `param_1+0x94` never caches (name not found) → two `FUN_140385cf0` calls/tick | Log when param_1+0x94 stays -1 after call |
+
+TODO: Add E8 hooks for `FUN_14012d520` (inside `FUN_140385cf0`) and `FUN_14012d480` (inside `FUN_140381ff0`) to identify the actual stall callee.
 
 ### Fix scope revised
 
@@ -402,8 +505,9 @@ The Class-B hitches have two independent sources:
 1. **Pump_Threads (entity Lua AI)** — rate-gated, 92% of stall budget in
    hitch windows.  Fix: offload to worker thread (Option A) or time-bound
    execution (Option B).
-2. **Behavior vtable or movement** — 1050ms per entity with no Lua
-   involvement.  Distinct root cause; needs separate profiling pass to
-   isolate to a specific behavior type.
+2. **Movement component tick (`FUN_140387010`)** — single call takes 1–2 seconds
+   per entity per episode.  Root: `FUN_14012d520` (name lookup) or
+   `FUN_14012d480` (physics write) inside the per-component movement step.
+   Phase 5 Step 13 will pin which callee carries the stall.
 
 Both sources must be addressed before Class-B hitches are eliminated.
