@@ -489,25 +489,131 @@ return 1
 
 `FUN_14012d480` writes position/rotation into the path system.  If the path system is physics-backed, this may synchronize with a background physics thread — a second candidate stall point.
 
-### Candidates for stall inside FUN_140387010 (Phase 5 Step 13 — TBD)
+### Phase 5 Step 13 result — d12d520 and d12d480 both n=0 (2026-04-26)
 
-| Suspect | Why | How to confirm |
+E8 hooks inside `FUN_140385cf0` (376 bytes) and `FUN_140381ff0` (746 bytes) showed `n=0` across all windows including non-Lua stall windows.
+
+- `d12d520 n=0` — `FUN_14012d520` only fires when `param_1+0x90 < 0` (inner cold-cache); all movement components have warm inner caches by the time profiling windows are collected.
+- `d12d480 n=0` — `FUN_140381ff0` is never called during stall windows (outer guard `entity+0x4e==1 && speed>0` fails for entities in motion state 5–10).
+
+Stall is in a different callee of `FUN_140387010`.  Full call map dumped:
+
+| Offset | RVA | Function |
 |---|---|---|
-| `FUN_14012d520` inside `FUN_140385cf0` | Name→index lookup, possibly linear scan | E8 hook inside FUN_140385cf0 |
-| `FUN_14012d480` inside `FUN_140381ff0` | Writes to physics path system, may sync with background thread | E8 hook inside FUN_140381ff0 |
-| Cold-cache retry loop | `param_1+0x94` never caches (name not found) → two `FUN_140385cf0` calls/tick | Log when param_1+0x94 stays -1 after call |
+| +0x040 | 0x35f790 | FUN_14035f790 (global pause check) |
+| **+0x074** | **0x387400** | **FUN_140387400 (path-following update)** |
+| +0x0b5 | 0x385cf0 | FUN_140385cf0 (path-system lookup, cold cache) |
+| +0x0da | 0x12d2a0 | FUN_14012d2a0 (×2, tiny wrapper) |
+| +0x0f1 | 0x12d430 | FUN_14012d430 (×2, path slot acquire) |
+| +0x133 | 0x381ff0 | FUN_140381ff0 (main movement step) |
+| +0x143 | 0x387170 | FUN_140387170 (rotation update) |
 
-TODO: Add E8 hooks for `FUN_14012d520` (inside `FUN_140385cf0`) and `FUN_14012d480` (inside `FUN_140381ff0`) to identify the actual stall callee.
+### FUN_140387400 confirmed as terminal stall carrier — Phase 5 Step 14 (2026-04-26)
 
-### Fix scope revised
+E8 hooks for `FUN_140387400`, `FUN_140385cf0`, and `FUN_140381ff0` via scan inside `FUN_140387010` (344 bytes).
 
-The Class-B hitches have two independent sources:
-1. **Pump_Threads (entity Lua AI)** — rate-gated, 92% of stall budget in
-   hitch windows.  Fix: offload to worker thread (Option A) or time-bound
-   execution (Option B).
-2. **Movement component tick (`FUN_140387010`)** — single call takes 1–2 seconds
-   per entity per episode.  Root: `FUN_14012d520` (name lookup) or
-   `FUN_14012d480` (physics write) inside the per-component movement step.
-   Phase 5 Step 13 will pin which callee carries the stall.
+| Window | pumpe max | b87010 max | b387400 max | b385cf0 n | b381ff0 n |
+|---|---|---|---|---|---|
+| W1 (Lua stall) | 21,716ms | 1,113ms | **1,113ms** | 0 | 0 |
+| W2 (non-Lua stall) | 0.04ms | 1,079ms | **1,079ms** | 0 | 0 |
+| W6 (non-Lua stall) | 0.11ms | 1,090ms | **1,090ms** | 0 | 0 |
+| W8 (non-Lua stall) | 0.04ms | 1,038ms | **1,038ms** | 0 | 0 |
+| W10 (non-Lua stall) | 0.04ms | 1,069ms | **1,069ms** | 0 | 0 |
+| W11 (non-Lua stall) | 0.04ms | 1,055ms | **1,055ms** | 0 | 0 |
+| W12 (non-Lua stall) | 0.04ms | 1,091ms | **1,091ms** | 0 | 0 |
 
-Both sources must be addressed before Class-B hitches are eliminated.
+In every stall window: `b387400_max == b87010_max` (Δ<1ms). `b385cf0 n=0` always (cold cache not triggered). `b381ff0 n=0` always (outer guard never passes for entities in motion state 5–10).
+
+**`FUN_140387400` (RVA `0x387400`, 1904 bytes) is the true terminal stall carrier.**
+b387400 fires for ~89% of b87010 calls (entities in motion state `entity+0x48 ∈ [5,10]`).
+
+### FUN_140387400 — Structure (decompiled, Phase 5 Step 14)
+
+**Opportunity target acquisition loop.** `OpportunityTargetAcquiredDataClass::vftable` visible at line 300. Arguments: `(component, delta_ticks)`.
+
+```
+param_1 = movement component ptr
+param_2 = delta ticks (uint)
+
+Guards (10 early exits):
+  entity ptr (param_1+0x20) != 0
+  entity+0x48 in [0,5] (motion state check, redundant with caller)
+  DAT_140a28640 != 0    (global opportunity-target enable flag)
+  param_1+0x6c != 0     (component active)
+  NOT (entity+0x4d==1 && speed<=0)
+  param_1+0x6e == 0     (not suppressed)
+  *(owner+0x3a0) & 0x10 == 0  (entity not in special state)
+  FUN_140396fe0() == 0  (global game state check)
+  FUN_14039a400(owner) == 0   (entity reachability check)
+  FUN_14039b2a0(owner) == 0   (entity reachability check)
+
+Rate-limit timer (param_1+0x58):
+  if countdown > 0: decrement, return if not expired
+  (fires only once per N delta-ticks)
+
+Target validity:
+  if entity+0x50==1 (hyperspacing/formation): check target at param_1+0xc0
+  else: FUN_140384850(param_1, param_1+0x40) — can reach current target?
+
+[Various entity validity/state checks...]
+
+Opportunity target search (THE STALL):
+  iVar2 = (DAT_140a16fd8 - DAT_140a16fd0) >> 3  ← TOTAL ENTITY COUNT in game
+  fires when: current target cleared (bVar3) OR elapsed > DAT_140b0a340*DAT_1408007c0 threshold
+  iVar7 = FUN_1401ffb40(..., 0, iVar2-1)         ← random start index
+  do {
+      lVar11 = FUN_140294bc0(&DAT_140a16fd0, iVar7)  (get entity from global list)
+      if FUN_1402824f0(local_res20, lVar11) &&        (can path to entity?)
+         FUN_140385190(param_1, lVar11, local_res18) != 0 &&
+         local_res18[0] == DAT_140899780:              (reachability + score metric)
+          → found → break
+      iVar13++
+  } while (iVar13 < iVar2)                        ← O(N_entities) iterations
+
+  if found: FUN_140382510(param_1, lVar12, plVar8)  (acquire target)
+
+Target acquired:
+  FUN_1403825b0(param_1, *plVar8, 0)              (try to path to acquired target)
+  if acquired: signal via FUN_140220ed0(..., OpportunityTargetAcquiredDataClass)
+```
+
+**Stall mechanism:** When an entity's opportunity target is cleared OR a periodic timer fires, the function iterates through **every entity in the game** calling `FUN_140385190` (reachability + score check) for each candidate.  With a large fleet (hundreds of entities) this loop is O(N) expensive per firing per movement component.
+
+**Key globals:**
+- `DAT_140a16fd0` / `DAT_140a16fd8` — global entity list (pointer array, `>> 3` gives count)
+- `DAT_140b0a340 * DAT_1408007c0` — opportunity target search interval threshold
+- `DAT_140899780` / `DAT_140899788` — score constants used by `FUN_140385190`
+- `OpportunityTargetAcquiredDataClass::vftable` — event class for target acquisition signal
+
+### Updated attribution chain (Phase 5 Step 14 final)
+
+```
+WinMain:865 → FUN_14028d400 (gsvc)
+  → vtable[22] → SpaceModeClass FUN_1404d95a0
+    → JMP FUN_1403639d0 (tail22)
+      → FUN_1402be640 (×2, per manager)
+        → FUN_1403a6b80 (per-entity)
+          ├─ ServiceRate gate → Pump_Threads → Lua AI         [Source A — 22,310ms]
+          └─ FUN_1403a76b0 (movement)
+               → FUN_140387010 (per-component)
+                    └─ FUN_140387400 (path-following / opp-target) [Source B — 1,090ms]
+                         └─ O(N_entities) loop: FUN_140385190 per candidate
+```
+
+### Fix scope — both sources identified
+
+**Class-B hitch Source A — Lua AI (Pump_Threads):**
+- Root: Lua AI coroutine runs synchronously on main thread, rate-gated by entity ServiceRate
+- Fix A1: offload entity AI to worker thread (Lua thread-safety required)
+- Fix A2: time-bound per-entity AI execution, yield after N ms
+
+**Class-B hitch Source B — Opportunity target acquisition (FUN_140387400):**
+- Root: O(N_entities) scan calling `FUN_140385190` (reachability check) per candidate, fired when target cleared or periodic timer expires, for every movement component in motion state 5–10
+- Fix B1: **time-bound the search loop** — break after N ms, resume next tick from current index (stored in component state)
+- Fix B2: **spatial pre-filter** — query a spatial hash/bounding-volume hierarchy for nearby entities before full reachability check; eliminates most candidates cheaply
+- Fix B3: **reduce search frequency** — increase `DAT_140b0a340` threshold (trivially patchable via hook, changes gameplay — units find targets less often)
+- Fix B4: **cache search state** — store the last-checked index in the component so the O(N) scan is amortized over multiple ticks (N/tick_budget entities per frame)
+
+Fix B1 or B4 is recommended as it doesn't change gameplay semantics.  Fix B3 is the quickest to implement and test.
+
+TODO: Decompile `FUN_140385190` and `FUN_1402824f0` to confirm the reachability check cost, then implement Fix B1 or B4.

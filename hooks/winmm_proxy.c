@@ -1202,6 +1202,15 @@ static BOOL install_space_unit_svc_hook(void)
 #define E369E0_RVA        0x5369e0ULL  /* FUN_1405369e0 — preamble call (line 79 of 3a6b80) */
 #define A76B0_BODY_SIZE   499          /* FUN_1403a76b0 body size for inner E8 scan */
 #define B87010_RVA        0x387010ULL  /* FUN_140387010 — per-movement-component call (line 74 of 3a76b0) */
+#define B87010_BODY_SIZE  344          /* FUN_140387010 body size for inner E8 scan */
+#define B385CF0_RVA       0x385cf0ULL  /* FUN_140385cf0 — path-system name lookup (cold-cache + 381ff0) */
+#define B385CF0_BODY_SIZE 376          /* body size for inner E8 scan */
+#define B381FF0_RVA       0x381ff0ULL  /* FUN_140381ff0 — main movement step */
+#define B381FF0_BODY_SIZE 746          /* body size for inner E8 scan */
+#define B387400_RVA       0x387400ULL  /* FUN_140387400 — path-following update (+0x074 inside 387010) */
+#define B387170_RVA       0x387170ULL  /* FUN_140387170 — rotation update (+0x143 inside 387010) */
+#define D12D520_RVA       0x12d520ULL  /* FUN_14012d520 — name→index lookup in nav manager (inside 385cf0) */
+#define D12D480_RVA       0x12d480ULL  /* FUN_14012d480 — write position/rotation to path system (inside 381ff0) */
 
 static const BYTE tail22_prologue[19] = {
     0x40, 0x55,                              /* PUSH RBP (REX prefix)        */
@@ -1840,6 +1849,261 @@ static BOOL install_b87010_hook(void)
 }
 
 /* =========================================================================
+ * Phase 5 Step 13 — FUN_14012d520 inside FUN_140385cf0
+ *                   FUN_14012d480 inside FUN_140381ff0
+ *
+ * FUN_140387010 is the confirmed terminal stall carrier.  Two sub-callees are
+ * candidates:
+ *   FUN_14012d520 (RVA 0x12d520) — name→index lookup in global nav manager,
+ *     called from FUN_140385cf0 (376 bytes) when inner cache is cold.
+ *   FUN_14012d480 (RVA 0x12d480) — writes position/rotation to path system,
+ *     called from FUN_140381ff0 (746 bytes).
+ *
+ * Hook approach: E8 scan inside 385cf0 body for 12d520; E8 scan inside 381ff0
+ * body for 12d480.
+ * ========================================================================= */
+typedef int32_t (*D12d520Fn)(int64_t, const char *);
+static D12d520Fn g_d12d520_orig   = NULL;
+static LONG      g_d12d520_count  = 0;
+static double    g_d12d520_sum_ms = 0, g_d12d520_max_ms = 0;
+
+static int32_t d12d520_hook(int64_t manager, const char *name)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    int32_t r = g_d12d520_orig(manager, name);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_d12d520_sum_ms += ms;
+    if (ms > g_d12d520_max_ms) g_d12d520_max_ms = ms;
+    g_d12d520_count++;
+    return r;
+}
+
+static BOOL install_d12d520_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_385cf0 = (BYTE *)exe + B385CF0_RVA;
+    BYTE *fn_12d520 = (BYTE *)exe + D12D520_RVA;
+
+    g_d12d520_orig = (D12d520Fn)fn_12d520;
+
+    BYTE *stub = alloc_near(fn_385cf0, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for d12d520 stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)d12d520_hook);
+
+    int n = 0;
+    for (int i = 0; i <= B385CF0_BODY_SIZE - 5; i++) {
+        if (fn_385cf0[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, fn_385cf0 + i + 1, 4);
+            if (fn_385cf0 + i + 5 + rel == fn_12d520) {
+                int32_t new_rel = (int32_t)(stub - (fn_385cf0 + i + 5));
+                DWORD old;
+                VirtualProtect(fn_385cf0 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(fn_385cf0 + i + 1, &new_rel, 4);
+                VirtualProtect(fn_385cf0 + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), fn_385cf0 + i, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[80];
+    sprintf(m, "[eaw-mt] d12d520 (12d520 in 385cf0): %d call site(s) patched\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+typedef void (*D12d480Fn)(int64_t, int32_t, void *);
+static D12d480Fn g_d12d480_orig   = NULL;
+static LONG      g_d12d480_count  = 0;
+static double    g_d12d480_sum_ms = 0, g_d12d480_max_ms = 0;
+
+static void d12d480_hook(int64_t system, int32_t slot, void *vec)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_d12d480_orig(system, slot, vec);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_d12d480_sum_ms += ms;
+    if (ms > g_d12d480_max_ms) g_d12d480_max_ms = ms;
+    g_d12d480_count++;
+}
+
+static BOOL install_d12d480_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_381ff0 = (BYTE *)exe + B381FF0_RVA;
+    BYTE *fn_12d480 = (BYTE *)exe + D12D480_RVA;
+
+    g_d12d480_orig = (D12d480Fn)fn_12d480;
+
+    BYTE *stub = alloc_near(fn_381ff0, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for d12d480 stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)d12d480_hook);
+
+    int n = 0;
+    for (int i = 0; i <= B381FF0_BODY_SIZE - 5; i++) {
+        if (fn_381ff0[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, fn_381ff0 + i + 1, 4);
+            if (fn_381ff0 + i + 5 + rel == fn_12d480) {
+                int32_t new_rel = (int32_t)(stub - (fn_381ff0 + i + 5));
+                DWORD old;
+                VirtualProtect(fn_381ff0 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(fn_381ff0 + i + 1, &new_rel, 4);
+                VirtualProtect(fn_381ff0 + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), fn_381ff0 + i, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[80];
+    sprintf(m, "[eaw-mt] d12d480 (12d480 in 381ff0): %d call site(s) patched\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
+ * Phase 5 Step 14 — Sub-callee hooks inside FUN_140387010 (344 bytes)
+ *
+ * d12d520 and d12d480 both showed n=0 across all windows (including stall
+ * windows).  Complete call map of FUN_140387010 (+offset → target RVA):
+ *   +0x040 → 35f790 (global pause check, fast guard)
+ *   +0x074 → 387400 (path-following update, when entity motion state 5-10)
+ *   +0x0b5 → 385cf0 (path-system name lookup, cold cache — fires each tick)
+ *   +0x0da → 12d2a0 (×2, tiny wrapper — fast)
+ *   +0x0f1 → 12d430 (×2, path slot acquire)
+ *   +0x133 → 381ff0 (main movement step)
+ *   +0x143 → 387170 (rotation update)
+ *
+ * Hook 387400, 385cf0, and 381ff0 via E8 scan inside 387010 body.
+ * The one whose max tracks b87010_max (~1000ms) is the stall carrier.
+ * ========================================================================= */
+
+typedef void (*B387400Fn)(int64_t, int32_t);
+static B387400Fn g_b387400_orig   = NULL;
+static LONG      g_b387400_count  = 0;
+static double    g_b387400_sum_ms = 0, g_b387400_max_ms = 0;
+
+static void b387400_hook(int64_t a, int32_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_b387400_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b387400_sum_ms += ms;
+    if (ms > g_b387400_max_ms) g_b387400_max_ms = ms;
+    g_b387400_count++;
+}
+
+typedef int64_t (*B385cf0Fn)(int64_t);
+static B385cf0Fn g_b385cf0_orig   = NULL;
+static LONG      g_b385cf0_count  = 0;
+static double    g_b385cf0_sum_ms = 0, g_b385cf0_max_ms = 0;
+
+static int64_t b385cf0_hook(int64_t a)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    int64_t r = g_b385cf0_orig(a);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b385cf0_sum_ms += ms;
+    if (ms > g_b385cf0_max_ms) g_b385cf0_max_ms = ms;
+    g_b385cf0_count++;
+    return r;
+}
+
+typedef int64_t (*B381ff0Fn)(int64_t);
+static B381ff0Fn g_b381ff0_orig   = NULL;
+static LONG      g_b381ff0_count  = 0;
+static double    g_b381ff0_sum_ms = 0, g_b381ff0_max_ms = 0;
+
+static int64_t b381ff0_hook(int64_t a)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    int64_t r = g_b381ff0_orig(a);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b381ff0_sum_ms += ms;
+    if (ms > g_b381ff0_max_ms) g_b381ff0_max_ms = ms;
+    g_b381ff0_count++;
+    return r;
+}
+
+static BOOL install_b87010_subcallee_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_b87010  = (BYTE *)exe + B87010_RVA;
+    BYTE *fn_b387400 = (BYTE *)exe + B387400_RVA;
+    BYTE *fn_b385cf0 = (BYTE *)exe + B385CF0_RVA;
+    BYTE *fn_b381ff0 = (BYTE *)exe + B381FF0_RVA;
+
+    g_b387400_orig = (B387400Fn)fn_b387400;
+    g_b385cf0_orig = (B385cf0Fn)fn_b385cf0;
+    g_b381ff0_orig = (B381ff0Fn)fn_b381ff0;
+
+    /* Allocate three stubs near the scan body */
+    BYTE *stub_block = alloc_near(fn_b87010, 3 * 14);
+    if (!stub_block) {
+        log_write("[eaw-mt] WARN: alloc_near failed for b87010_subcallee stubs\n");
+        return FALSE;
+    }
+    BYTE *stub_b387400 = stub_block + 0 * 14;
+    BYTE *stub_b385cf0 = stub_block + 1 * 14;
+    BYTE *stub_b381ff0 = stub_block + 2 * 14;
+
+    write_abs_jmp(stub_b387400, (uint64_t)b387400_hook);
+    write_abs_jmp(stub_b385cf0, (uint64_t)b385cf0_hook);
+    write_abs_jmp(stub_b381ff0, (uint64_t)b381ff0_hook);
+
+    int n387400 = 0, n385cf0 = 0, n381ff0 = 0;
+    for (int i = 0; i <= B87010_BODY_SIZE - 5; i++) {
+        if (fn_b87010[i] != 0xE8) continue;
+        int32_t rel;
+        memcpy(&rel, fn_b87010 + i + 1, 4);
+        BYTE *target = fn_b87010 + i + 5 + rel;
+        BYTE *stub   = NULL;
+        int  *cnt    = NULL;
+        if      (target == fn_b387400) { stub = stub_b387400; cnt = &n387400; }
+        else if (target == fn_b385cf0) { stub = stub_b385cf0; cnt = &n385cf0; }
+        else if (target == fn_b381ff0) { stub = stub_b381ff0; cnt = &n381ff0; }
+        if (!stub) continue;
+        int32_t new_rel = (int32_t)(stub - (fn_b87010 + i + 5));
+        DWORD old;
+        VirtualProtect(fn_b87010 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+        memcpy(fn_b87010 + i + 1, &new_rel, 4);
+        VirtualProtect(fn_b87010 + i + 1, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), fn_b87010 + i, 5);
+        (*cnt)++;
+    }
+
+    char m[128];
+    sprintf(m, "[eaw-mt] b87010_sub: 387400=%d 385cf0=%d 381ff0=%d site(s) patched\n",
+            n387400, n385cf0, n381ff0);
+    log_write(m);
+    return (n387400 + n385cf0 + n381ff0) > 0;
+}
+
+/* =========================================================================
  * FUN_14028a4d0 sub-hook (Phase 5 Step 7a)
  *
  * FUN_14028a4d0 (RVA 0x28a4d0) is called from FUN_14028d400 when the frame
@@ -2322,7 +2586,7 @@ static void profile_report_and_reset(void) {
 
     /* Game-service + slot-22 breakdown. */
     {
-        char ibuf[1664];
+        char ibuf[2064];
         double gn   = (double)(g_gsvc_count    ? g_gsvc_count    : 1);
         double g22  = (double)(g_gslot22_count ? g_gslot22_count : 1);
         double a4n  = (double)(g_ga4d0_count   ? g_ga4d0_count   : 1);
@@ -2344,7 +2608,12 @@ static void profile_report_and_reset(void) {
         double a76n = (double)(g_a76b0_count  ? g_a76b0_count   : 1);
         double a9n  = (double)(g_a9e30_count  ? g_a9e30_count   : 1);
         double e36n = (double)(g_e369e0_count ? g_e369e0_count  : 1);
-        double b87n = (double)(g_b87010_count ? g_b87010_count  : 1);
+        double b87n  = (double)(g_b87010_count  ? g_b87010_count  : 1);
+        double d52n  = (double)(g_d12d520_count  ? g_d12d520_count  : 1);
+        double d48n  = (double)(g_d12d480_count  ? g_d12d480_count  : 1);
+        double b74n  = (double)(g_b387400_count  ? g_b387400_count  : 1);
+        double b5n   = (double)(g_b385cf0_count  ? g_b385cf0_count  : 1);
+        double b1n   = (double)(g_b381ff0_count  ? g_b381ff0_count  : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -2354,6 +2623,11 @@ static void profile_report_and_reset(void) {
             "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  a76b0(3a76b0):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b87010(387010):  avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  d12d520(12d520): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  d12d480(12d480): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b387400(387400): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b385cf0(385cf0): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b381ff0(381ff0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  a9e30(3a9e30):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  e369e0(5369e0):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t364920(364920): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -2375,8 +2649,13 @@ static void profile_report_and_reset(void) {
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
             g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count,
             g_a76b0_sum_ms   / a76n, g_a76b0_max_ms,   (long)g_a76b0_count,
-            g_b87010_sum_ms  / b87n, g_b87010_max_ms,  (long)g_b87010_count,
-            g_a9e30_sum_ms   / a9n,  g_a9e30_max_ms,   (long)g_a9e30_count,
+            g_b87010_sum_ms  / b87n,  g_b87010_max_ms,  (long)g_b87010_count,
+            g_d12d520_sum_ms / d52n,  g_d12d520_max_ms,  (long)g_d12d520_count,
+            g_d12d480_sum_ms / d48n,  g_d12d480_max_ms,  (long)g_d12d480_count,
+            g_b387400_sum_ms / b74n,  g_b387400_max_ms,  (long)g_b387400_count,
+            g_b385cf0_sum_ms / b5n,   g_b385cf0_max_ms,  (long)g_b385cf0_count,
+            g_b381ff0_sum_ms / b1n,   g_b381ff0_max_ms,  (long)g_b381ff0_count,
+            g_a9e30_sum_ms   / a9n,   g_a9e30_max_ms,    (long)g_a9e30_count,
             g_e369e0_sum_ms  / e36n, g_e369e0_max_ms,  (long)g_e369e0_count,
             g_t364920_sum_ms / t36n, g_t364920_max_ms, (long)g_t364920_count,
             g_t490580_sum_ms / t49n, g_t490580_max_ms, (long)g_t490580_count,
@@ -2433,6 +2712,11 @@ static void profile_report_and_reset(void) {
     g_a9e30_count   = 0; g_a9e30_sum_ms   = 0; g_a9e30_max_ms   = 0;
     g_e369e0_count  = 0; g_e369e0_sum_ms  = 0; g_e369e0_max_ms  = 0;
     g_b87010_count  = 0; g_b87010_sum_ms  = 0; g_b87010_max_ms  = 0;
+    g_d12d520_count  = 0; g_d12d520_sum_ms  = 0; g_d12d520_max_ms  = 0;
+    g_d12d480_count  = 0; g_d12d480_sum_ms  = 0; g_d12d480_max_ms  = 0;
+    g_b387400_count  = 0; g_b387400_sum_ms  = 0; g_b387400_max_ms  = 0;
+    g_b385cf0_count  = 0; g_b385cf0_sum_ms  = 0; g_b385cf0_max_ms  = 0;
+    g_b381ff0_count  = 0; g_b381ff0_sum_ms  = 0; g_b381ff0_max_ms  = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -2716,6 +3000,15 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* Per-movement-component hook inside FUN_1403a76b0 (non-fatal) */
         install_b87010_hook();
+
+        /* Phase 5 Step 13 — name→index lookup inside FUN_140385cf0 (non-fatal) */
+        install_d12d520_hook();
+
+        /* Phase 5 Step 13 — physics write inside FUN_140381ff0 (non-fatal) */
+        install_d12d480_hook();
+
+        /* Phase 5 Step 14 — sub-callee hooks inside FUN_140387010 (non-fatal) */
+        install_b87010_subcallee_hooks();
 
         /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();

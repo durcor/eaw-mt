@@ -1,0 +1,28 @@
+=== FUN_140385cf0 (RVA 0x385cf0, 376 bytes) ===
+  +0x044  E8 77 EB ED FF                 CALL -> RVA 0x2648b0  [FUN_1402648b0]
+  +0x072  E8 19 89 C9 FF                 CALL -> RVA 0x1e680  [FUN_14001e680]
+  +0x0c3  E8 60 A0 3F 00                 CALL -> RVA 0x77fe18  [_strupr]
+  +0x0d4  E8 CF 68 3E 00                 CALL -> RVA 0x76c698  [FUN_14076c698]
+  +0x0e9  E8 42 77 DA FF                 CALL -> RVA 0x12d520  [FUN_14012d520]
+  +0x0fa  EB 0D                          JMP -> RVA 0x385df9
+  +0x101  E8 FA 78 DA FF                 CALL -> RVA 0x12d6f0  [FUN_14012d6f0]
+  +0x137  E8 68 3E 3E 00                 CALL -> RVA 0x769c94  [thunk_FUN_1407864b8]
+  +0x173  E8 64 B3 3E 00                 CALL -> RVA 0x7711cc  [FUN_1407711cc]
+
+=== FUN_140381ff0 (RVA 0x381ff0, 746 bytes) ===
+  +0x01a  E8 E1 3C 00 00                 CALL -> RVA 0x385cf0  [FUN_140385cf0]
+  +0x032  E8 29 16 00 00                 CALL -> RVA 0x383650  [FUN_140383650]
+  +0x042  E8 39 41 00 00                 CALL -> RVA 0x386170  [FUN_140386170]
+  +0x085  EB 0D                          JMP -> RVA 0x382084
+  +0x0bf  EB 13                          JMP -> RVA 0x3820c4
+  +0x0e3  E8 F8 95 E8 FF                 CALL -> RVA 0x20b6d0  [FUN_14020b6d0]
+  +0x0fb  EB 0B                          JMP -> RVA 0x3820f8
+  +0x120  E8 BB 95 E8 FF                 CALL -> RVA 0x20b6d0  [FUN_14020b6d0]
+  +0x175  E8 86 5F CC FF                 CALL -> RVA 0x480f0  [FUN_1400480f0]
+  +0x187  E8 04 B3 DA FF                 CALL -> RVA 0x12d480  [FUN_14012d480]
+  +0x1e5  E8 76 44 3F 00                 CALL -> RVA 0x776650  [FUN_140776650]
+  +0x1ed  EB 03                          JMP -> RVA 0x3821e2
+  +0x209  E8 52 3F 3F 00                 CALL -> RVA 0x776150  [FUN_140776150]
+  +0x211  EB 08                          JMP -> RVA 0x38220b
+  +0x2be  E8 CD B1 DA FF                 CALL -> RVA 0x12d480  [FUN_14012d480]
+

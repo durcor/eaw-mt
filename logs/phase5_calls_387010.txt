@@ -1,0 +1,10 @@
+=== FUN_140387010 (RVA 0x387010, 344 bytes) ===
+  +0x040  E8 3B 87 FD FF                 CALL -> RVA 0x35f790  [FUN_14035f790]
+  +0x074  E8 77 03 00 00                 CALL -> RVA 0x387400  [FUN_140387400]
+  +0x0b5  E8 26 EC FF FF                 CALL -> RVA 0x385cf0  [FUN_140385cf0]
+  +0x0da  E8 B1 61 DA FF                 CALL -> RVA 0x12d2a0  [FUN_14012d2a0]
+  +0x0f1  E8 2A 63 DA FF                 CALL -> RVA 0x12d430  [FUN_14012d430]
+  +0x118  E8 73 61 DA FF                 CALL -> RVA 0x12d2a0  [FUN_14012d2a0]
+  +0x12b  E8 F0 62 DA FF                 CALL -> RVA 0x12d430  [FUN_14012d430]
+  +0x133  E8 A8 AE FF FF                 CALL -> RVA 0x381ff0  [FUN_140381ff0]
+  +0x143  E8 18 00 00 00                 CALL -> RVA 0x387170  [FUN_140387170]
