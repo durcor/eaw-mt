@@ -166,18 +166,81 @@ Revisit Option C if the mod's gameplay requires lower-latency AI feedback (e.g.,
 real-time unit responses that currently stall 100–200ms due to the now-capped
 WaitMessage repeatedly firing).
 
-## Class-B Hitches (frame_max >> inter_max) — unresolved
+## Class-B Hitches (frame_max >> inter_max)
 
 Separate from WaitMessage.  These are hitches where `frame_max` is large but
 `inter_ms` is normal, placing the stall in the **post-flush#2** section of the
 loop (lines 907–931 or the `do-while` test + early-loop code before line 558).
 
-Candidate functions (unhooked):
-- `FUN_1402d72c0` (hook9, line 618) — avg grows to 0.10–0.21ms late-battle
-- `FUN_1402d2ab0` (hook10, line 619)
-- `FUN_140321dc0` (hook11, line 620)
-- `FUN_14030c3b0` (hook13, line 639)
+### Attribution Chain — Phase 5, Steps 5–8 (2026-04-25)
 
-These are inside the `DAT_1409cf314 == 1` guard, so they only run during
-active simulation.  A future profiling pass can add gapE/gapF timers or
-extend the breakdown ODS to cover lines 907–931.
+The stall has been chased down through seven levels of call chain:
+
+```
+WinMain:865
+  └─ FUN_14028d400  (RVA 0x28d400, "game service", 654 bytes)
+       └─ vtable[22] dispatch → SpaceModeClass (RVA 0x4d95a0)  [vtable probe confirmed]
+            └─ FUN_1404d95a0  (SpaceModeClass slot 22, 358 bytes)  [sslot22 ≈ gsvc]
+                 └─ FUN_1403639d0  (JMP tail call, 3916 bytes)    [tail22i ≈ sslot22]
+                      ├─ FUN_140364920  (0.00ms — eliminated)
+                      ├─ FUN_1402be640  (×2 per call, avg 551ms each = 1102ms total)  ← CONFIRMED STALL
+                      └─ FUN_140490580  (0.00ms — eliminated)
+```
+
+**Profiling data (Phase 5 Step 8, 3 windows):**
+
+| window | tail22i avg | t2be640 avg | t2be640 n | t364920 | t490580 |
+|---|---|---|---|---|---|
+| 1 (stall) | 1102.60ms | 551.13ms | 52 (×2) | 0.00ms | 0.00ms |
+| 2 (moderate) | 124.34ms | 62.14ms | 54 (×2) | 0.00ms | 0.00ms |
+| 3 (quiet) | 2.04ms | 0.99ms | 54 (×2) | 0.00ms | 0.00ms |
+
+The two `t2be640` calls together account for ~100% of `tail22i` time in every
+window (max 22,804ms per call vs tail22i max 22,808ms — 4ms residual).
+
+**`FUN_1402be640` (RVA 0x2be640, 1577 bytes) is the confirmed Class-B stall source.**
+
+### FUN_1402be640 — Structure (decompiled, Phase 5 Step 8)
+
+Called from `FUN_1403639d0` twice with different first arguments:
+- Call 1: `FUN_1402be640(param_1[3], uVar1)` — line 143 of tail22 decompile
+- Call 2: `FUN_1402be640(param_1[4], uVar1)` — line 147 of tail22 decompile
+
+`param_1[3]` / `param_1[4]` are likely two different manager/collection objects
+(possibly Space unit manager and Space structure manager, or similar partitions).
+
+Internal structure:
+1. **Preamble** — `FUN_14020ed70()` called if `*(param_1+0xd8) != 0`, then in a
+   loop over `DAT_140a16fb0` items.
+2. **Early-return gate** — if `*(param_1+0x20) == NULL` or `plVar6[0x13] == '\0'`.
+3. **Per-entity service loop** (the dominant path):
+   ```c
+   for (; lVar12 != param_1 + 0xf0; lVar12 = *(longlong *)(lVar12 + 8)) {
+       plVar6 = (longlong *)(*(longlong *)(lVar12 + 0x18) + -0x18);
+       FUN_1403a6b80(plVar6, param_2, cVar3);   // per-entity call — PRIME SUSPECT
+   }
+   ```
+   Linked list anchored at `param_1 + 0xf0/0xf8`.  Each entity serviced by
+   `FUN_1403a6b80` (RVA 0x3a6b80).
+4. **Second per-entity loop** — same list, vtable slot + `FUN_1403fc750`.
+5. **Third per-entity loop** — list at `param_1+0x138/0x140`, calling `FUN_1403ac530`.
+6. **Array iteration** — array at `param_1+0x5f8`, size at `param_1+0x600`,
+   calling `FUN_14029f810` per element.
+7. **Battle-state machine** — `param_1+0x618` state; `FUN_1402aca60`,
+   `FUN_14044a1a0`, `FUN_1403de570`.
+8. **`FUN_1402ad100`** — builds `DynamicVectorClass<GameObjectClass*>` list.
+9. **`FUN_1402b92e0`** — conditional on result of step 8 + global flags.
+10. **`FUN_1402b76a0`** — conditional on `param_1+0x490 != 0`.
+11. **`FUN_1402a62d0(param_1)`** — unconditional final call.
+
+### Next: sub-attribution inside FUN_1402be640
+
+TODO: Add E8 hooks inside FUN_1402be640 (1577 bytes) for prime suspects:
+- `FUN_1403a6b80` (RVA 0x3a6b80) — inner per-entity loop, n will be large
+- `FUN_1402a62d0` (RVA 0x2a62d0) — unconditional final call
+- `FUN_14020ed70` (RVA 0x20ed70) — preamble loop call
+- `FUN_1402ad100` (RVA 0x2ad100) — list-build call
+
+If `FUN_1403a6b80` is the per-entity stall: n per window >> 52; avg per call
+× n ≈ tail22i total.  Decompile `FUN_1403a6b80` to understand the per-entity
+service cost and whether it is O(1) or O(entities).

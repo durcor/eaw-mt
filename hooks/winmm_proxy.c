@@ -93,6 +93,7 @@ static RenderFlushFn g_trampoline = NULL;
  * ========================================================================= */
 #define GAME_MODE_PTR_RVA  0xb15418ULL
 #define SIM_TICK_VTBL_IDX  (0x158 / 8)    /* = 43 */
+#define SLOT22_VTBL_IDX    (0x0b0 / 8)    /* = 22 — GalacticModeClass::Service (FUN_14045e030) */
 
 typedef void (WINAPI *SimTickFn)(void *, void *, void *, void *);
 static SimTickFn  g_saved_sim_tick = NULL;
@@ -111,6 +112,34 @@ static void WINAPI sim_tick_hook(void *a, void *b, void *c, void *d)
     g_sim_tick_valid = TRUE;
 }
 
+/* Forward declaration needed by slot22_vtbl_hook below. */
+static LARGE_INTEGER g_qpc_freq;
+
+/* vtable slot-22 timing hook — co-managed with sim_tick via try_patch_sim_tick.
+ * FUN_14045e030 decompile shows 3 params (param_1, param_2*, param_3*); use
+ * 4-wide passthrough so we never corrupt a register arg regardless of arity. */
+typedef void (*Slot22VtblFn)(int64_t, int64_t, int64_t, int64_t);
+static Slot22VtblFn g_saved_slot22_vtbl = NULL;
+static LONG   g_slot22v_count  = 0;
+static double g_slot22v_sum_ms = 0, g_slot22v_max_ms = 0;
+
+static void slot22_vtbl_hook(int64_t a, int64_t b, int64_t c, int64_t d)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_saved_slot22_vtbl(a, b, c, d);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_slot22v_sum_ms += ms;
+    if (ms > g_slot22v_max_ms) g_slot22v_max_ms = ms;
+    g_slot22v_count++;
+    if (ms >= 100.0) {
+        char s[64];
+        sprintf(s, "[eaw-mt] SLOT22V %.1fms\n", ms);
+        log_write(s);
+    }
+}
+
 /* Called from render_flush_hook on every frame.  Patches the active game
  * mode's vtable[SIM_TICK_VTBL_IDX] with sim_tick_hook, re-patching when the
  * vtable pointer changes on mode transitions. */
@@ -125,13 +154,20 @@ static void try_patch_sim_tick(void)
     void **vtable = *(void ***)game_mode;
     if (!vtable || vtable == g_patched_vtable) return;
 
-    /* Restore previous vtable entry on mode transition */
+    /* Restore previous vtable entries on mode transition */
     if (g_patched_vtable && g_saved_sim_tick) {
         DWORD old;
         VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8,
                        PAGE_EXECUTE_READWRITE, &old);
         g_patched_vtable[SIM_TICK_VTBL_IDX] = (void *)g_saved_sim_tick;
         VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8, old, &old);
+        if (g_saved_slot22_vtbl) {
+            VirtualProtect(&g_patched_vtable[SLOT22_VTBL_IDX], 8,
+                           PAGE_EXECUTE_READWRITE, &old);
+            g_patched_vtable[SLOT22_VTBL_IDX] = (void *)g_saved_slot22_vtbl;
+            VirtualProtect(&g_patched_vtable[SLOT22_VTBL_IDX], 8, old, &old);
+            g_saved_slot22_vtbl = NULL;
+        }
         g_patched_vtable = NULL;
         g_saved_sim_tick = NULL;
     }
@@ -145,13 +181,16 @@ static void try_patch_sim_tick(void)
     g_saved_sim_tick = (SimTickFn)vtable[SIM_TICK_VTBL_IDX];
     vtable[SIM_TICK_VTBL_IDX] = (void *)sim_tick_hook;
     VirtualProtect(&vtable[SIM_TICK_VTBL_IDX], 8, old, &old);
+
+    /* NOTE: slot22v vtable co-patch removed — DAT_140b15418 is SpaceModeClass,
+     * not GalacticModeClass. FUN_14045e030 is hooked directly via inline trampoline
+     * in install_galactic_slot22_hook(). */
     g_patched_vtable = vtable;
     log_write("[eaw-mt] Sim tick hook patched\n");
 }
 
-/* Forward declarations — definitions appear in later sections. */
+/* Forward declaration — definition appears in the Profiling section. */
 static void write_abs_jmp(BYTE *dst, uint64_t target);
-static LARGE_INTEGER g_qpc_freq;
 
 /* =========================================================================
  * Pump_Threads call-site hook
@@ -876,6 +915,629 @@ static BOOL install_inter_hooks(void)
 }
 
 /* =========================================================================
+ * Game-mode service hook (Phase 5 Step 6)
+ *
+ * FUN_14028d400 (RVA 0x28d400, 654 bytes) is called from WinMain ~line 865
+ * once per frame.  It dispatches to vtable slot 22 of whatever game mode is
+ * active (GalacticModeClass, SpaceModeClass, LandModeClass, …) and also
+ * calls GameScoringManager::Service (FUN_140488660).  Hooking it here gives
+ * a mode-agnostic measurement of the entire back-half service block.
+ *
+ * Confirmed via phase5_line865.c decompile:
+ *   void FUN_14028d400(longlong param_1, undefined4 param_2)
+ *   (**(code**)(**(longlong**)(param_1+0x38) + 0xb0))(…) // vtable[0xb0/8=22]
+ * ========================================================================= */
+#define GAME_SERVICE_RVA     0x28d400ULL  /* FUN_14028d400 — mode-agnostic slot-22 dispatch */
+#define GALACTIC_SLOT22_RVA  0x45e030ULL  /* FUN_14045e030 — GalacticModeClass vtable slot 22 */
+#define GA4D0_RVA            0x28a4d0ULL  /* FUN_14028a4d0 — periodic sub-call inside FUN_14028d400 */
+#define GSVC_BODY_SIZE       654          /* FUN_14028d400 size for E8 scan */
+
+typedef void (*GameServiceFn)(int64_t, int32_t);
+static GameServiceFn g_gsvc_orig     = NULL;
+static LONG          g_gsvc_count    = 0;
+static double        g_gsvc_sum_ms   = 0, g_gsvc_max_ms = 0;
+
+/* =========================================================================
+ * GalacticModeClass slot-22 inline hook (Phase 5 Step 6b)
+ *
+ * FUN_14045e030 (RVA 0x45e030, 507 bytes) is GalacticModeClass vtable slot 22,
+ * called from FUN_14028d400 via an indirect vtable dispatch.  The object that
+ * carries this vtable is NOT DAT_140b15418 (SpaceModeClass, the tactical layer)
+ * but a separate galactic-layer object at *(param_1+0x38) in FUN_14028d400.
+ *
+ * Since we cannot scan for a direct E8 call, we inline-hook FUN_14045e030
+ * using the same FF25 trampoline pattern as the render-flush hook.
+ *
+ * Prologue bytes verified via Phase5DumpGalacticBytes.java (position-independent):
+ *   48 89 5c 24 10  MOV [RSP+0x10], RBX
+ *   48 89 6c 24 18  MOV [RSP+0x18], RBP
+ *   56              PUSH RSI
+ *   57              PUSH RDI
+ *   41 57           PUSH R15
+ * ========================================================================= */
+
+static const BYTE galactic_slot22_prologue[14] = {
+    0x48, 0x89, 0x5c, 0x24, 0x10,  /* MOV [RSP+0x10], RBX */
+    0x48, 0x89, 0x6c, 0x24, 0x18,  /* MOV [RSP+0x18], RBP */
+    0x56,                           /* PUSH RSI             */
+    0x57,                           /* PUSH RDI             */
+    0x41, 0x57,                     /* PUSH R15             */
+};
+
+typedef void (*GalacticSlot22Fn)(int64_t, int64_t, int64_t, int64_t);
+static GalacticSlot22Fn g_gslot22_trampoline = NULL;
+static LONG   g_gslot22_count  = 0;
+static double g_gslot22_sum_ms = 0, g_gslot22_max_ms = 0;
+
+static void galactic_slot22_hook(int64_t a, int64_t b, int64_t c, int64_t d)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_gslot22_trampoline(a, b, c, d);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_gslot22_sum_ms += ms;
+    if (ms > g_gslot22_max_ms) g_gslot22_max_ms = ms;
+    g_gslot22_count++;
+    if (ms >= 100.0) {
+        char s[64];
+        sprintf(s, "[eaw-mt] GSLOT22 %.1fms\n", ms);
+        log_write(s);
+    }
+}
+
+static BOOL install_galactic_slot22_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *gal_fn = (BYTE *)exe + GALACTIC_SLOT22_RVA;
+
+    if (memcmp(gal_fn, galactic_slot22_prologue, 14) != 0) {
+        log_write("[eaw-mt] WARN: FUN_14045e030 prologue mismatch — wrong binary?\n");
+        return FALSE;
+    }
+
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE,
+                                       PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for galactic slot22 trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, galactic_slot22_prologue, 14);
+    write_abs_jmp(tramp + 14, (uint64_t)(gal_fn + 14));
+
+    g_gslot22_trampoline = (GalacticSlot22Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(gal_fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(gal_fn, (uint64_t)galactic_slot22_hook);
+    VirtualProtect(gal_fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), gal_fn, 14);
+
+    log_write("[eaw-mt] GalacticModeClass slot22 (45e030) inline hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
+ * SpaceModeClass slot-22 inline hook (Phase 5 Step 7b)
+ *
+ * FUN_1404d95a0 (RVA 0x4d95a0, 358 bytes) is SpaceModeClass vtable slot 22.
+ * Confirmed as stall carrier: vtbl22_rva=0x4d95a0 logged on every GSVC stall.
+ * The function has a linked-list loop calling FUN_140527dd0 (RVA 0x527dd0)
+ * once per space unit — that per-unit call is the prime suspect.
+ *
+ * Prologue note: SUB RSP,0x20 starts at byte 11 and ends at byte 14.  A
+ * 14-byte FF25 trampoline cuts mid-instruction, so we save 15 bytes and
+ * write FF25 (14 bytes) leaving byte 14 (0x20) unreachable-but-intact.
+ * The trampoline copies all 15 original bytes and JMPs to fn+15. ✓
+ *
+ * FUN_140527dd0 (528 bytes): direct E8 call from inside FUN_1404d95a0.
+ * Same 15-byte prologue structure.  Hooked via call-site E8 scan.
+ * ========================================================================= */
+#define SPACE_SLOT22_INLINE_RVA  0x4d95a0ULL  /* FUN_1404d95a0 */
+#define SPACE_UNIT_SVC_RVA       0x527dd0ULL  /* FUN_140527dd0 — per-unit loop body */
+#define SPACE_SLOT22_BODY_SIZE   358
+
+static const BYTE space_slot22_prologue[15] = {
+    0x48, 0x89, 0x5c, 0x24, 0x08,  /* MOV [RSP+0x08], RBX */
+    0x48, 0x89, 0x74, 0x24, 0x10,  /* MOV [RSP+0x10], RSI */
+    0x57,                           /* PUSH RDI             */
+    0x48, 0x83, 0xec, 0x20,         /* SUB RSP, 0x20        */
+};
+
+typedef void (*SpaceSlot22Fn)(int64_t, int32_t);
+static SpaceSlot22Fn g_sslot22_trampoline = NULL;
+static LONG    g_sslot22_count  = 0;
+static double  g_sslot22_sum_ms = 0, g_sslot22_max_ms = 0;
+
+static void space_slot22_hook(int64_t a, int32_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_sslot22_trampoline(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_sslot22_sum_ms += ms;
+    if (ms > g_sslot22_max_ms) g_sslot22_max_ms = ms;
+    g_sslot22_count++;
+    if (ms >= 100.0) {
+        char s[64];
+        sprintf(s, "[eaw-mt] SSLOT22 %.1fms\n", ms);
+        log_write(s);
+    }
+}
+
+static BOOL install_space_slot22_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn = (BYTE *)exe + SPACE_SLOT22_INLINE_RVA;
+
+    if (memcmp(fn, space_slot22_prologue, 15) != 0) {
+        log_write("[eaw-mt] WARN: FUN_1404d95a0 prologue mismatch\n");
+        return FALSE;
+    }
+
+    /* 15-byte save: 4 complete instructions; JMP back to fn+15. */
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE,
+                                       PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for space slot22 trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, space_slot22_prologue, 15);
+    write_abs_jmp(tramp + 15, (uint64_t)(fn + 15));
+
+    g_sslot22_trampoline = (SpaceSlot22Fn)tramp;
+
+    DWORD old;
+    /* Protect 15 bytes; write_abs_jmp writes 14 — byte 14 (0x20) stays intact. */
+    VirtualProtect(fn, 15, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)space_slot22_hook);
+    VirtualProtect(fn, 15, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 15);
+
+    log_write("[eaw-mt] SpaceModeClass slot22 (4d95a0) inline hook installed\n");
+    return TRUE;
+}
+
+/* Per-unit service call inside FUN_1404d95a0 loop -------------------------*/
+typedef void (*SpaceUnitSvcFn)(int64_t, int32_t);
+static SpaceUnitSvcFn g_sunit22_orig  = NULL;
+static LONG    g_sunit22_count  = 0;
+static double  g_sunit22_sum_ms = 0, g_sunit22_max_ms = 0;
+
+static void space_unit_svc_hook(int64_t a, int32_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_sunit22_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_sunit22_sum_ms += ms;
+    if (ms > g_sunit22_max_ms) g_sunit22_max_ms = ms;
+    g_sunit22_count++;
+}
+
+static BOOL install_space_unit_svc_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn       = (BYTE *)exe + SPACE_SLOT22_INLINE_RVA;
+    BYTE *svc_fn   = (BYTE *)exe + SPACE_UNIT_SVC_RVA;
+
+    g_sunit22_orig = (SpaceUnitSvcFn)svc_fn;
+
+    BYTE *call_site = NULL;
+    for (int i = 0; i <= SPACE_SLOT22_BODY_SIZE - 5; i++) {
+        if (fn[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, fn + i + 1, 4);
+            if (fn + i + 5 + rel == svc_fn) {
+                call_site = fn + i;
+                break;
+            }
+        }
+    }
+
+    if (!call_site) {
+        log_write("[eaw-mt] WARN: FUN_140527dd0 CALL not found in FUN_1404d95a0\n");
+        return FALSE;
+    }
+
+    BYTE *stub = alloc_near(call_site, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for sunit22 stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)space_unit_svc_hook);
+
+    int32_t new_rel = (int32_t)(stub - (call_site + 5));
+    DWORD old;
+    VirtualProtect(call_site + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+    memcpy(call_site + 1, &new_rel, 4);
+    VirtualProtect(call_site + 1, 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), call_site, 5);
+
+    log_write("[eaw-mt] space_unit_svc (527dd0) call-site hook in FUN_1404d95a0 installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
+ * FUN_1403639d0 inline hook (Phase 5 Step 8a)
+ *
+ * The tail call from FUN_1404d95a0 is compiled as JMP (not CALL), so the
+ * original E8 call-site scan missed it.  Hook FUN_1403639d0 at its entry
+ * point directly to measure how much of the sslot22 time is here vs. in
+ * FUN_1404d95a0's pre-tail body.
+ *
+ * Prologue: 19 bytes (7 instructions, all position-independent):
+ *   40 55       PUSH RBP (with REX prefix)
+ *   53          PUSH RBX
+ *   56          PUSH RSI
+ *   57          PUSH RDI
+ *   41 54       PUSH R12
+ *   48 8d 6c 24 c9    LEA RBP, [RSP-0x37]
+ *   48 81 ec 00 01 00 00  SUB RSP, 0x100
+ * write_abs_jmp writes 14 bytes; bytes 14-18 remain untouched (unreachable).
+ * ========================================================================= */
+#define TAIL22_RVA        0x3639d0ULL  /* FUN_1403639d0 — 3916 bytes */
+#define A1A240_RVA        0x41a240ULL  /* FUN_14041a240 — unconditional post-loop */
+#define S9D270_RVA        0x59d270ULL  /* FUN_14059d270 — unconditional post-loop */
+#define T364920_RVA       0x364920ULL  /* FUN_140364920 — first unconditional call in tail22 body */
+#define T2BE640_RVA       0x2be640ULL  /* FUN_1402be640 — called twice in tail22 body */
+#define T490580_RVA       0x490580ULL  /* FUN_140490580 — unconditional call in tail22 body */
+#define TAIL22_BODY_SIZE  3916
+
+static const BYTE tail22_prologue[19] = {
+    0x40, 0x55,                              /* PUSH RBP (REX prefix)        */
+    0x53,                                    /* PUSH RBX                     */
+    0x56,                                    /* PUSH RSI                     */
+    0x57,                                    /* PUSH RDI                     */
+    0x41, 0x54,                              /* PUSH R12                     */
+    0x48, 0x8d, 0x6c, 0x24, 0xc9,           /* LEA RBP, [RSP-0x37]          */
+    0x48, 0x81, 0xec, 0x00, 0x01, 0x00, 0x00 /* SUB RSP, 0x100               */
+};
+
+typedef void (*Tail22InlineFn)(int64_t, int32_t);
+static Tail22InlineFn g_tail22i_trampoline = NULL;
+static LONG    g_tail22i_count  = 0;
+static double  g_tail22i_sum_ms = 0, g_tail22i_max_ms = 0;
+
+static void tail22i_hook(int64_t a, int32_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_tail22i_trampoline(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_tail22i_sum_ms += ms;
+    if (ms > g_tail22i_max_ms) g_tail22i_max_ms = ms;
+    g_tail22i_count++;
+}
+
+static BOOL install_tail22i_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn = (BYTE *)exe + TAIL22_RVA;
+
+    if (memcmp(fn, tail22_prologue, 19) != 0) {
+        log_write("[eaw-mt] WARN: FUN_1403639d0 prologue mismatch\n");
+        return FALSE;
+    }
+
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE,
+                                       PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for tail22i trampoline failed\n");
+        return FALSE;
+    }
+    /* Save 19 bytes; write_abs_jmp writes only 14 — bytes 14-18 stay in fn. */
+    memcpy(tramp, tail22_prologue, 19);
+    write_abs_jmp(tramp + 19, (uint64_t)(fn + 19));
+
+    g_tail22i_trampoline = (Tail22InlineFn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 19, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)tail22i_hook);
+    VirtualProtect(fn, 19, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 19);
+
+    log_write("[eaw-mt] FUN_1403639d0 (3639d0) inline hook installed\n");
+    return TRUE;
+}
+
+/* E8 call-site hooks for FUN_14041a240 and FUN_14059d270 inside FUN_1404d95a0.
+ * Both are called unconditionally after the per-unit loop.             --------*/
+typedef void* (*A1a240Fn)(void);
+static A1a240Fn g_a1a240_orig   = NULL;
+static LONG     g_a1a240_count  = 0;
+static double   g_a1a240_sum_ms = 0, g_a1a240_max_ms = 0;
+
+static void* a1a240_hook(void)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    void *ret = g_a1a240_orig();
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_a1a240_sum_ms += ms;
+    if (ms > g_a1a240_max_ms) g_a1a240_max_ms = ms;
+    g_a1a240_count++;
+    return ret;
+}
+
+typedef void (*S9d270Fn)(int64_t);
+static S9d270Fn g_s9d270_orig   = NULL;
+static LONG     g_s9d270_count  = 0;
+static double   g_s9d270_sum_ms = 0, g_s9d270_max_ms = 0;
+
+static void s9d270_hook(int64_t a)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_s9d270_orig(a);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_s9d270_sum_ms += ms;
+    if (ms > g_s9d270_max_ms) g_s9d270_max_ms = ms;
+    g_s9d270_count++;
+}
+
+static BOOL install_post_loop_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *space_fn  = (BYTE *)exe + SPACE_SLOT22_INLINE_RVA;
+    BYTE *a1a240_fn = (BYTE *)exe + A1A240_RVA;
+    BYTE *s9d270_fn = (BYTE *)exe + S9D270_RVA;
+
+    g_a1a240_orig = (A1a240Fn)a1a240_fn;
+    g_s9d270_orig = (S9d270Fn)s9d270_fn;
+
+    /* Allocate two stubs near FUN_1404d95a0. */
+    BYTE *stub_block = alloc_near(space_fn, 14 * 2);
+    if (!stub_block) {
+        log_write("[eaw-mt] WARN: alloc_near failed for post-loop stubs\n");
+        return FALSE;
+    }
+    BYTE *a1a240_stub = stub_block + 0 * 14;
+    BYTE *s9d270_stub = stub_block + 1 * 14;
+
+    write_abs_jmp(a1a240_stub, (uint64_t)a1a240_hook);
+    write_abs_jmp(s9d270_stub, (uint64_t)s9d270_hook);
+
+    int n = 0;
+    for (int i = 0; i <= SPACE_SLOT22_BODY_SIZE - 5; i++) {
+        if (space_fn[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, space_fn + i + 1, 4);
+            BYTE *target = space_fn + i + 5 + rel;
+            BYTE *stub = NULL;
+            if (target == a1a240_fn) stub = a1a240_stub;
+            else if (target == s9d270_fn) stub = s9d270_stub;
+
+            if (stub) {
+                int32_t new_rel = (int32_t)(stub - (space_fn + i + 5));
+                DWORD old;
+                VirtualProtect(space_fn + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(space_fn + i + 1, &new_rel, 4);
+                VirtualProtect(space_fn + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), space_fn + i, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[80];
+    sprintf(m, "[eaw-mt] post-loop hooks: %d/2 installed (41a240, 59d270)\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
+ * E8 call-site hooks inside FUN_1403639d0 body (Phase 5 Step 8)
+ *
+ * tail22i confirmed: entire 1099ms avg stall lives in FUN_1403639d0.
+ * Hook three prime suspects:
+ *   FUN_140364920 (0x364920) — unconditional first call before any early return
+ *   FUN_1402be640 (0x2be640) — two calls (linked-list/per-entity service)
+ *   FUN_140490580 (0x490580) — unconditional call at line 148
+ * ========================================================================= */
+typedef void (*T364920Fn)(int64_t, int64_t);
+static T364920Fn g_t364920_orig   = NULL;
+static LONG      g_t364920_count  = 0;
+static double    g_t364920_sum_ms = 0, g_t364920_max_ms = 0;
+
+static void t364920_hook(int64_t a, int64_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_t364920_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_t364920_sum_ms += ms;
+    if (ms > g_t364920_max_ms) g_t364920_max_ms = ms;
+    g_t364920_count++;
+}
+
+typedef void (*T2be640Fn)(int64_t, int64_t);
+static T2be640Fn g_t2be640_orig   = NULL;
+static LONG      g_t2be640_count  = 0;
+static double    g_t2be640_sum_ms = 0, g_t2be640_max_ms = 0;
+
+static void t2be640_hook(int64_t a, int64_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_t2be640_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_t2be640_sum_ms += ms;
+    if (ms > g_t2be640_max_ms) g_t2be640_max_ms = ms;
+    g_t2be640_count++;
+}
+
+typedef void (*T490580Fn)(int64_t);
+static T490580Fn g_t490580_orig   = NULL;
+static LONG      g_t490580_count  = 0;
+static double    g_t490580_sum_ms = 0, g_t490580_max_ms = 0;
+
+static void t490580_hook(int64_t a)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_t490580_orig(a);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_t490580_sum_ms += ms;
+    if (ms > g_t490580_max_ms) g_t490580_max_ms = ms;
+    g_t490580_count++;
+}
+
+static BOOL install_tail22_body_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *tail_fn = (BYTE *)exe + TAIL22_RVA;
+    BYTE *fn364920 = (BYTE *)exe + T364920_RVA;
+    BYTE *fn2be640 = (BYTE *)exe + T2BE640_RVA;
+    BYTE *fn490580 = (BYTE *)exe + T490580_RVA;
+
+    g_t364920_orig = (T364920Fn)fn364920;
+    g_t2be640_orig = (T2be640Fn)fn2be640;
+    g_t490580_orig = (T490580Fn)fn490580;
+
+    BYTE *stub_block = alloc_near(tail_fn, 14 * 3);
+    if (!stub_block) {
+        log_write("[eaw-mt] WARN: alloc_near failed for tail22 body stubs\n");
+        return FALSE;
+    }
+    BYTE *stub_364920 = stub_block + 0 * 14;
+    BYTE *stub_2be640 = stub_block + 1 * 14;
+    BYTE *stub_490580 = stub_block + 2 * 14;
+
+    write_abs_jmp(stub_364920, (uint64_t)t364920_hook);
+    write_abs_jmp(stub_2be640, (uint64_t)t2be640_hook);
+    write_abs_jmp(stub_490580, (uint64_t)t490580_hook);
+
+    int n = 0;
+    for (int i = 0; i <= TAIL22_BODY_SIZE - 5; i++) {
+        if (tail_fn[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, tail_fn + i + 1, 4);
+            BYTE *target = tail_fn + i + 5 + rel;
+            BYTE *stub = NULL;
+            if (target == fn364920) stub = stub_364920;
+            else if (target == fn2be640) stub = stub_2be640;
+            else if (target == fn490580) stub = stub_490580;
+
+            if (stub) {
+                int32_t new_rel = (int32_t)(stub - (tail_fn + i + 5));
+                DWORD old;
+                VirtualProtect(tail_fn + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(tail_fn + i + 1, &new_rel, 4);
+                VirtualProtect(tail_fn + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), tail_fn + i, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[96];
+    sprintf(m, "[eaw-mt] tail22 body hooks: %d/4 patched (364920x1, 2be640x2, 490580x1)\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
+ * FUN_14028a4d0 sub-hook (Phase 5 Step 7a)
+ *
+ * FUN_14028a4d0 (RVA 0x28a4d0) is called from FUN_14028d400 when the frame
+ * counter at *(param_1+0x1f0) counts down to zero.  It fires BEFORE the
+ * vtable[22] dispatch, which explains why gslot22 n=0 during stall frames:
+ * the stall may be here, not in the vtable path.
+ *
+ * Hook approach: E8 call-site scan inside FUN_14028d400 body (654 bytes).
+ * ========================================================================= */
+/* Callee decompile shows it uses param_1 (RCX) — Ghidra's call-site shows void
+ * but the argument is the same object as FUN_14028d400's param_1. */
+typedef void (*GA4d0Fn)(int64_t);
+static GA4d0Fn g_ga4d0_orig   = NULL;
+static LONG    g_ga4d0_count  = 0;
+static double  g_ga4d0_sum_ms = 0, g_ga4d0_max_ms = 0;
+
+static void ga4d0_hook(int64_t a)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_ga4d0_orig(a);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_ga4d0_sum_ms += ms;
+    if (ms > g_ga4d0_max_ms) g_ga4d0_max_ms = ms;
+    g_ga4d0_count++;
+    if (ms >= 100.0) {
+        char s[64];
+        sprintf(s, "[eaw-mt] GA4D0 %.1fms\n", ms);
+        log_write(s);
+    }
+}
+
+static BOOL install_ga4d0_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *gsvc_fn  = (BYTE *)exe + GAME_SERVICE_RVA;
+    BYTE *ga4d0_fn = (BYTE *)exe + GA4D0_RVA;
+
+    g_ga4d0_orig = (GA4d0Fn)ga4d0_fn;
+
+    BYTE *call_site = NULL;
+    for (int i = 0; i <= GSVC_BODY_SIZE - 5; i++) {
+        if (gsvc_fn[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, gsvc_fn + i + 1, 4);
+            if (gsvc_fn + i + 5 + rel == ga4d0_fn) {
+                call_site = gsvc_fn + i;
+                break;
+            }
+        }
+    }
+
+    if (!call_site) {
+        log_write("[eaw-mt] WARN: FUN_14028a4d0 CALL not found in FUN_14028d400\n");
+        return FALSE;
+    }
+
+    BYTE *stub = alloc_near(call_site, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for ga4d0 stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)ga4d0_hook);
+
+    int32_t new_rel = (int32_t)(stub - (call_site + 5));
+    DWORD old;
+    VirtualProtect(call_site + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+    memcpy(call_site + 1, &new_rel, 4);
+    VirtualProtect(call_site + 1, 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), call_site, 5);
+
+    log_write("[eaw-mt] ga4d0 (28a4d0) call-site hook inside FUN_14028d400 installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Slot-22 tail call hooks (Phase 5 Step 5)
  *
  * Both SpaceModeClass and LandModeClass vtable slot 22 end with an
@@ -884,6 +1546,10 @@ static BOOL install_inter_hooks(void)
  * 1000ms stall.  Also hook FUN_14028bf10 (GameModeManager signal dispatch,
  * #1 suspect) and FUN_140343b90 (auto-resolve battle selection, #2 suspect)
  * inside FUN_1403639d0 to attribute the stall within one run.
+ *
+ * NOTE: profiling confirmed the menu demo runs GalacticModeClass (slot 22 =
+ * FUN_14045e030), so these hooks fired n=0.  The gsvc hook above captures
+ * the actual stall path regardless of active mode.
  * ========================================================================= */
 #define SPACE_SLOT22_RVA   0x4d95a0ULL  /* FUN_1404d95a0, 358 bytes */
 #define LAND_SLOT22_RVA    0x3bb440ULL  /* FUN_1403bb440, 598 bytes */
@@ -905,6 +1571,33 @@ static LONG   g_sigdisp_count  = 0;
 static double g_sigdisp_sum_ms = 0, g_sigdisp_max_ms = 0;
 static LONG   g_bsel_count     = 0;
 static double g_bsel_sum_ms    = 0, g_bsel_max_ms    = 0;
+
+static void game_service_hook(int64_t a, int32_t b) {
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_gsvc_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_gsvc_sum_ms += ms;
+    if (ms > g_gsvc_max_ms) g_gsvc_max_ms = ms;
+    g_gsvc_count++;
+    if (ms >= 100.0) {
+        /* Read vtable[22] (offset 0xB0) of the active game-mode object to find
+         * which function is actually dispatched.  Read AFTER the call since the
+         * object is long-lived; log RVA so we can look it up in Ghidra. */
+        int64_t mode_obj = a ? *(int64_t *)(a + 0x38) : 0;
+        uint64_t slot22_rva = 0;
+        if (mode_obj) {
+            int64_t vtbl = *(int64_t *)mode_obj;
+            uint64_t slot22_fn = *(uint64_t *)(vtbl + 0xB0);
+            slot22_rva = slot22_fn - (uint64_t)GetModuleHandleA(NULL);
+        }
+        char s[96];
+        sprintf(s, "[eaw-mt] GSVC %.1fms vtbl22_rva=0x%llx mode_obj=%s\n",
+                ms, (unsigned long long)slot22_rva, mode_obj ? "non-null" : "null");
+        log_write(s);
+    }
+}
 
 static void slot22_tail_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
     LARGE_INTEGER t0, t1;
@@ -1046,6 +1739,50 @@ static BOOL install_slot22_hooks(void) {
     sprintf(m, "[eaw-mt] slot22 hooks: %d/5 patched (expect 2+1+2)\n", n);
     log_write(m);
     return n > 0;
+}
+
+static BOOL install_game_service_hook(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *winmain = (BYTE *)exe + WINMAIN_RVA;
+    BYTE *target  = (BYTE *)exe + GAME_SERVICE_RVA;
+
+    g_gsvc_orig = (GameServiceFn)target;
+
+    BYTE *call_site = NULL;
+    for (int i = 0; i <= WINMAIN_SIZE - 5; i++) {
+        if (winmain[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, winmain + i + 1, 4);
+            if (winmain + i + 5 + rel == target) {
+                call_site = winmain + i;
+                break;
+            }
+        }
+    }
+
+    if (!call_site) {
+        log_write("[eaw-mt] WARN: FUN_14028d400 CALL not found in WinMain\n");
+        return FALSE;
+    }
+
+    BYTE *stub = alloc_near(call_site, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for game_service stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)game_service_hook);
+
+    int32_t new_rel = (int32_t)(stub - (call_site + 5));
+    DWORD old;
+    VirtualProtect(call_site + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+    memcpy(call_site + 1, &new_rel, 4);
+    VirtualProtect(call_site + 1, 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), call_site, 5);
+
+    log_write("[eaw-mt] game_service (28d400) call-site hook installed\n");
+    return TRUE;
 }
 
 /* =========================================================================
@@ -1202,19 +1939,52 @@ static void profile_report_and_reset(void) {
         log_write(ibuf);
     }
 
-    /* Slot-22 tail call breakdown. */
+    /* Game-service + slot-22 breakdown. */
     {
-        char ibuf[256];
-        double tn  = (double)(g_tail22_count  ? g_tail22_count  : 1);
-        double sdn = (double)(g_sigdisp_count ? g_sigdisp_count : 1);
-        double bn  = (double)(g_bsel_count    ? g_bsel_count    : 1);
+        char ibuf[1024];
+        double gn   = (double)(g_gsvc_count    ? g_gsvc_count    : 1);
+        double g22  = (double)(g_gslot22_count ? g_gslot22_count : 1);
+        double a4n  = (double)(g_ga4d0_count   ? g_ga4d0_count   : 1);
+        double ssn  = (double)(g_sslot22_count ? g_sslot22_count : 1);
+        double sun  = (double)(g_sunit22_count ? g_sunit22_count : 1);
+        double t22n = (double)(g_tail22i_count ? g_tail22i_count : 1);
+        double a1n  = (double)(g_a1a240_count  ? g_a1a240_count  : 1);
+        double s9n  = (double)(g_s9d270_count  ? g_s9d270_count  : 1);
+        double tn   = (double)(g_tail22_count  ? g_tail22_count  : 1);
+        double sdn  = (double)(g_sigdisp_count ? g_sigdisp_count : 1);
+        double bn   = (double)(g_bsel_count    ? g_bsel_count    : 1);
+        double t36n = (double)(g_t364920_count ? g_t364920_count : 1);
+        double t2bn = (double)(g_t2be640_count ? g_t2be640_count : 1);
+        double t49n = (double)(g_t490580_count ? g_t490580_count : 1);
         sprintf(ibuf,
-            "[eaw-mt] tail22: avg=%.2f max=%.2f ms (n=%ld)\n"
+            "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  tail22i(3639d0): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  t364920(364920): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  t490580(490580): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  a1a240(41a240):  avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  s9d270(59d270):  avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  sunit22(527dd0): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  ga4d0(28a4d0):   avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  gslot22(45e030): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  tail22(3639d0):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sigdisp(28bf10): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  bsel(343b90):    avg=%.2f max=%.2f ms (n=%ld)\n",
-            g_tail22_sum_ms  / tn,  g_tail22_max_ms,  (long)g_tail22_count,
-            g_sigdisp_sum_ms / sdn, g_sigdisp_max_ms, (long)g_sigdisp_count,
-            g_bsel_sum_ms    / bn,  g_bsel_max_ms,    (long)g_bsel_count);
+            g_gsvc_sum_ms    / gn,   g_gsvc_max_ms,    (long)g_gsvc_count,
+            g_sslot22_sum_ms / ssn,  g_sslot22_max_ms, (long)g_sslot22_count,
+            g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
+            g_t364920_sum_ms / t36n, g_t364920_max_ms, (long)g_t364920_count,
+            g_t2be640_sum_ms / t2bn, g_t2be640_max_ms, (long)g_t2be640_count,
+            g_t490580_sum_ms / t49n, g_t490580_max_ms, (long)g_t490580_count,
+            g_a1a240_sum_ms  / a1n,  g_a1a240_max_ms,  (long)g_a1a240_count,
+            g_s9d270_sum_ms  / s9n,  g_s9d270_max_ms,  (long)g_s9d270_count,
+            g_sunit22_sum_ms / sun,  g_sunit22_max_ms, (long)g_sunit22_count,
+            g_ga4d0_sum_ms   / a4n,  g_ga4d0_max_ms,   (long)g_ga4d0_count,
+            g_gslot22_sum_ms / g22,  g_gslot22_max_ms, (long)g_gslot22_count,
+            g_tail22_sum_ms  / tn,   g_tail22_max_ms,  (long)g_tail22_count,
+            g_sigdisp_sum_ms / sdn,  g_sigdisp_max_ms, (long)g_sigdisp_count,
+            g_bsel_sum_ms    / bn,   g_bsel_max_ms,    (long)g_bsel_count);
         log_write(ibuf);
     }
 
@@ -1236,9 +2006,20 @@ static void profile_report_and_reset(void) {
     g_io_win_max_ms = 0.0;
     g_io_win_count  = 0;
     g_io_win_bytes  = 0;
+    g_gsvc_count    = 0; g_gsvc_sum_ms    = 0; g_gsvc_max_ms    = 0;
+    g_sslot22_count = 0; g_sslot22_sum_ms = 0; g_sslot22_max_ms = 0;
+    g_tail22i_count = 0; g_tail22i_sum_ms = 0; g_tail22i_max_ms = 0;
+    g_a1a240_count  = 0; g_a1a240_sum_ms  = 0; g_a1a240_max_ms  = 0;
+    g_s9d270_count  = 0; g_s9d270_sum_ms  = 0; g_s9d270_max_ms  = 0;
+    g_sunit22_count = 0; g_sunit22_sum_ms = 0; g_sunit22_max_ms = 0;
+    g_ga4d0_count   = 0; g_ga4d0_sum_ms   = 0; g_ga4d0_max_ms   = 0;
+    g_gslot22_count = 0; g_gslot22_sum_ms = 0; g_gslot22_max_ms = 0;
     g_tail22_count  = 0; g_tail22_sum_ms  = 0; g_tail22_max_ms  = 0;
     g_sigdisp_count = 0; g_sigdisp_sum_ms = 0; g_sigdisp_max_ms = 0;
     g_bsel_count    = 0; g_bsel_sum_ms    = 0; g_bsel_max_ms    = 0;
+    g_t364920_count = 0; g_t364920_sum_ms = 0; g_t364920_max_ms = 0;
+    g_t2be640_count = 0; g_t2be640_sum_ms = 0; g_t2be640_max_ms = 0;
+    g_t490580_count = 0; g_t490580_sum_ms = 0; g_t490580_max_ms = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -1493,6 +2274,30 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         /* Install slot-22 tail call + sub-hooks (non-fatal) */
         install_slot22_hooks();
 
+        /* Install mode-agnostic game service hook on FUN_14028d400 (non-fatal) */
+        install_game_service_hook();
+
+        /* Inline hook SpaceModeClass slot 22 (FUN_1404d95a0) — non-fatal */
+        install_space_slot22_hook();
+
+        /* Call-site hook FUN_140527dd0 inside FUN_1404d95a0 (non-fatal) */
+        install_space_unit_svc_hook();
+
+        /* Inline hook FUN_1403639d0 — tail call target from FUN_1404d95a0 (non-fatal) */
+        install_tail22i_hook();
+
+        /* E8 call-site hooks for FUN_14041a240 + FUN_14059d270 in FUN_1404d95a0 (non-fatal) */
+        install_post_loop_hooks();
+
+        /* E8 hooks inside FUN_1403639d0 body — 364920, 2be640, 490580 (non-fatal) */
+        install_tail22_body_hooks();
+
+        /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
+        install_ga4d0_hook();
+
+        /* Inline hook GalacticModeClass slot 22 (FUN_14045e030) — non-fatal */
+        install_galactic_slot22_hook();
+
         /* Start render thread */
         HANDLE thread = CreateThread(NULL, 0, render_thread_proc, NULL, 0, NULL);
         if (!thread) {
@@ -1507,13 +2312,19 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_DETACH) {
         InterlockedExchange(&g_shutdown, 1);
         if (g_render_kick) SetEvent(g_render_kick);
-        /* Restore vtable entry so the game doesn't call our hook after unload */
+        /* Restore vtable entries so the game doesn't call our hooks after unload */
         if (g_patched_vtable && g_saved_sim_tick) {
             DWORD old;
             VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8,
                            PAGE_EXECUTE_READWRITE, &old);
             g_patched_vtable[SIM_TICK_VTBL_IDX] = (void *)g_saved_sim_tick;
             VirtualProtect(&g_patched_vtable[SIM_TICK_VTBL_IDX], 8, old, &old);
+            if (g_saved_slot22_vtbl) {
+                VirtualProtect(&g_patched_vtable[SLOT22_VTBL_IDX], 8,
+                               PAGE_EXECUTE_READWRITE, &old);
+                g_patched_vtable[SLOT22_VTBL_IDX] = (void *)g_saved_slot22_vtbl;
+                VirtualProtect(&g_patched_vtable[SLOT22_VTBL_IDX], 8, old, &old);
+            }
         }
         if (real_winmm) FreeLibrary(real_winmm);
         if (g_log_fp) { fclose(g_log_fp); g_log_fp = NULL; }
