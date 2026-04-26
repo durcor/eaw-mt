@@ -1197,6 +1197,9 @@ static BOOL install_space_unit_svc_hook(void)
 #define T20ED70_RVA       0x20ed70ULL  /* FUN_14020ed70 — preamble loop call */
 #define A6B80_BODY_SIZE   2862         /* FUN_1403a6b80 body size for inner E8 scan */
 #define PUMPE_RVA         0x247a90ULL  /* FUN_140247a90 — Pump_Threads (entity-level call site) */
+#define A76B0_RVA         0x3a76b0ULL  /* FUN_1403a76b0 — movement system (line 361 of 3a6b80) */
+#define A9E30_RVA         0x3a9e30ULL  /* FUN_1403a9e30 — command dispatch (line 99 of 3a6b80) */
+#define E369E0_RVA        0x5369e0ULL  /* FUN_1405369e0 — preamble call (line 79 of 3a6b80) */
 
 static const BYTE tail22_prologue[19] = {
     0x40, 0x55,                              /* PUSH RBP (REX prefix)        */
@@ -1646,6 +1649,126 @@ static BOOL install_pumpe_hook(void)
 
     char m[80];
     sprintf(m, "[eaw-mt] pumpe (Pump_Threads in 3a6b80): %d call site(s) patched\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
+ * Second stall source hooks inside FUN_1403a6b80 (Phase 5 Step 11)
+ *
+ * Window 2 shows ta6b80 max=1050ms with pumpe=0.03ms — a second stall source
+ * exists in FUN_1403a6b80 unrelated to Lua AI.  Hook three candidates:
+ *   FUN_1403a76b0 (0x3a76b0) — movement system, line 361, always-called path
+ *   FUN_1403a9e30 (0x3a9e30) — command dispatch, line 99, pending-command loop
+ *   FUN_1405369e0 (0x5369e0) — preamble call, line 79, conditional
+ * ========================================================================= */
+typedef void (*A76b0Fn)(int64_t, int32_t);
+static A76b0Fn g_a76b0_orig   = NULL;
+static LONG    g_a76b0_count  = 0;
+static double  g_a76b0_sum_ms = 0, g_a76b0_max_ms = 0;
+
+static void a76b0_hook(int64_t a, int32_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_a76b0_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_a76b0_sum_ms += ms;
+    if (ms > g_a76b0_max_ms) g_a76b0_max_ms = ms;
+    g_a76b0_count++;
+}
+
+typedef void (*A9e30Fn)(int64_t, int32_t, int64_t, int32_t, int64_t,
+                         int32_t, int32_t, int32_t, int32_t,
+                         int32_t, int32_t, int32_t, int32_t, int32_t);
+static A9e30Fn g_a9e30_orig   = NULL;
+static LONG    g_a9e30_count  = 0;
+static double  g_a9e30_sum_ms = 0, g_a9e30_max_ms = 0;
+
+static void a9e30_hook(int64_t a, int32_t b, int64_t c, int32_t d, int64_t e,
+                        int32_t f, int32_t g, int32_t h, int32_t i2,
+                        int32_t j, int32_t k2, int32_t l, int32_t m2, int32_t n2)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_a9e30_orig(a, b, c, d, e, f, g, h, i2, j, k2, l, m2, n2);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_a9e30_sum_ms += ms;
+    if (ms > g_a9e30_max_ms) g_a9e30_max_ms = ms;
+    g_a9e30_count++;
+}
+
+typedef void (*E369e0Fn)(int64_t, int32_t);
+static E369e0Fn g_e369e0_orig   = NULL;
+static LONG     g_e369e0_count  = 0;
+static double   g_e369e0_sum_ms = 0, g_e369e0_max_ms = 0;
+
+static void e369e0_hook(int64_t a, int32_t b)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_e369e0_orig(a, b);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_e369e0_sum_ms += ms;
+    if (ms > g_e369e0_max_ms) g_e369e0_max_ms = ms;
+    g_e369e0_count++;
+}
+
+static BOOL install_a6b80_stall2_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_a6b80  = (BYTE *)exe + TA6B80_RVA;
+    BYTE *fn_a76b0  = (BYTE *)exe + A76B0_RVA;
+    BYTE *fn_a9e30  = (BYTE *)exe + A9E30_RVA;
+    BYTE *fn_e369e0 = (BYTE *)exe + E369E0_RVA;
+
+    g_a76b0_orig  = (A76b0Fn)fn_a76b0;
+    g_a9e30_orig  = (A9e30Fn)fn_a9e30;
+    g_e369e0_orig = (E369e0Fn)fn_e369e0;
+
+    BYTE *stub_block = alloc_near(fn_a6b80, 14 * 3);
+    if (!stub_block) {
+        log_write("[eaw-mt] WARN: alloc_near failed for a6b80 stall2 stubs\n");
+        return FALSE;
+    }
+    BYTE *stub_a76b0  = stub_block + 0 * 14;
+    BYTE *stub_a9e30  = stub_block + 1 * 14;
+    BYTE *stub_e369e0 = stub_block + 2 * 14;
+
+    write_abs_jmp(stub_a76b0,  (uint64_t)a76b0_hook);
+    write_abs_jmp(stub_a9e30,  (uint64_t)a9e30_hook);
+    write_abs_jmp(stub_e369e0, (uint64_t)e369e0_hook);
+
+    int n = 0;
+    for (int i = 0; i <= A6B80_BODY_SIZE - 5; i++) {
+        if (fn_a6b80[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, fn_a6b80 + i + 1, 4);
+            BYTE *target = fn_a6b80 + i + 5 + rel;
+            BYTE *stub = NULL;
+            if (target == fn_a76b0)  stub = stub_a76b0;
+            else if (target == fn_a9e30)  stub = stub_a9e30;
+            else if (target == fn_e369e0) stub = stub_e369e0;
+
+            if (stub) {
+                int32_t new_rel = (int32_t)(stub - (fn_a6b80 + i + 5));
+                DWORD old;
+                VirtualProtect(fn_a6b80 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(fn_a6b80 + i + 1, &new_rel, 4);
+                VirtualProtect(fn_a6b80 + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), fn_a6b80 + i, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[96];
+    sprintf(m, "[eaw-mt] a6b80 stall2 hooks: %d/3 patched (a76b0, a9e30, 5369e0)\n", n);
     log_write(m);
     return n > 0;
 }
@@ -2133,7 +2256,7 @@ static void profile_report_and_reset(void) {
 
     /* Game-service + slot-22 breakdown. */
     {
-        char ibuf[1280];
+        char ibuf[1536];
         double gn   = (double)(g_gsvc_count    ? g_gsvc_count    : 1);
         double g22  = (double)(g_gslot22_count ? g_gslot22_count : 1);
         double a4n  = (double)(g_ga4d0_count   ? g_ga4d0_count   : 1);
@@ -2152,6 +2275,9 @@ static void profile_report_and_reset(void) {
         double a6d0 = (double)(g_ta62d0_count  ? g_ta62d0_count  : 1);
         double e70n = (double)(g_t20ed70_count ? g_t20ed70_count : 1);
         double pen  = (double)(g_pumpe_count   ? g_pumpe_count   : 1);
+        double a76n = (double)(g_a76b0_count  ? g_a76b0_count   : 1);
+        double a9n  = (double)(g_a9e30_count  ? g_a9e30_count   : 1);
+        double e36n = (double)(g_e369e0_count ? g_e369e0_count  : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -2159,6 +2285,9 @@ static void profile_report_and_reset(void) {
             "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  a76b0(3a76b0):   avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  a9e30(3a9e30):   avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  e369e0(5369e0):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t364920(364920): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t490580(490580): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta62d0(2a62d0):  avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -2177,6 +2306,9 @@ static void profile_report_and_reset(void) {
             g_t2be640_sum_ms / t2bn, g_t2be640_max_ms, (long)g_t2be640_count,
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
             g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count,
+            g_a76b0_sum_ms   / a76n, g_a76b0_max_ms,   (long)g_a76b0_count,
+            g_a9e30_sum_ms   / a9n,  g_a9e30_max_ms,   (long)g_a9e30_count,
+            g_e369e0_sum_ms  / e36n, g_e369e0_max_ms,  (long)g_e369e0_count,
             g_t364920_sum_ms / t36n, g_t364920_max_ms, (long)g_t364920_count,
             g_t490580_sum_ms / t49n, g_t490580_max_ms, (long)g_t490580_count,
             g_ta62d0_sum_ms  / a6d0, g_ta62d0_max_ms,  (long)g_ta62d0_count,
@@ -2228,6 +2360,9 @@ static void profile_report_and_reset(void) {
     g_ta62d0_count  = 0; g_ta62d0_sum_ms  = 0; g_ta62d0_max_ms  = 0;
     g_t20ed70_count = 0; g_t20ed70_sum_ms = 0; g_t20ed70_max_ms = 0;
     g_pumpe_count   = 0; g_pumpe_sum_ms   = 0; g_pumpe_max_ms   = 0;
+    g_a76b0_count   = 0; g_a76b0_sum_ms   = 0; g_a76b0_max_ms   = 0;
+    g_a9e30_count   = 0; g_a9e30_sum_ms   = 0; g_a9e30_max_ms   = 0;
+    g_e369e0_count  = 0; g_e369e0_sum_ms  = 0; g_e369e0_max_ms  = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -2505,6 +2640,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* Per-entity Pump_Threads call site inside FUN_1403a6b80 (non-fatal) */
         install_pumpe_hook();
+
+        /* Second stall source hooks inside FUN_1403a6b80 — movement, cmd, preamble (non-fatal) */
+        install_a6b80_stall2_hooks();
 
         /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();

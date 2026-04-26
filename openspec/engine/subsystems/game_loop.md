@@ -365,13 +365,36 @@ the 1050ms window-2 max.  Candidates from decompile:
 
 - **Line 79** — `FUN_1405369e0(...)` — conditional preamble call.
 
-TODO: Add E8 hooks inside `FUN_1403a6b80` (2862 bytes) for:
-- `FUN_1403a9e30` (RVA from decompile line 99)
-- `FUN_1403a76b0` (RVA `0x3a76b0`, line 361)
-- `FUN_1405369e0` (RVA `0x5369e0`, line 79)
-Also consider timing the behavior-vtable block by instrumenting before/after
-the loop at lines 132–136 (requires inlined timer rather than E8 hook since
-the target is indirect).
+### Second stall source isolated — Phase 5 Step 11 (2026-04-26)
+
+E8 hooks inside FUN_1403a6b80 (2862 bytes):
+
+| hook | window 1 | window 2 (non-Lua) | window 3 |
+|---|---|---|---|
+| `a76b0(3a76b0)` | avg=10.64ms max=2108ms n=200 | avg=16.72ms **max=1236ms** n=200 | avg=0.13ms max=1.03ms |
+| `a9e30(3a9e30)` | n=0 | n=0 | n=0 |
+| `e369e0(5369e0)` | max=0.01ms | max=0.00ms | fast |
+
+Window 2: `a76b0_total = 16.72×200 = 3344ms ≈ ta6b80_total = 2.04×1651 = 3368ms` (99.3%) — `FUN_1403a76b0` is the entire second stall.  `a9e30` never called (no pending commands).  `e369e0` eliminated.
+
+**`FUN_1403a76b0` (RVA `0x3a76b0`, 499 bytes) confirmed as second stall source.**
+
+### FUN_1403a76b0 — Structure (decompiled, Phase 5 Step 11)
+
+Movement component service function.  Called with `(entity, frame_counter)`.
+
+```
+param_1[0x2d0] → movement array (iVar1 entries)
+  Loop 1: count active entries (offset 0x4d == '\x01')
+  Loop 2 (if active > 0): sum FUN_140540070() values per active entry
+  FUN_140396df0 + FUN_140396070 → speed range
+  Loop 3 (if speed > 0): FUN_140387f50(entry, entity, 1, speed_share, 0) per active entry
+  Loop 4 (unconditional): FUN_140387010(entry, param_2) for EVERY entry
+```
+
+**Line 74: `FUN_140387010(lVar6, param_2)`** is called unconditionally for every movement component — prime suspect for the 1236ms per-entity spike.
+
+TODO: Add E8 hook for `FUN_140387010` (RVA `0x387010`) inside `FUN_1403a76b0` (499 bytes).
 
 ### Fix scope revised
 
