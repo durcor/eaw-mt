@@ -233,14 +233,95 @@ Internal structure:
 10. **`FUN_1402b76a0`** — conditional on `param_1+0x490 != 0`.
 11. **`FUN_1402a62d0(param_1)`** — unconditional final call.
 
-### Next: sub-attribution inside FUN_1402be640
+### Sub-attribution inside FUN_1402be640 — Phase 5 Step 9 (2026-04-25)
 
-TODO: Add E8 hooks inside FUN_1402be640 (1577 bytes) for prime suspects:
-- `FUN_1403a6b80` (RVA 0x3a6b80) — inner per-entity loop, n will be large
-- `FUN_1402a62d0` (RVA 0x2a62d0) — unconditional final call
-- `FUN_14020ed70` (RVA 0x20ed70) — preamble loop call
-- `FUN_1402ad100` (RVA 0x2ad100) — list-build call
+E8 hooks inside FUN_1402be640 (1577 bytes):
 
-If `FUN_1403a6b80` is the per-entity stall: n per window >> 52; avg per call
-× n ≈ tail22i total.  Decompile `FUN_1403a6b80` to understand the per-entity
-service cost and whether it is O(1) or O(entities).
+| hook | avg | max | n (w1) | total vs t2be640 |
+|---|---|---|---|---|
+| `ta6b80(3a6b80)` | 86.87ms | **22,310ms** | 322 | 27,972ms ≈ 27,974ms ✓ |
+| `ta62d0(2a62d0)` | 0.00ms | 0.08ms | 52 | eliminated |
+| `t20ed70(20ed70)` | 0.00ms | 0.01ms | 5304 | eliminated |
+
+`ta6b80_total ≈ t2be640_total` in all three windows — `FUN_1403a6b80` is
+virtually all of `FUN_1402be640`'s time.
+
+**Critical pattern**: window 1 has ~6 entities per call (n=322/52) and max
+22,310ms; window 3 has ~70 entities per call (n=3352/48) and max 1ms.  The
+stall is NOT proportional to entity count — ONE entity hits a catastrophic code
+path every few hundred frames.
+
+### FUN_1403a6b80 — Structure and Root Cause (2862 bytes, decompiled 2026-04-25)
+
+`FUN_1403a6b80(param_1, param_2, param_3)` is the per-entity service function.
+It handles: position/physics update, pending command dispatch (lines 83-129),
+behavior tick (vtable[0x30], lines 132-136), movement system (lines 336-361).
+
+**Root cause — ServiceRate/LastService AI script execution (lines 258-334):**
+
+```c
+// Read entity's AI service rate and last service timestamp from Lua values
+plVar10 = FUN_140246fb0(param_1[0x5b], "ServiceRate", 0);
+plVar10 = FUN_140246fb0(param_1[0x5b], "LastService", 0);
+
+// Gate: if elapsed_time >= ServiceRate → execute entity's AI coroutine
+if (elapsed >= service_rate) {
+    FUN_140247a90(param_1[0x5b]);   // Pump_Threads — runs entity Lua AI coroutine
+    // Update LastService = current_time (+ random jitter for load balancing, line 316)
+}
+```
+
+`FUN_140247a90` is `Pump_Threads` (RVA `0x247a90`, already tracked by `pump_ms`
+hook at WinMain call site).  **This is a second, untracked Pump_Threads call
+site** — called on the main thread, per-entity, rate-gated by a Lua value.
+
+Lua interaction confirmed: line 311 `*plVar10 = (longlong)LuaValue<double,4>::vftable`.
+
+**Class-B hitch mechanism:**
+1. Entity's `ServiceRate` timer fires (every N seconds, jitter via random seed)
+2. `Pump_Threads(entity_script_object)` runs that entity's Lua AI coroutine on
+   the **main thread**
+3. The Lua script executes synchronously — for Thrawn's Revenge fleet-AI, this
+   can involve O(N²) planet/unit iteration, blocking for up to 22 seconds
+
+This is distinct from the WinMain Pump_Threads call site (which shows avg ≤ 5ms
+in `pump_ms`).  The entity-level call is invisible to the existing hook because
+the E8 scan at WinMain only patches the WinMain call site.
+
+### Full Attribution Chain (confirmed, 2026-04-25)
+
+```
+WinMain:865  FUN_14028d400 (gsvc, 654 bytes)
+  └─ vtable[22] → SpaceModeClass FUN_1404d95a0 (358 bytes)
+       └─ JMP FUN_1403639d0 (tail22, 3916 bytes)
+            └─ FUN_1402be640 (×2, 1577 bytes) — two manager objects
+                 └─ FUN_1403a6b80 (per-entity, 2862 bytes) — N entities
+                      └─ ServiceRate gate → Pump_Threads(entity_script)
+                           └─ Lua AI coroutine executes SYNCHRONOUSLY on main thread
+                                ← 22,310ms stall on ONE entity per episode
+```
+
+### Fix Direction
+
+The per-entity `Pump_Threads` call (line 304 of FUN_1403a6b80) needs to be
+moved off the main thread.  Two approaches:
+
+**Option A — Offload entity AI service to a worker thread:**  The ServiceRate/
+LastService block could be executed on a background thread pool.  Requires
+thread-safe access to the entity object (param_1) and the Lua state.  Lua
+is not thread-safe by default — would need a mutex or separate Lua state per thread.
+
+**Option B — Bound per-entity AI execution time:**  Replace the
+`Pump_Threads` call with a time-bounded variant that yields after N ms and
+reschedules remaining work.  This keeps everything single-threaded but caps
+the per-frame AI budget.
+
+**Option C — Increase ServiceRate for expensive scripts:**  If the Lua scripts
+that trigger the 22s stall are fleet-AI functions (planet evaluation, unit
+assignment), increasing their ServiceRate (e.g., from 0.5s to 2s) reduces
+call frequency and amortizes cost — but doesn't eliminate the per-call stall.
+
+**Immediate mitigation**: hook the entity-level `Pump_Threads` call site inside
+`FUN_1403a6b80` to measure per-entity AI execution time and identify which
+entity type triggers the stall.  Add E8 hook for RVA `0x247a90` inside
+`FUN_1403a6b80` (2862 bytes) — the `pump_ms` counter only tracks WinMain.

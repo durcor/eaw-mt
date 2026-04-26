@@ -1191,6 +1191,10 @@ static BOOL install_space_unit_svc_hook(void)
 #define T2BE640_RVA       0x2be640ULL  /* FUN_1402be640 — called twice in tail22 body */
 #define T490580_RVA       0x490580ULL  /* FUN_140490580 — unconditional call in tail22 body */
 #define TAIL22_BODY_SIZE  3916
+#define B2BE640_BODY_SIZE 1577         /* FUN_1402be640 body size for inner E8 scan */
+#define TA6B80_RVA        0x3a6b80ULL  /* FUN_1403a6b80 — per-entity inner loop call */
+#define TA62D0_RVA        0x2a62d0ULL  /* FUN_1402a62d0 — unconditional final call */
+#define T20ED70_RVA       0x20ed70ULL  /* FUN_14020ed70 — preamble loop call */
 
 static const BYTE tail22_prologue[19] = {
     0x40, 0x55,                              /* PUSH RBP (REX prefix)        */
@@ -1454,6 +1458,122 @@ static BOOL install_tail22_body_hooks(void)
 
     char m[96];
     sprintf(m, "[eaw-mt] tail22 body hooks: %d/4 patched (364920x1, 2be640x2, 490580x1)\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
+ * E8 call-site hooks inside FUN_1402be640 body (Phase 5 Step 9)
+ *
+ * FUN_1402be640 (1577 bytes, called ×2 per tail22i) is the confirmed stall.
+ * Hook three prime suspects:
+ *   FUN_1403a6b80 (0x3a6b80) — per-entity inner loop; n >> 52 if it's the culprit
+ *   FUN_1402a62d0 (0x2a62d0) — unconditional final call (×2 per 2be640 = ×4 per tail22i)
+ *   FUN_14020ed70 (0x20ed70) — preamble loop call (×DAT_140a16fb0 per 2be640 invocation)
+ * ========================================================================= */
+typedef void (*Ta6b80Fn)(int64_t, int32_t, int8_t);
+static Ta6b80Fn g_ta6b80_orig   = NULL;
+static LONG     g_ta6b80_count  = 0;
+static double   g_ta6b80_sum_ms = 0, g_ta6b80_max_ms = 0;
+
+static void ta6b80_hook(int64_t a, int32_t b, int8_t c)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_ta6b80_orig(a, b, c);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_ta6b80_sum_ms += ms;
+    if (ms > g_ta6b80_max_ms) g_ta6b80_max_ms = ms;
+    g_ta6b80_count++;
+}
+
+typedef void (*Ta62d0Fn)(int64_t);
+static Ta62d0Fn g_ta62d0_orig   = NULL;
+static LONG     g_ta62d0_count  = 0;
+static double   g_ta62d0_sum_ms = 0, g_ta62d0_max_ms = 0;
+
+static void ta62d0_hook(int64_t a)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_ta62d0_orig(a);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_ta62d0_sum_ms += ms;
+    if (ms > g_ta62d0_max_ms) g_ta62d0_max_ms = ms;
+    g_ta62d0_count++;
+}
+
+typedef void (*T20ed70Fn)(int64_t);
+static T20ed70Fn g_t20ed70_orig   = NULL;
+static LONG      g_t20ed70_count  = 0;
+static double    g_t20ed70_sum_ms = 0, g_t20ed70_max_ms = 0;
+
+static void t20ed70_hook(int64_t a)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    g_t20ed70_orig(a);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_t20ed70_sum_ms += ms;
+    if (ms > g_t20ed70_max_ms) g_t20ed70_max_ms = ms;
+    g_t20ed70_count++;
+}
+
+static BOOL install_2be640_body_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn2be640 = (BYTE *)exe + T2BE640_RVA;
+    BYTE *fna6b80  = (BYTE *)exe + TA6B80_RVA;
+    BYTE *fna62d0  = (BYTE *)exe + TA62D0_RVA;
+    BYTE *fn20ed70 = (BYTE *)exe + T20ED70_RVA;
+
+    g_ta6b80_orig  = (Ta6b80Fn)fna6b80;
+    g_ta62d0_orig  = (Ta62d0Fn)fna62d0;
+    g_t20ed70_orig = (T20ed70Fn)fn20ed70;
+
+    BYTE *stub_block = alloc_near(fn2be640, 14 * 3);
+    if (!stub_block) {
+        log_write("[eaw-mt] WARN: alloc_near failed for 2be640 body stubs\n");
+        return FALSE;
+    }
+    BYTE *stub_a6b80  = stub_block + 0 * 14;
+    BYTE *stub_a62d0  = stub_block + 1 * 14;
+    BYTE *stub_20ed70 = stub_block + 2 * 14;
+
+    write_abs_jmp(stub_a6b80,  (uint64_t)ta6b80_hook);
+    write_abs_jmp(stub_a62d0,  (uint64_t)ta62d0_hook);
+    write_abs_jmp(stub_20ed70, (uint64_t)t20ed70_hook);
+
+    int n = 0;
+    for (int i = 0; i <= B2BE640_BODY_SIZE - 5; i++) {
+        if (fn2be640[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, fn2be640 + i + 1, 4);
+            BYTE *target = fn2be640 + i + 5 + rel;
+            BYTE *stub = NULL;
+            if (target == fna6b80)  stub = stub_a6b80;
+            else if (target == fna62d0)  stub = stub_a62d0;
+            else if (target == fn20ed70) stub = stub_20ed70;
+
+            if (stub) {
+                int32_t new_rel = (int32_t)(stub - (fn2be640 + i + 5));
+                DWORD old;
+                VirtualProtect(fn2be640 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(fn2be640 + i + 1, &new_rel, 4);
+                VirtualProtect(fn2be640 + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), fn2be640 + i, 5);
+                n++;
+            }
+        }
+    }
+
+    char m[96];
+    sprintf(m, "[eaw-mt] 2be640 body hooks: %d patched (3a6b80xN, 2a62d0x1, 20ed70xM)\n", n);
     log_write(m);
     return n > 0;
 }
@@ -1941,7 +2061,7 @@ static void profile_report_and_reset(void) {
 
     /* Game-service + slot-22 breakdown. */
     {
-        char ibuf[1024];
+        char ibuf[1280];
         double gn   = (double)(g_gsvc_count    ? g_gsvc_count    : 1);
         double g22  = (double)(g_gslot22_count ? g_gslot22_count : 1);
         double a4n  = (double)(g_ga4d0_count   ? g_ga4d0_count   : 1);
@@ -1956,6 +2076,9 @@ static void profile_report_and_reset(void) {
         double t36n = (double)(g_t364920_count ? g_t364920_count : 1);
         double t2bn = (double)(g_t2be640_count ? g_t2be640_count : 1);
         double t49n = (double)(g_t490580_count ? g_t490580_count : 1);
+        double a6n  = (double)(g_ta6b80_count  ? g_ta6b80_count  : 1);
+        double a6d0 = (double)(g_ta62d0_count  ? g_ta62d0_count  : 1);
+        double e70n = (double)(g_t20ed70_count ? g_t20ed70_count : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -1963,6 +2086,9 @@ static void profile_report_and_reset(void) {
             "  t364920(364920): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t490580(490580): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  ta62d0(2a62d0):  avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  t20ed70(20ed70): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  a1a240(41a240):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  s9d270(59d270):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sunit22(527dd0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -1977,6 +2103,9 @@ static void profile_report_and_reset(void) {
             g_t364920_sum_ms / t36n, g_t364920_max_ms, (long)g_t364920_count,
             g_t2be640_sum_ms / t2bn, g_t2be640_max_ms, (long)g_t2be640_count,
             g_t490580_sum_ms / t49n, g_t490580_max_ms, (long)g_t490580_count,
+            g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
+            g_ta62d0_sum_ms  / a6d0, g_ta62d0_max_ms,  (long)g_ta62d0_count,
+            g_t20ed70_sum_ms / e70n, g_t20ed70_max_ms, (long)g_t20ed70_count,
             g_a1a240_sum_ms  / a1n,  g_a1a240_max_ms,  (long)g_a1a240_count,
             g_s9d270_sum_ms  / s9n,  g_s9d270_max_ms,  (long)g_s9d270_count,
             g_sunit22_sum_ms / sun,  g_sunit22_max_ms, (long)g_sunit22_count,
@@ -2020,6 +2149,9 @@ static void profile_report_and_reset(void) {
     g_t364920_count = 0; g_t364920_sum_ms = 0; g_t364920_max_ms = 0;
     g_t2be640_count = 0; g_t2be640_sum_ms = 0; g_t2be640_max_ms = 0;
     g_t490580_count = 0; g_t490580_sum_ms = 0; g_t490580_max_ms = 0;
+    g_ta6b80_count  = 0; g_ta6b80_sum_ms  = 0; g_ta6b80_max_ms  = 0;
+    g_ta62d0_count  = 0; g_ta62d0_sum_ms  = 0; g_ta62d0_max_ms  = 0;
+    g_t20ed70_count = 0; g_t20ed70_sum_ms = 0; g_t20ed70_max_ms = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -2291,6 +2423,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* E8 hooks inside FUN_1403639d0 body — 364920, 2be640, 490580 (non-fatal) */
         install_tail22_body_hooks();
+
+        /* E8 hooks inside FUN_1402be640 body — 3a6b80, 2a62d0, 20ed70 (non-fatal) */
+        install_2be640_body_hooks();
 
         /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();
