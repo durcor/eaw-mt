@@ -2562,6 +2562,8 @@ static BOOL install_b388b60_subcallee_hooks(void)
 #define B3989A0_BODY_SIZE  2733
 #define B38CB30_RVA        0x38cb30ULL
 #define B37C050_RVA        0x37c050ULL
+#define B381A90_RVA        0x381a90ULL
+#define B384740_RVA        0x384740ULL
 
 typedef void (*B38cb30Fn)(int64_t, int64_t, int64_t, int64_t);
 static B38cb30Fn g_b38cb30_orig  = NULL;
@@ -2573,6 +2575,37 @@ static void b38cb30_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b38cb30_sum_ms += ms; if (ms > g_b38cb30_max_ms) g_b38cb30_max_ms = ms;
     g_b38cb30_count++;
+}
+
+/* FUN_140381a90  per-hardpoint sub-movement-order creation (lines 300-301 of 3989a0).
+ * Called once per ship hardpoint.  5 args from call site:
+ *   (alloc'd 0xd8 buf, move_order, loop_idx, hardpoint_ptr, in_stack_val).
+ * 5th arg is in_stack_ffffffffffffff88 — must pass through to avoid stack corruption. */
+typedef int64_t (*B381a90Fn)(int64_t, int64_t, int64_t, int64_t, int64_t);
+static B381a90Fn g_b381a90_orig  = NULL;
+static LONG      g_b381a90_count = 0;
+static double    g_b381a90_sum_ms = 0, g_b381a90_max_ms = 0;
+static int64_t b381a90_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b381a90_orig(a, b, c, d, e); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b381a90_sum_ms += ms; if (ms > g_b381a90_max_ms) g_b381a90_max_ms = ms;
+    g_b381a90_count++; return r;
+}
+
+/* FUN_140384740  per-hardpoint second pass (lines 396 of 3989a0, inside second loop).
+ * Ghidra shows 0 explicit args; treat as void(*)(void) — if it has hidden args they
+ * come from context and won't be disturbed by a no-arg hook. */
+typedef void (*B384740Fn)(void);
+static B384740Fn g_b384740_orig  = NULL;
+static LONG      g_b384740_count = 0;
+static double    g_b384740_sum_ms = 0, g_b384740_max_ms = 0;
+static void b384740_hook(void) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    g_b384740_orig(); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b384740_sum_ms += ms; if (ms > g_b384740_max_ms) g_b384740_max_ms = ms;
+    g_b384740_count++;
 }
 
 /* FUN_14037c050 takes 5 args: (path_buf+8, move_order, param_2, param_3, vtbl_ptr)
@@ -2598,19 +2631,25 @@ static BOOL install_b3989a0_subcallee_hooks(void)
     BYTE *fn_b3989a0 = (BYTE *)exe + B3989A0_RVA;
     BYTE *fn_b38cb30 = (BYTE *)exe + B38CB30_RVA;
     BYTE *fn_b37c050 = (BYTE *)exe + B37C050_RVA;
+    BYTE *fn_b381a90 = (BYTE *)exe + B381A90_RVA;
+    BYTE *fn_b384740 = (BYTE *)exe + B384740_RVA;
 
     g_b38cb30_orig = (B38cb30Fn)fn_b38cb30;
     g_b37c050_orig = (B37c050Fn)fn_b37c050;
+    g_b381a90_orig = (B381a90Fn)fn_b381a90;
+    g_b384740_orig = (B384740Fn)fn_b384740;
 
-    BYTE *stubs = alloc_near(fn_b3989a0, 14 * 2);
+    BYTE *stubs = alloc_near(fn_b3989a0, 14 * 4);
     if (!stubs) {
         log_write("[eaw-mt] WARN: alloc_near failed for b3989a0 sub stubs\n");
         return FALSE;
     }
     write_abs_jmp(stubs + 0,  (uint64_t)b38cb30_hook);
     write_abs_jmp(stubs + 14, (uint64_t)b37c050_hook);
+    write_abs_jmp(stubs + 28, (uint64_t)b381a90_hook);
+    write_abs_jmp(stubs + 42, (uint64_t)b384740_hook);
 
-    int n38cb30 = 0, n37c050 = 0;
+    int n38cb30 = 0, n37c050 = 0, n381a90 = 0, n384740 = 0;
     DWORD old_prot;
     for (int i = 0; i <= B3989A0_BODY_SIZE - 5; i++) {
         if (fn_b3989a0[i] != 0xE8) continue;
@@ -2620,6 +2659,8 @@ static BOOL install_b3989a0_subcallee_hooks(void)
         BYTE *stub = NULL; int *cnt = NULL;
         if      (target == fn_b38cb30) { stub = stubs + 0;  cnt = &n38cb30; }
         else if (target == fn_b37c050) { stub = stubs + 14; cnt = &n37c050; }
+        else if (target == fn_b381a90) { stub = stubs + 28; cnt = &n381a90; }
+        else if (target == fn_b384740) { stub = stubs + 42; cnt = &n384740; }
         else continue;
         int32_t new_rel = (int32_t)(stub - (fn_b3989a0 + i + 5));
         VirtualProtect(fn_b3989a0 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old_prot);
@@ -2628,11 +2669,11 @@ static BOOL install_b3989a0_subcallee_hooks(void)
         FlushInstructionCache(GetCurrentProcess(), fn_b3989a0 + i, 5);
         (*cnt)++;
     }
-    char m[96];
-    sprintf(m, "[eaw-mt] b3989a0_sub: b38cb30=%d b37c050=%d site(s) patched in 3989a0\n",
-            n38cb30, n37c050);
+    char m[128];
+    sprintf(m, "[eaw-mt] b3989a0_sub: b38cb30=%d b37c050=%d b381a90=%d b384740=%d site(s) patched in 3989a0\n",
+            n38cb30, n37c050, n381a90, n384740);
     log_write(m);
-    return (n38cb30 + n37c050) > 0;
+    return (n38cb30 + n37c050 + n381a90 + n384740) > 0;
 }
 
 /* =========================================================================
@@ -3157,6 +3198,8 @@ static void profile_report_and_reset(void) {
         double r9a0n = (double)(g_b3989a0_count  ? g_b3989a0_count  : 1);
         double cb30n = (double)(g_b38cb30_count  ? g_b38cb30_count  : 1);
         double c050n = (double)(g_b37c050_count  ? g_b37c050_count  : 1);
+        double a90n  = (double)(g_b381a90_count  ? g_b381a90_count  : 1);
+        double t740n = (double)(g_b384740_count  ? g_b384740_count  : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -3196,7 +3239,9 @@ static void profile_report_and_reset(void) {
             "  b388b60(388b60): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b3989a0(3989a0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b38cb30(38cb30): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  b37c050(37c050): avg=%.2f max=%.2f ms (n=%ld)\n",
+            "  b37c050(37c050): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b381a90(381a90): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b384740(384740): avg=%.2f max=%.2f ms (n=%ld)\n",
             g_gsvc_sum_ms    / gn,   g_gsvc_max_ms,    (long)g_gsvc_count,
             g_sslot22_sum_ms / ssn,  g_sslot22_max_ms, (long)g_sslot22_count,
             g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
@@ -3235,7 +3280,9 @@ static void profile_report_and_reset(void) {
             g_b388b60_sum_ms / b88n,  g_b388b60_max_ms, (long)g_b388b60_count,
             g_b3989a0_sum_ms / r9a0n, g_b3989a0_max_ms, (long)g_b3989a0_count,
             g_b38cb30_sum_ms / cb30n, g_b38cb30_max_ms, (long)g_b38cb30_count,
-            g_b37c050_sum_ms / c050n, g_b37c050_max_ms, (long)g_b37c050_count);
+            g_b37c050_sum_ms / c050n, g_b37c050_max_ms, (long)g_b37c050_count,
+            g_b381a90_sum_ms / a90n,  g_b381a90_max_ms, (long)g_b381a90_count,
+            g_b384740_sum_ms / t740n, g_b384740_max_ms, (long)g_b384740_count);
         log_write(ibuf);
     }
 
@@ -3295,6 +3342,8 @@ static void profile_report_and_reset(void) {
     g_b3989a0_count  = 0; g_b3989a0_sum_ms  = 0; g_b3989a0_max_ms  = 0;
     g_b38cb30_count  = 0; g_b38cb30_sum_ms  = 0; g_b38cb30_max_ms  = 0;
     g_b37c050_count  = 0; g_b37c050_sum_ms  = 0; g_b37c050_max_ms  = 0;
+    g_b381a90_count  = 0; g_b381a90_sum_ms  = 0; g_b381a90_max_ms  = 0;
+    g_b384740_count  = 0; g_b384740_sum_ms  = 0; g_b384740_max_ms  = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
