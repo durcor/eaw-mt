@@ -600,6 +600,62 @@ WinMain:865 → FUN_14028d400 (gsvc)
                          └─ O(N_entities) loop: FUN_140385190 per candidate
 ```
 
+### Fix B profiling — Phase 5 Step 15 (2026-04-26)
+
+Fix B (interval patch + FUN_140385190 budget cap) was built and profiled.
+`FUN_140385190` and `FUN_140384850` were both hooked inside `FUN_140387400`
+to determine which callee carries the stall.
+
+**Results (3-window dataset, non-Lua stall windows):**
+
+| hook | avg | max | n (per 300f) |
+|---|---|---|---|
+| `b387400(387400)` | 0.34ms | **1,072ms** | 12,090 |
+| `b385190(385190)` | 0.00ms | 0.22ms | ~10,500 | ← search loop candidate check — eliminated |
+| `b384850(384850)` | 0.00ms | **0.01ms** | ~8,700 | ← "can reach current target?" — eliminated |
+| `b3825b0(3825b0)` | 1.10ms | **1,072ms** | ~3,750 | ← **matches b387400_max** |
+
+`b3825b0_max = 1,072.79ms` vs `b387400_max = 1,072.80ms` (Δ = 0.01ms) — conclusive.
+
+**Fix B2 (FUN_140385190 cap) was misdirected:** `b385190_capped = 0` in every window.
+The search loop averages <1 FUN_140385190 call per b387400 invocation and max 0.22ms —
+it was never the stall source.  Fix B2 had zero effect.
+
+**Fix B1 (interval 0→60) effect unknown:** stall magnitude unchanged, but the stall
+source is now confirmed to be FUN_1403825b0, not the search loop, so the interval
+patch may have had no relevance.
+
+### FUN_1403825b0 confirmed as true terminal stall carrier — Phase 5 Step 15 (2026-04-26)
+
+**`FUN_1403825b0` (RVA `0x3825b0`) is the true terminal stall carrier inside
+`FUN_140387400`.**
+
+Called ~3,750 times per 300-frame window (~31% of b387400 invocations).  Four call
+sites in FUN_140387400:
+- Lines 171, 176: formation/hyperspacing path — updates path to cached target
+  (`param_1+0xc0`) every tick for entities in formation or hyperspace
+- Lines 232, 295: post-search path — called after the O(N) search finds a new
+  opportunity target
+
+The high call count (3,750/300 frames = ~12.5/frame) confirms lines 171/176
+dominate — this is not just new-target acquisition, it's a per-tick path
+update for formation/hyperspacing entities.
+
+### Updated attribution chain (Phase 5 Step 15 final)
+
+```
+WinMain:865 → FUN_14028d400 (gsvc)
+  → vtable[22] → SpaceModeClass FUN_1404d95a0
+    → JMP FUN_1403639d0 (tail22)
+      → FUN_1402be640 (×2, per manager)
+        → FUN_1403a6b80 (per-entity)
+          ├─ ServiceRate gate → Pump_Threads → Lua AI       [Source A — 22,310ms]
+          └─ FUN_1403a76b0 (movement)
+               → FUN_140387010 (per-component)
+                    └─ FUN_140387400 (path-following / opp-target)
+                         └─ FUN_1403825b0 (path update)   [Source B — 1,072ms]
+```
+
 ### Fix scope — both sources identified
 
 **Class-B hitch Source A — Lua AI (Pump_Threads):**
@@ -607,13 +663,11 @@ WinMain:865 → FUN_14028d400 (gsvc)
 - Fix A1: offload entity AI to worker thread (Lua thread-safety required)
 - Fix A2: time-bound per-entity AI execution, yield after N ms
 
-**Class-B hitch Source B — Opportunity target acquisition (FUN_140387400):**
-- Root: O(N_entities) scan calling `FUN_140385190` (reachability check) per candidate, fired when target cleared or periodic timer expires, for every movement component in motion state 5–10
-- Fix B1: **time-bound the search loop** — break after N ms, resume next tick from current index (stored in component state)
-- Fix B2: **spatial pre-filter** — query a spatial hash/bounding-volume hierarchy for nearby entities before full reachability check; eliminates most candidates cheaply
-- Fix B3: **reduce search frequency** — increase `DAT_140b0a340` threshold (trivially patchable via hook, changes gameplay — units find targets less often)
-- Fix B4: **cache search state** — store the last-checked index in the component so the O(N) scan is amortized over multiple ticks (N/tick_budget entities per frame)
+**Class-B hitch Source B — Path update (FUN_1403825b0):**
+- Root: per-tick path update for formation/hyperspacing entities; pathfinding call
+  inside FUN_1403825b0 occasionally takes 1+ seconds
+- Fix scope requires decompile of FUN_1403825b0 to identify the blocking callee
 
-Fix B1 or B4 is recommended as it doesn't change gameplay semantics.  Fix B3 is the quickest to implement and test.
-
-TODO: Decompile `FUN_140385190` and `FUN_1402824f0` to confirm the reachability check cost, then implement Fix B1 or B4.
+TODO: Decompile `FUN_1403825b0` (RVA `0x3825b0`) to identify the pathfinding
+callee responsible for the 1,072ms spike.  Then hook sub-callees to confirm
+before designing a fix.
