@@ -721,12 +721,41 @@ Deep path (lines 163–503, only when movement type found):
   FUN_140382510 — acquire new target
 ```
 
-**Stall callee inside FUN_1403825b0 is unconfirmed.** The prime suspects are
-`FUN_14029f810` (RVA `0x29f810`, movement order + pathfinding submission),
-`FUN_140399450` (attack-position compute), and `FUN_140381dc0` (path direction
-compute).  `FUN_140385e70` gates the entire deep block so it is also suspect if
-it performs a physics/ray query.
+### FUN_14029f810 confirmed as terminal stall carrier — Phase 5 Step 16 (2026-04-26)
 
-TODO: Add E8 hooks inside FUN_1403825b0 (4034 bytes) for `FUN_14029f810`,
-`FUN_140399450`, `FUN_140381dc0`, and `FUN_140385e70` to isolate the stall
-callee.  The one whose max matches `b3825b0_max ≈ 1,072ms` is the fix target.
+E8 hooks inside FUN_1403825b0 (4034 bytes) for all four suspects:
+
+| hook | avg | max | n (per 300f) |
+|---|---|---|---|
+| `b385e70(385e70)` | 0.00ms | **0.00ms** | 27 | ← eliminated |
+| `b399450(399450)` | 0.00ms | **0.00ms** | 27 | ← eliminated |
+| `b381dc0(381dc0)` | 0.00ms | **0.00ms** | 5  | ← eliminated |
+| `b29f810(29f810)` | 434.95ms | **1,094.33ms** | 5 | ← matches b3825b0_max (Δ=0.02ms) |
+
+`b29f810_max = 1,094.33ms` vs `b3825b0_max = 1,094.35ms` — conclusive match.
+
+**`FUN_14029f810` (RVA `0x29f810`) is the true terminal stall carrier.**
+
+Called only 5 times per 300 frames (18% of b3825b0 invocations — only when all
+guards pass AND the formation position gate AND the distance/reachability checks
+succeed).  Average per call: 435ms.  The other three callees are fast and
+eliminated as stall sources.
+
+### Updated attribution chain (Phase 5 Step 16 final)
+
+```
+WinMain:865 → FUN_14028d400 (gsvc)
+  → vtable[22] → SpaceModeClass FUN_1404d95a0
+    → JMP FUN_1403639d0 (tail22)
+      → FUN_1402be640 (×2, per manager)
+        → FUN_1403a6b80 (per-entity)
+          ├─ ServiceRate gate → Pump_Threads → Lua AI         [Source A — 22,310ms]
+          └─ FUN_1403a76b0 (movement)
+               → FUN_140387010 (per-component)
+                    └─ FUN_140387400 (path-following / opp-target)
+                         └─ FUN_1403825b0 (validate + submit movement cmd)
+                              └─ FUN_14029f810 (nav order + pathfinding) [Source B — 1,094ms]
+```
+
+TODO: Decompile `FUN_14029f810` (RVA `0x29f810`) to identify what pathfinding
+operation causes the 1,094ms stall and design a targeted fix.
