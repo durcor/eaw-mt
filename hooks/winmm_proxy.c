@@ -2564,6 +2564,94 @@ static BOOL install_b388b60_subcallee_hooks(void)
 #define B37C050_RVA        0x37c050ULL
 #define B381A90_RVA        0x381a90ULL
 #define B384740_RVA        0x384740ULL
+#define B3727A0_RVA        0x3727a0ULL
+#define B3A4820_RVA        0x3a4820ULL
+#define B3A8710_RVA        0x3a8710ULL
+#define B3AC530_RVA        0x3ac530ULL
+#define B38CF30_RVA        0x38cf30ULL
+#define B3A59F0_RVA        0x3a59f0ULL
+
+/* FUN_1403727a0 — unconditional first call in b3989a0 (line 119).
+ * 2 args: (*(param_1+0x298), 0). Returns undefined4 stored at param_1+0x5c. */
+typedef int64_t (*B3727a0Fn)(int64_t, int64_t);
+static B3727a0Fn g_b3727a0_orig  = NULL;
+static LONG      g_b3727a0_count = 0;
+static double    g_b3727a0_sum_ms = 0, g_b3727a0_max_ms = 0;
+static int64_t b3727a0_hook(int64_t a, int64_t b) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b3727a0_orig(a, b); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b3727a0_sum_ms += ms; if (ms > g_b3727a0_max_ms) g_b3727a0_max_ms = ms;
+    g_b3727a0_count++; return r;
+}
+
+/* FUN_1403a4820 — init call gated by DAT_140b2c37b==0 (line 152). 1 arg. */
+typedef void (*B3a4820Fn)(int64_t);
+static B3a4820Fn g_b3a4820_orig  = NULL;
+static LONG      g_b3a4820_count = 0;
+static double    g_b3a4820_sum_ms = 0, g_b3a4820_max_ms = 0;
+static void b3a4820_hook(int64_t a) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    g_b3a4820_orig(a); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b3a4820_sum_ms += ms; if (ms > g_b3a4820_max_ms) g_b3a4820_max_ms = ms;
+    g_b3a4820_count++;
+}
+
+/* FUN_1403a8710 — movement-AI setup gated by param_1+0x2a0 != 0 (line 155).
+ * 2 args: (move_order, move_order+0x84). Prime suspect for the ~1058ms stall. */
+typedef void (*B3a8710Fn)(int64_t, int64_t);
+static B3a8710Fn g_b3a8710_orig  = NULL;
+static LONG      g_b3a8710_count = 0;
+static double    g_b3a8710_sum_ms = 0, g_b3a8710_max_ms = 0;
+static void b3a8710_hook(int64_t a, int64_t b) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    g_b3a8710_orig(a, b); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b3a8710_sum_ms += ms; if (ms > g_b3a8710_max_ms) g_b3a8710_max_ms = ms;
+    g_b3a8710_count++;
+}
+
+/* FUN_1403ac530 — orientation/constraint setup, 2 call sites (lines 166, 173).
+ * 2 args: (move_order, bool_flag). */
+typedef void (*B3ac530Fn)(int64_t, int64_t);
+static B3ac530Fn g_b3ac530_orig  = NULL;
+static LONG      g_b3ac530_count = 0;
+static double    g_b3ac530_sum_ms = 0, g_b3ac530_max_ms = 0;
+static void b3ac530_hook(int64_t a, int64_t b) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    g_b3ac530_orig(a, b); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b3ac530_sum_ms += ms; if (ms > g_b3ac530_max_ms) g_b3ac530_max_ms = ms;
+    g_b3ac530_count++;
+}
+
+/* FUN_14038cf30 — conditional call at line 208 (3 args). */
+typedef void (*B38cf30Fn)(int64_t, int64_t, int64_t);
+static B38cf30Fn g_b38cf30_orig  = NULL;
+static LONG      g_b38cf30_count = 0;
+static double    g_b38cf30_sum_ms = 0, g_b38cf30_max_ms = 0;
+static void b38cf30_hook(int64_t a, int64_t b, int64_t c) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    g_b38cf30_orig(a, b, c); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b38cf30_sum_ms += ms; if (ms > g_b38cf30_max_ms) g_b38cf30_max_ms = ms;
+    g_b38cf30_count++;
+}
+
+/* FUN_1403a59f0 — conditional at line 194. Ghidra shows 0 args at call site but
+ * function decompile has (longlong *param_1, char param_2). Pass both through. */
+typedef void (*B3a59f0Fn)(int64_t, int64_t);
+static B3a59f0Fn g_b3a59f0_orig  = NULL;
+static LONG      g_b3a59f0_count = 0;
+static double    g_b3a59f0_sum_ms = 0, g_b3a59f0_max_ms = 0;
+static void b3a59f0_hook(int64_t a, int64_t b) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    g_b3a59f0_orig(a, b); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b3a59f0_sum_ms += ms; if (ms > g_b3a59f0_max_ms) g_b3a59f0_max_ms = ms;
+    g_b3a59f0_count++;
+}
 
 typedef void (*B38cb30Fn)(int64_t, int64_t, int64_t, int64_t);
 static B38cb30Fn g_b38cb30_orig  = NULL;
@@ -2633,23 +2721,42 @@ static BOOL install_b3989a0_subcallee_hooks(void)
     BYTE *fn_b37c050 = (BYTE *)exe + B37C050_RVA;
     BYTE *fn_b381a90 = (BYTE *)exe + B381A90_RVA;
     BYTE *fn_b384740 = (BYTE *)exe + B384740_RVA;
+    BYTE *fn_b3727a0 = (BYTE *)exe + B3727A0_RVA;
+    BYTE *fn_b3a4820 = (BYTE *)exe + B3A4820_RVA;
+    BYTE *fn_b3a8710 = (BYTE *)exe + B3A8710_RVA;
+    BYTE *fn_b3ac530 = (BYTE *)exe + B3AC530_RVA;
+    BYTE *fn_b38cf30 = (BYTE *)exe + B38CF30_RVA;
+    BYTE *fn_b3a59f0 = (BYTE *)exe + B3A59F0_RVA;
 
     g_b38cb30_orig = (B38cb30Fn)fn_b38cb30;
     g_b37c050_orig = (B37c050Fn)fn_b37c050;
     g_b381a90_orig = (B381a90Fn)fn_b381a90;
     g_b384740_orig = (B384740Fn)fn_b384740;
+    g_b3727a0_orig = (B3727a0Fn)fn_b3727a0;
+    g_b3a4820_orig = (B3a4820Fn)fn_b3a4820;
+    g_b3a8710_orig = (B3a8710Fn)fn_b3a8710;
+    g_b3ac530_orig = (B3ac530Fn)fn_b3ac530;
+    g_b38cf30_orig = (B38cf30Fn)fn_b38cf30;
+    g_b3a59f0_orig = (B3a59f0Fn)fn_b3a59f0;
 
-    BYTE *stubs = alloc_near(fn_b3989a0, 14 * 4);
+    BYTE *stubs = alloc_near(fn_b3989a0, 14 * 10);
     if (!stubs) {
         log_write("[eaw-mt] WARN: alloc_near failed for b3989a0 sub stubs\n");
         return FALSE;
     }
-    write_abs_jmp(stubs + 0,  (uint64_t)b38cb30_hook);
-    write_abs_jmp(stubs + 14, (uint64_t)b37c050_hook);
-    write_abs_jmp(stubs + 28, (uint64_t)b381a90_hook);
-    write_abs_jmp(stubs + 42, (uint64_t)b384740_hook);
+    write_abs_jmp(stubs +   0, (uint64_t)b38cb30_hook);
+    write_abs_jmp(stubs +  14, (uint64_t)b37c050_hook);
+    write_abs_jmp(stubs +  28, (uint64_t)b381a90_hook);
+    write_abs_jmp(stubs +  42, (uint64_t)b384740_hook);
+    write_abs_jmp(stubs +  56, (uint64_t)b3727a0_hook);
+    write_abs_jmp(stubs +  70, (uint64_t)b3a4820_hook);
+    write_abs_jmp(stubs +  84, (uint64_t)b3a8710_hook);
+    write_abs_jmp(stubs +  98, (uint64_t)b3ac530_hook);
+    write_abs_jmp(stubs + 112, (uint64_t)b38cf30_hook);
+    write_abs_jmp(stubs + 126, (uint64_t)b3a59f0_hook);
 
     int n38cb30 = 0, n37c050 = 0, n381a90 = 0, n384740 = 0;
+    int n3727a0 = 0, n3a4820 = 0, n3a8710 = 0, n3ac530 = 0, n38cf30 = 0, n3a59f0 = 0;
     DWORD old_prot;
     for (int i = 0; i <= B3989A0_BODY_SIZE - 5; i++) {
         if (fn_b3989a0[i] != 0xE8) continue;
@@ -2657,10 +2764,16 @@ static BOOL install_b3989a0_subcallee_hooks(void)
         memcpy(&rel, fn_b3989a0 + i + 1, 4);
         BYTE *target = fn_b3989a0 + i + 5 + rel;
         BYTE *stub = NULL; int *cnt = NULL;
-        if      (target == fn_b38cb30) { stub = stubs + 0;  cnt = &n38cb30; }
-        else if (target == fn_b37c050) { stub = stubs + 14; cnt = &n37c050; }
-        else if (target == fn_b381a90) { stub = stubs + 28; cnt = &n381a90; }
-        else if (target == fn_b384740) { stub = stubs + 42; cnt = &n384740; }
+        if      (target == fn_b38cb30) { stub = stubs +   0; cnt = &n38cb30; }
+        else if (target == fn_b37c050) { stub = stubs +  14; cnt = &n37c050; }
+        else if (target == fn_b381a90) { stub = stubs +  28; cnt = &n381a90; }
+        else if (target == fn_b384740) { stub = stubs +  42; cnt = &n384740; }
+        else if (target == fn_b3727a0) { stub = stubs +  56; cnt = &n3727a0; }
+        else if (target == fn_b3a4820) { stub = stubs +  70; cnt = &n3a4820; }
+        else if (target == fn_b3a8710) { stub = stubs +  84; cnt = &n3a8710; }
+        else if (target == fn_b3ac530) { stub = stubs +  98; cnt = &n3ac530; }
+        else if (target == fn_b38cf30) { stub = stubs + 112; cnt = &n38cf30; }
+        else if (target == fn_b3a59f0) { stub = stubs + 126; cnt = &n3a59f0; }
         else continue;
         int32_t new_rel = (int32_t)(stub - (fn_b3989a0 + i + 5));
         VirtualProtect(fn_b3989a0 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old_prot);
@@ -2669,11 +2782,14 @@ static BOOL install_b3989a0_subcallee_hooks(void)
         FlushInstructionCache(GetCurrentProcess(), fn_b3989a0 + i, 5);
         (*cnt)++;
     }
-    char m[128];
-    sprintf(m, "[eaw-mt] b3989a0_sub: b38cb30=%d b37c050=%d b381a90=%d b384740=%d site(s) patched in 3989a0\n",
-            n38cb30, n37c050, n381a90, n384740);
+    char m[256];
+    sprintf(m, "[eaw-mt] b3989a0_sub: b38cb30=%d b37c050=%d b381a90=%d b384740=%d"
+               " b3727a0=%d b3a4820=%d b3a8710=%d b3ac530=%d b38cf30=%d b3a59f0=%d patched\n",
+            n38cb30, n37c050, n381a90, n384740,
+            n3727a0, n3a4820, n3a8710, n3ac530, n38cf30, n3a59f0);
     log_write(m);
-    return (n38cb30 + n37c050 + n381a90 + n384740) > 0;
+    return (n38cb30 + n37c050 + n381a90 + n384740 +
+            n3727a0 + n3a4820 + n3a8710 + n3ac530 + n38cf30 + n3a59f0) > 0;
 }
 
 /* =========================================================================
@@ -3159,7 +3275,7 @@ static void profile_report_and_reset(void) {
 
     /* Game-service + slot-22 breakdown. */
     {
-        char ibuf[2600];
+        char ibuf[3200];
         double gn   = (double)(g_gsvc_count    ? g_gsvc_count    : 1);
         double g22  = (double)(g_gslot22_count ? g_gslot22_count : 1);
         double a4n  = (double)(g_ga4d0_count   ? g_ga4d0_count   : 1);
@@ -3200,6 +3316,12 @@ static void profile_report_and_reset(void) {
         double c050n = (double)(g_b37c050_count  ? g_b37c050_count  : 1);
         double a90n  = (double)(g_b381a90_count  ? g_b381a90_count  : 1);
         double t740n = (double)(g_b384740_count  ? g_b384740_count  : 1);
+        double a7a0n = (double)(g_b3727a0_count  ? g_b3727a0_count  : 1);
+        double a820n = (double)(g_b3a4820_count  ? g_b3a4820_count  : 1);
+        double a710n = (double)(g_b3a8710_count  ? g_b3a8710_count  : 1);
+        double ac30n = (double)(g_b3ac530_count  ? g_b3ac530_count  : 1);
+        double cf30n = (double)(g_b38cf30_count  ? g_b38cf30_count  : 1);
+        double f0n   = (double)(g_b3a59f0_count  ? g_b3a59f0_count  : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -3241,7 +3363,13 @@ static void profile_report_and_reset(void) {
             "  b38cb30(38cb30): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b37c050(37c050): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b381a90(381a90): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  b384740(384740): avg=%.2f max=%.2f ms (n=%ld)\n",
+            "  b384740(384740): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b3727a0(3727a0): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b3a4820(3a4820): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b3a8710(3a8710): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b3ac530(3ac530): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b38cf30(38cf30): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b3a59f0(3a59f0): avg=%.2f max=%.2f ms (n=%ld)\n",
             g_gsvc_sum_ms    / gn,   g_gsvc_max_ms,    (long)g_gsvc_count,
             g_sslot22_sum_ms / ssn,  g_sslot22_max_ms, (long)g_sslot22_count,
             g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
@@ -3282,7 +3410,13 @@ static void profile_report_and_reset(void) {
             g_b38cb30_sum_ms / cb30n, g_b38cb30_max_ms, (long)g_b38cb30_count,
             g_b37c050_sum_ms / c050n, g_b37c050_max_ms, (long)g_b37c050_count,
             g_b381a90_sum_ms / a90n,  g_b381a90_max_ms, (long)g_b381a90_count,
-            g_b384740_sum_ms / t740n, g_b384740_max_ms, (long)g_b384740_count);
+            g_b384740_sum_ms / t740n, g_b384740_max_ms, (long)g_b384740_count,
+            g_b3727a0_sum_ms / a7a0n, g_b3727a0_max_ms, (long)g_b3727a0_count,
+            g_b3a4820_sum_ms / a820n, g_b3a4820_max_ms, (long)g_b3a4820_count,
+            g_b3a8710_sum_ms / a710n, g_b3a8710_max_ms, (long)g_b3a8710_count,
+            g_b3ac530_sum_ms / ac30n, g_b3ac530_max_ms, (long)g_b3ac530_count,
+            g_b38cf30_sum_ms / cf30n, g_b38cf30_max_ms, (long)g_b38cf30_count,
+            g_b3a59f0_sum_ms / f0n,   g_b3a59f0_max_ms, (long)g_b3a59f0_count);
         log_write(ibuf);
     }
 
@@ -3344,6 +3478,12 @@ static void profile_report_and_reset(void) {
     g_b37c050_count  = 0; g_b37c050_sum_ms  = 0; g_b37c050_max_ms  = 0;
     g_b381a90_count  = 0; g_b381a90_sum_ms  = 0; g_b381a90_max_ms  = 0;
     g_b384740_count  = 0; g_b384740_sum_ms  = 0; g_b384740_max_ms  = 0;
+    g_b3727a0_count  = 0; g_b3727a0_sum_ms  = 0; g_b3727a0_max_ms  = 0;
+    g_b3a4820_count  = 0; g_b3a4820_sum_ms  = 0; g_b3a4820_max_ms  = 0;
+    g_b3a8710_count  = 0; g_b3a8710_sum_ms  = 0; g_b3a8710_max_ms  = 0;
+    g_b3ac530_count  = 0; g_b3ac530_sum_ms  = 0; g_b3ac530_max_ms  = 0;
+    g_b38cf30_count  = 0; g_b38cf30_sum_ms  = 0; g_b38cf30_max_ms  = 0;
+    g_b3a59f0_count  = 0; g_b3a59f0_sum_ms  = 0; g_b3a59f0_max_ms  = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
