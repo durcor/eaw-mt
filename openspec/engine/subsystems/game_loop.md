@@ -754,7 +754,9 @@ WinMain:865 → FUN_14028d400 (gsvc)
                → FUN_140387010 (per-component)
                     └─ FUN_140387400 (path-following / opp-target)
                          └─ FUN_1403825b0 (validate + submit movement cmd)
-                              └─ FUN_14029f810 (nav order + pathfinding) [Source B — 1,094ms]
+                              └─ FUN_14029f810 (movement order creation)  [Source B — 1,094ms]
+                                   └─ FUN_140388b60 (GameObjectClass ctor)
+                                        └─ FUN_1403989a0 (spatial/path registration) ← PRIME SUSPECT
 ```
 
 ### FUN_14029f810 — Structure (decompiled, Phase 5 Step 16)
@@ -765,7 +767,6 @@ WinMain:865 → FUN_14028d400 (gsvc)
 Line 38:  lVar3 = FUN_140769c58(0x8a0)      — pool-alloc 2208-byte movement order struct
 Line 43:  plVar4 = FUN_140388b60(lVar3, nav_mgr, movement_type, team_id,
                                   approach_dir, target_pos, formation_mode, flag)
-                                             — PATHFINDING SOLVER  ← PRIME SUSPECT
 Lines 49–155: FUN_14020a9b0 × N            — queue/list insertions (entity slots)
 Lines 96–107: loop over nav_mgr entity list — FUN_14037cab0 per entry (bounded)
 Lines 168–176: weapon slot loop            — fast
@@ -774,11 +775,37 @@ Lines 228–241: O(N_entities) loop          — FUN_1402823e0(owner, entity) pe
 Lines 250–265: movement component updates  — FUN_1403935b0, FUN_1403a8ad0, etc.
 ```
 
-`FUN_140388b60` (RVA `0x388b60`) takes the allocated 2208-byte struct plus all
-movement parameters from the nav manager and produces a fully initialized movement
-order.  This is almost certainly the synchronous pathfinding call.  With n=5 per
-300 frames averaging 435ms, the path compute is the stall source — not the
-O(N) notification loop (which is gated and fast at these call counts).
+### Phase 5 Step 17 — FUN_140388b60 decompiled: GameObjectClass ctor, not pathfinding
 
-TODO: Decompile `FUN_140388b60` (RVA `0x388b60`) to identify the pathfinding
-algorithm and determine whether it can be bounded, cached, or offloaded.
+Decompile of `FUN_140388b60` (RVA `0x388b60`, 1998 bytes) shows it is a
+**`GameObjectClass` constructor / initializer** for the 2208-byte movement order
+struct, **not** a pathfinding solver.  It:
+
+1. Sets vtable pointers: `RootClass`, `MultiLinkedListMember`, `CullObjectClass`,
+   `GameObjectClass` — the struct has multiple inheritance.
+2. Zeroes ~130 fields in a do-loop and scattered explicit writes.
+3. Copies position/orientation vectors from input params into struct fields.
+4. Calls `FUN_1403989a0(param_1, 0, 1)` (line 188) — the only non-trivial call.
+   This is almost certainly "register this movement order with the movement /
+   pathfinding system" (spatial index insertion, or synchronous path solve).
+5. The two waypoint-callback loops (lines 192–225 and 260–265) are gated by
+   `*(char *)(param_1+0x51)` which is initialized to 0x00 (the short write
+   `*(undefined2 *)(param_1+0x51) = 0x100` puts 0x00 in the low byte on LE),
+   so they are **always skipped** at this call site.
+
+The stall therefore lies in `FUN_1403989a0` (RVA `0x3989a0`) rather than in the
+field-initialization work.  Two new hooks are installed (Phase 5 Step 17):
+
+- **`b388b60`** — E8 scan in `FUN_14029f810` body (2201 bytes): measures the
+  entire ctor (field init + `FUN_1403989a0` call).
+- **`b3989a0`** — E8 scan in `FUN_140388b60` body (1998 bytes): measures only
+  `FUN_1403989a0`, isolating whether the stall is the spatial/path insert or
+  the field-init preamble.
+
+Expected outcome: `b388b60_max ≈ b29f810_max ≈ 1094ms` (field init is trivial
+memory writes), and `b3989a0_max ≈ b388b60_max` (the insert is the work).
+
+TODO: Collect profiling data for `b388b60` and `b3989a0` to confirm.
+      Then decompile `FUN_1403989a0` (RVA `0x3989a0`) to identify what
+      pathfinding / spatial operation it performs and determine whether it
+      can be bounded, cached, deferred, or offloaded.
