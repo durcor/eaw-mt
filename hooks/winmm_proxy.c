@@ -1999,8 +1999,12 @@ static B387400Fn g_b387400_orig   = NULL;
 static LONG      g_b387400_count  = 0;
 static double    g_b387400_sum_ms = 0, g_b387400_max_ms = 0;
 
+/* g_opp_per_call declared here so b387400_hook can reset it before calling orig */
+static volatile int g_opp_per_call = 0;
+
 static void b387400_hook(int64_t a, int32_t b)
 {
+    g_opp_per_call = 0;
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     g_b387400_orig(a, b);
@@ -2101,6 +2105,322 @@ static BOOL install_b87010_subcallee_hooks(void)
             n387400, n385cf0, n381ff0);
     log_write(m);
     return (n387400 + n385cf0 + n381ff0) > 0;
+}
+
+/* =========================================================================
+ * Fix B — Opportunity target stall (Phase 5, 2026-04-26)
+ *
+ * Root cause: DAT_140b0a340 = 0.0f → periodic search fires EVERY tick.
+ * FUN_140387400 iterates all N entities calling FUN_140385190 per candidate
+ * → O(N) per tick per component → 1,000ms stall.
+ *
+ * Fix B1: Set DAT_140b0a340 = 60.0f → threshold = 30 ticks (≈1s at 30fps).
+ *         Reduces periodic search frequency from every-tick to every-30-ticks.
+ *
+ * Fix B2 (inner loop cap): E8 scan inside FUN_140387400 (1904 bytes) for
+ *         calls to FUN_140385190 (RVA 0x385190). Budget hook: allow at most
+ *         OPP_SEARCH_CAP calls to FUN_140385190 per b387400 invocation.
+ *         b387400_hook resets the per-call counter before each call to orig.
+ *         FUN_140385190 returns NULL when budget exhausted → loop stops early.
+ *
+ * Both fixes together: periodic path fires 30x less often AND is capped at
+ * OPP_SEARCH_CAP candidates even when it does fire.  The target-cleared path
+ * (bVar3=true) is also capped by Fix B2.
+ * ========================================================================= */
+#define OPP_INTERVAL_RVA   0xb0a340ULL   /* DAT_140b0a340: opp-target interval float */
+#define OPP_INTERVAL_NEW   60.0f         /* new value: threshold = 60*0.5 = 30 ticks */
+#define B387400_BODY_SIZE  1904          /* FUN_140387400 body size for E8 scan */
+#define B385190_RVA        0x385190ULL   /* FUN_140385190: per-candidate reachability */
+#define OPP_SEARCH_CAP     25            /* max FUN_140385190 calls per b387400 call */
+
+typedef int64_t * (*B385190Fn)(int64_t, int64_t, float *);
+static B385190Fn g_b385190_orig      = NULL;
+static LONG      g_b385190_count     = 0;   /* total calls (budget-allowed) */
+static LONG      g_b385190_capped    = 0;   /* calls that hit the budget cap */
+static double    g_b385190_sum_ms    = 0, g_b385190_max_ms = 0;
+
+static int64_t * b385190_hook(int64_t component, int64_t candidate, float *score)
+{
+    if (g_opp_per_call >= OPP_SEARCH_CAP) {
+        InterlockedIncrement(&g_b385190_capped);
+        return (int64_t *)0;  /* budget exhausted — short-circuit the search */
+    }
+    g_opp_per_call++;
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    int64_t *r = g_b385190_orig(component, candidate, score);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b385190_sum_ms += ms;
+    if (ms > g_b385190_max_ms) g_b385190_max_ms = ms;
+    InterlockedIncrement(&g_b385190_count);
+    return r;
+}
+
+static BOOL install_fix_b(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    /* Fix B1: patch opp-target search interval from 0.0f to OPP_INTERVAL_NEW */
+    float *interval = (float *)((BYTE *)exe + OPP_INTERVAL_RVA);
+    float old_val   = *interval;
+    DWORD old_prot;
+    VirtualProtect(interval, 4, PAGE_EXECUTE_READWRITE, &old_prot);
+    *interval = OPP_INTERVAL_NEW;
+    VirtualProtect(interval, 4, old_prot, &old_prot);
+    {
+        char m[96];
+        sprintf(m, "[eaw-mt] FIX-B1: opp interval %.1f->%.1f (threshold %.1f->%.1f ticks)\n",
+                old_val, OPP_INTERVAL_NEW, old_val * 0.5f, OPP_INTERVAL_NEW * 0.5f);
+        log_write(m);
+    }
+
+    /* Fix B2: hook FUN_140385190 call site(s) inside FUN_140387400 */
+    BYTE *fn_b387400 = (BYTE *)exe + B387400_RVA;
+    BYTE *fn_b385190 = (BYTE *)exe + B385190_RVA;
+    g_b385190_orig = (B385190Fn)fn_b385190;
+
+    BYTE *stub = alloc_near(fn_b387400, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for b385190 budget stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)b385190_hook);
+
+    int n = 0;
+    for (int i = 0; i <= B387400_BODY_SIZE - 5; i++) {
+        if (fn_b387400[i] != 0xE8) continue;
+        int32_t rel;
+        memcpy(&rel, fn_b387400 + i + 1, 4);
+        if (fn_b387400 + i + 5 + rel != fn_b385190) continue;
+        int32_t new_rel = (int32_t)(stub - (fn_b387400 + i + 5));
+        VirtualProtect(fn_b387400 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old_prot);
+        memcpy(fn_b387400 + i + 1, &new_rel, 4);
+        VirtualProtect(fn_b387400 + i + 1, 4, old_prot, &old_prot);
+        FlushInstructionCache(GetCurrentProcess(), fn_b387400 + i, 5);
+        n++;
+    }
+    {
+        char m[80];
+        sprintf(m, "[eaw-mt] FIX-B2: b385190 budget=%d, %d call site(s) patched in 387400\n",
+                OPP_SEARCH_CAP, n);
+        log_write(m);
+    }
+    return TRUE;
+}
+
+/* =========================================================================
+ * FUN_140387400 sub-callee hooks — isolating the true stall source
+ *
+ * Fix B profiling showed b385190_capped=0 in every window: FUN_140385190
+ * averages <1 call per b387400 invocation and max=0.30ms — the search loop
+ * is not the stall.  The 1067ms stall is in a different callee.
+ *
+ * Suspects from phase5_387400.c (both E8-scanned inside FUN_140387400):
+ *   FUN_140384850  (RVA 0x384850) — "can reach current target?" — lines 87,106
+ *   FUN_1403825b0  (RVA 0x3825b0) — "try to path to target"     — lines 171,176,232,295
+ * ========================================================================= */
+#define B384850_RVA  0x384850ULL
+#define B3825B0_RVA  0x3825b0ULL
+
+typedef char (*B384850Fn)(int64_t, int64_t, int64_t, int64_t);
+static B384850Fn g_b384850_orig  = NULL;
+static LONG      g_b384850_count = 0;
+static double    g_b384850_sum_ms = 0, g_b384850_max_ms = 0;
+
+static char b384850_hook(int64_t a, int64_t b, int64_t c, int64_t d)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    char r = g_b384850_orig(a, b, c, d);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b384850_sum_ms += ms;
+    if (ms > g_b384850_max_ms) g_b384850_max_ms = ms;
+    g_b384850_count++;
+    return r;
+}
+
+typedef char (*B3825b0Fn)(int64_t, int64_t, int64_t, int64_t);
+static B3825b0Fn g_b3825b0_orig  = NULL;
+static LONG      g_b3825b0_count = 0;
+static double    g_b3825b0_sum_ms = 0, g_b3825b0_max_ms = 0;
+
+static char b3825b0_hook(int64_t a, int64_t b, int64_t c, int64_t d)
+{
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    char r = g_b3825b0_orig(a, b, c, d);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b3825b0_sum_ms += ms;
+    if (ms > g_b3825b0_max_ms) g_b3825b0_max_ms = ms;
+    g_b3825b0_count++;
+    return r;
+}
+
+static BOOL install_b387400_subcallee_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_b387400 = (BYTE *)exe + B387400_RVA;
+    BYTE *fn_b384850 = (BYTE *)exe + B384850_RVA;
+    BYTE *fn_b3825b0 = (BYTE *)exe + B3825B0_RVA;
+
+    g_b384850_orig = (B384850Fn)fn_b384850;
+    g_b3825b0_orig = (B3825b0Fn)fn_b3825b0;
+
+    BYTE *stubs = alloc_near(fn_b387400, 14 * 2);
+    if (!stubs) {
+        log_write("[eaw-mt] WARN: alloc_near failed for b387400 sub-callee stubs\n");
+        return FALSE;
+    }
+    write_abs_jmp(stubs + 0,  (uint64_t)b384850_hook);
+    write_abs_jmp(stubs + 14, (uint64_t)b3825b0_hook);
+
+    int n384850 = 0, n3825b0 = 0;
+    DWORD old_prot;
+    for (int i = 0; i <= B387400_BODY_SIZE - 5; i++) {
+        if (fn_b387400[i] != 0xE8) continue;
+        int32_t rel;
+        memcpy(&rel, fn_b387400 + i + 1, 4);
+        BYTE *target = fn_b387400 + i + 5 + rel;
+        BYTE *stub = NULL;
+        int  *cnt  = NULL;
+        if      (target == fn_b384850) { stub = stubs + 0;  cnt = &n384850; }
+        else if (target == fn_b3825b0) { stub = stubs + 14; cnt = &n3825b0; }
+        else continue;
+        int32_t new_rel = (int32_t)(stub - (fn_b387400 + i + 5));
+        VirtualProtect(fn_b387400 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old_prot);
+        memcpy(fn_b387400 + i + 1, &new_rel, 4);
+        VirtualProtect(fn_b387400 + i + 1, 4, old_prot, &old_prot);
+        FlushInstructionCache(GetCurrentProcess(), fn_b387400 + i, 5);
+        (*cnt)++;
+    }
+    char m[96];
+    sprintf(m, "[eaw-mt] b387400_sub: b384850=%d b3825b0=%d site(s) patched in 387400\n",
+            n384850, n3825b0);
+    log_write(m);
+    return (n384850 + n3825b0) > 0;
+}
+
+/* =========================================================================
+ * FUN_1403825b0 sub-callee hooks — isolating the stall within b3825b0
+ *
+ * FUN_1403825b0 (4034 bytes) confirmed as terminal stall carrier (max 1,072ms).
+ * Four suspects from decompile, all inside the deep path:
+ *   FUN_140385e70  (RVA 0x385e70) — formation/physics position (gates block)
+ *   FUN_140399450  (RVA 0x399450) — attack-position / approach-vector calc
+ *   FUN_140381dc0  (RVA 0x381dc0) — path direction compute
+ *   FUN_14029f810  (RVA 0x29f810) — movement order + pathfinding submission
+ * ========================================================================= */
+#define B3825B0_BODY_SIZE  4034
+#define B385E70_RVA  0x385e70ULL
+#define B399450_RVA  0x399450ULL
+#define B381DC0_RVA  0x381dc0ULL
+#define B29F810_RVA  0x29f810ULL
+
+typedef int64_t (*B385e70Fn)(int64_t, int64_t, int64_t, int64_t);
+static B385e70Fn g_b385e70_orig  = NULL;
+static LONG      g_b385e70_count = 0;
+static double    g_b385e70_sum_ms = 0, g_b385e70_max_ms = 0;
+static int64_t b385e70_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b385e70_orig(a, b, c, d); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b385e70_sum_ms += ms; if (ms > g_b385e70_max_ms) g_b385e70_max_ms = ms;
+    g_b385e70_count++; return r;
+}
+
+typedef int64_t (*B399450Fn)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+static B399450Fn g_b399450_orig  = NULL;
+static LONG      g_b399450_count = 0;
+static double    g_b399450_sum_ms = 0, g_b399450_max_ms = 0;
+static int64_t b399450_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b399450_orig(a, b, c, d, e, f); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b399450_sum_ms += ms; if (ms > g_b399450_max_ms) g_b399450_max_ms = ms;
+    g_b399450_count++; return r;
+}
+
+typedef int64_t (*B381dc0Fn)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+static B381dc0Fn g_b381dc0_orig  = NULL;
+static LONG      g_b381dc0_count = 0;
+static double    g_b381dc0_sum_ms = 0, g_b381dc0_max_ms = 0;
+static int64_t b381dc0_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b381dc0_orig(a, b, c, d, e, f); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b381dc0_sum_ms += ms; if (ms > g_b381dc0_max_ms) g_b381dc0_max_ms = ms;
+    g_b381dc0_count++; return r;
+}
+
+typedef int64_t (*B29f810Fn)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+static B29f810Fn g_b29f810_orig  = NULL;
+static LONG      g_b29f810_count = 0;
+static double    g_b29f810_sum_ms = 0, g_b29f810_max_ms = 0;
+static int64_t b29f810_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b29f810_orig(a, b, c, d, e, f, g); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b29f810_sum_ms += ms; if (ms > g_b29f810_max_ms) g_b29f810_max_ms = ms;
+    g_b29f810_count++; return r;
+}
+
+static BOOL install_b3825b0_subcallee_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_b3825b0 = (BYTE *)exe + B3825B0_RVA;
+    BYTE *fn_b385e70 = (BYTE *)exe + B385E70_RVA;
+    BYTE *fn_b399450 = (BYTE *)exe + B399450_RVA;
+    BYTE *fn_b381dc0 = (BYTE *)exe + B381DC0_RVA;
+    BYTE *fn_b29f810 = (BYTE *)exe + B29F810_RVA;
+
+    g_b385e70_orig = (B385e70Fn)fn_b385e70;
+    g_b399450_orig = (B399450Fn)fn_b399450;
+    g_b381dc0_orig = (B381dc0Fn)fn_b381dc0;
+    g_b29f810_orig = (B29f810Fn)fn_b29f810;
+
+    BYTE *stubs = alloc_near(fn_b3825b0, 14 * 4);
+    if (!stubs) {
+        log_write("[eaw-mt] WARN: alloc_near failed for b3825b0 sub-callee stubs\n");
+        return FALSE;
+    }
+    write_abs_jmp(stubs + 0,  (uint64_t)b385e70_hook);
+    write_abs_jmp(stubs + 14, (uint64_t)b399450_hook);
+    write_abs_jmp(stubs + 28, (uint64_t)b381dc0_hook);
+    write_abs_jmp(stubs + 42, (uint64_t)b29f810_hook);
+
+    int n385e70 = 0, n399450 = 0, n381dc0 = 0, n29f810 = 0;
+    DWORD old_prot;
+    for (int i = 0; i <= B3825B0_BODY_SIZE - 5; i++) {
+        if (fn_b3825b0[i] != 0xE8) continue;
+        int32_t rel;
+        memcpy(&rel, fn_b3825b0 + i + 1, 4);
+        BYTE *target = fn_b3825b0 + i + 5 + rel;
+        BYTE *stub = NULL; int *cnt = NULL;
+        if      (target == fn_b385e70) { stub = stubs + 0;  cnt = &n385e70; }
+        else if (target == fn_b399450) { stub = stubs + 14; cnt = &n399450; }
+        else if (target == fn_b381dc0) { stub = stubs + 28; cnt = &n381dc0; }
+        else if (target == fn_b29f810) { stub = stubs + 42; cnt = &n29f810; }
+        else continue;
+        int32_t new_rel = (int32_t)(stub - (fn_b3825b0 + i + 5));
+        VirtualProtect(fn_b3825b0 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old_prot);
+        memcpy(fn_b3825b0 + i + 1, &new_rel, 4);
+        VirtualProtect(fn_b3825b0 + i + 1, 4, old_prot, &old_prot);
+        FlushInstructionCache(GetCurrentProcess(), fn_b3825b0 + i, 5);
+        (*cnt)++;
+    }
+    char m[128];
+    sprintf(m, "[eaw-mt] b3825b0_sub: b385e70=%d b399450=%d b381dc0=%d b29f810=%d site(s) patched\n",
+            n385e70, n399450, n381dc0, n29f810);
+    log_write(m);
+    return (n385e70 + n399450 + n381dc0 + n29f810) > 0;
 }
 
 /* =========================================================================
@@ -2586,7 +2906,7 @@ static void profile_report_and_reset(void) {
 
     /* Game-service + slot-22 breakdown. */
     {
-        char ibuf[2064];
+        char ibuf[2600];
         double gn   = (double)(g_gsvc_count    ? g_gsvc_count    : 1);
         double g22  = (double)(g_gslot22_count ? g_gslot22_count : 1);
         double a4n  = (double)(g_ga4d0_count   ? g_ga4d0_count   : 1);
@@ -2614,6 +2934,13 @@ static void profile_report_and_reset(void) {
         double b74n  = (double)(g_b387400_count  ? g_b387400_count  : 1);
         double b5n   = (double)(g_b385cf0_count  ? g_b385cf0_count  : 1);
         double b1n   = (double)(g_b381ff0_count  ? g_b381ff0_count  : 1);
+        double b19n  = (double)(g_b385190_count  ? g_b385190_count  : 1);
+        double b850n = (double)(g_b384850_count  ? g_b384850_count  : 1);
+        double b5b0n = (double)(g_b3825b0_count  ? g_b3825b0_count  : 1);
+        double be70n = (double)(g_b385e70_count  ? g_b385e70_count  : 1);
+        double r450n = (double)(g_b399450_count  ? g_b399450_count  : 1);
+        double d1c0n = (double)(g_b381dc0_count  ? g_b381dc0_count  : 1);
+        double f810n = (double)(g_b29f810_count  ? g_b29f810_count  : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -2641,7 +2968,15 @@ static void profile_report_and_reset(void) {
             "  gslot22(45e030): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  tail22(3639d0):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sigdisp(28bf10): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  bsel(343b90):    avg=%.2f max=%.2f ms (n=%ld)\n",
+            "  bsel(343b90):    avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b385190(385190): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b385190_capped:  %ld\n"
+            "  b384850(384850): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b3825b0(3825b0): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b385e70(385e70): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b399450(399450): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b381dc0(381dc0): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b29f810(29f810): avg=%.2f max=%.2f ms (n=%ld)\n",
             g_gsvc_sum_ms    / gn,   g_gsvc_max_ms,    (long)g_gsvc_count,
             g_sslot22_sum_ms / ssn,  g_sslot22_max_ms, (long)g_sslot22_count,
             g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
@@ -2668,7 +3003,15 @@ static void profile_report_and_reset(void) {
             g_gslot22_sum_ms / g22,  g_gslot22_max_ms, (long)g_gslot22_count,
             g_tail22_sum_ms  / tn,   g_tail22_max_ms,  (long)g_tail22_count,
             g_sigdisp_sum_ms / sdn,  g_sigdisp_max_ms, (long)g_sigdisp_count,
-            g_bsel_sum_ms    / bn,   g_bsel_max_ms,    (long)g_bsel_count);
+            g_bsel_sum_ms    / bn,   g_bsel_max_ms,    (long)g_bsel_count,
+            g_b385190_sum_ms / b19n, g_b385190_max_ms, (long)g_b385190_count,
+            (long)g_b385190_capped,
+            g_b384850_sum_ms / b850n, g_b384850_max_ms, (long)g_b384850_count,
+            g_b3825b0_sum_ms / b5b0n, g_b3825b0_max_ms, (long)g_b3825b0_count,
+            g_b385e70_sum_ms / be70n, g_b385e70_max_ms, (long)g_b385e70_count,
+            g_b399450_sum_ms / r450n, g_b399450_max_ms, (long)g_b399450_count,
+            g_b381dc0_sum_ms / d1c0n, g_b381dc0_max_ms, (long)g_b381dc0_count,
+            g_b29f810_sum_ms / f810n, g_b29f810_max_ms, (long)g_b29f810_count);
         log_write(ibuf);
     }
 
@@ -2717,6 +3060,13 @@ static void profile_report_and_reset(void) {
     g_b387400_count  = 0; g_b387400_sum_ms  = 0; g_b387400_max_ms  = 0;
     g_b385cf0_count  = 0; g_b385cf0_sum_ms  = 0; g_b385cf0_max_ms  = 0;
     g_b381ff0_count  = 0; g_b381ff0_sum_ms  = 0; g_b381ff0_max_ms  = 0;
+    g_b385190_count  = 0; g_b385190_sum_ms  = 0; g_b385190_max_ms  = 0; g_b385190_capped = 0;
+    g_b384850_count  = 0; g_b384850_sum_ms  = 0; g_b384850_max_ms  = 0;
+    g_b3825b0_count  = 0; g_b3825b0_sum_ms  = 0; g_b3825b0_max_ms  = 0;
+    g_b385e70_count  = 0; g_b385e70_sum_ms  = 0; g_b385e70_max_ms  = 0;
+    g_b399450_count  = 0; g_b399450_sum_ms  = 0; g_b399450_max_ms  = 0;
+    g_b381dc0_count  = 0; g_b381dc0_sum_ms  = 0; g_b381dc0_max_ms  = 0;
+    g_b29f810_count  = 0; g_b29f810_sum_ms  = 0; g_b29f810_max_ms  = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -3009,6 +3359,15 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* Phase 5 Step 14 — sub-callee hooks inside FUN_140387010 (non-fatal) */
         install_b87010_subcallee_hooks();
+
+        /* Fix B: patch opp-target interval + budget-cap b385190 (non-fatal) */
+        install_fix_b();
+
+        /* Sub-callee hooks inside FUN_140387400 to isolate true stall source */
+        install_b387400_subcallee_hooks();
+
+        /* Sub-callee hooks inside FUN_1403825b0 to isolate stall within b3825b0 */
+        install_b3825b0_subcallee_hooks();
 
         /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();

@@ -757,5 +757,28 @@ WinMain:865 → FUN_14028d400 (gsvc)
                               └─ FUN_14029f810 (nav order + pathfinding) [Source B — 1,094ms]
 ```
 
-TODO: Decompile `FUN_14029f810` (RVA `0x29f810`) to identify what pathfinding
-operation causes the 1,094ms stall and design a targeted fix.
+### FUN_14029f810 — Structure (decompiled, Phase 5 Step 16)
+
+"Create and dispatch movement order" (2201 bytes).
+
+```
+Line 38:  lVar3 = FUN_140769c58(0x8a0)      — pool-alloc 2208-byte movement order struct
+Line 43:  plVar4 = FUN_140388b60(lVar3, nav_mgr, movement_type, team_id,
+                                  approach_dir, target_pos, formation_mode, flag)
+                                             — PATHFINDING SOLVER  ← PRIME SUSPECT
+Lines 49–155: FUN_14020a9b0 × N            — queue/list insertions (entity slots)
+Lines 96–107: loop over nav_mgr entity list — FUN_14037cab0 per entry (bounded)
+Lines 168–176: weapon slot loop            — fast
+Lines 228–241: O(N_entities) loop          — FUN_1402823e0(owner, entity) per entry,
+               gated by plVar4[0x53]+0x2120 — fires only for certain entity types
+Lines 250–265: movement component updates  — FUN_1403935b0, FUN_1403a8ad0, etc.
+```
+
+`FUN_140388b60` (RVA `0x388b60`) takes the allocated 2208-byte struct plus all
+movement parameters from the nav manager and produces a fully initialized movement
+order.  This is almost certainly the synchronous pathfinding call.  With n=5 per
+300 frames averaging 435ms, the path compute is the stall source — not the
+O(N) notification loop (which is gated and fast at these call counts).
+
+TODO: Decompile `FUN_140388b60` (RVA `0x388b60`) to identify the pathfinding
+algorithm and determine whether it can be bounded, cached, or offloaded.
