@@ -854,7 +854,87 @@ gate: in most frames `FUN_140374da0` returns false (path cached or trivial) so
 `FUN_14037c050` is skipped; occasionally it returns true and the full path is
 solved synchronously.
 
-### Updated attribution chain (Phase 5 Step 18 candidate)
+### Phase 5 Steps 19–21 — b3989a0 subcallee elimination and b3a4820 confirmed (2026-04-27)
+
+**Step 19 — b38cb30/b37c050 eliminated, hardpoint loop never fires:**
+
+Profiling data (3-window aggregate, b3989a0 n≈800 per window):
+```
+b38cb30(38cb30): avg=0.00  max=0.01 ms  (n=1608) ← ELIMINATED
+b37c050(37c050): avg=0.00  max=0.00 ms  (n=0)    ← ELIMINATED — gate always false
+b381a90(381a90): avg=0.00  max=0.00 ms  (n=0)    ← ELIMINATED — hardpoints n=0
+b384740(384740): avg=0.00  max=0.00 ms  (n=0)    ← ELIMINATED — hardpoints n=0
+b3989a0(3989a0): avg=20.17 max=1106.68 ms (n=214) ← STALL NOT IN ANY ABOVE
+```
+
+`FUN_140374da0` (the "needs pathfinding?" gate) always returns false for
+space-battle movement orders in this scenario, so `FUN_14037c050` is never
+invoked. The hardpoint loop (lines 251–404 of b3989a0) also never fires
+(`iVar5 = *(int *)(*(longlong *)(param_1 + 0x298) + 0xe40)` is always ≤ 0).
+
+**Step 20 — 6 more b3989a0 subcallees added; b3a4820 identified:**
+
+Added hooks for: b3727a0, b3a4820, b3a8710, b3ac530, b38cf30, b3a59f0.
+Lesson: `FUN_1403a59f0` and `FUN_140384740` both showed 0 args at their call
+sites in the b3989a0 decompile but each has real args in its own decompile —
+always check the callee's own decompile, not just the call site.
+
+**Step 21 — FUN_1403a4820 confirmed as stall carrier (2026-04-27):**
+
+Profiling data (two windows with b3989a0 n=730, n=1275):
+```
+b3989a0(3989a0): avg=2.95  max=1074.37 ms (n=730)
+b3727a0(3727a0): avg=0.00  max=0.01  ms (n=730)  ← eliminated
+b3a4820(3a4820): avg=2.95  max=1074.36 ms (n=730) ← STALL SOURCE — max matches b3989a0
+b3a8710(3a8710): avg=0.00  max=0.00  ms (n=730)  ← eliminated
+b3ac530(3ac530): avg=0.00  max=0.01  ms (n=730)  ← eliminated
+b38cf30(38cf30): avg=0.00  max=0.00  ms (n=0)    ← eliminated
+b3a59f0(3a59f0): avg=0.00  max=0.00  ms (n=0)    ← eliminated
+```
+
+`FUN_1403a4820` (RVA `0x3a4820`, 2481 bytes) accounts for 100% of b3989a0's
+stall. Its max (1074.36ms) matches b3989a0's max (1074.37ms) to within 0.01ms.
+It is called once per movement order init, gated by `DAT_140b2c37b == '\0'`
+(always true in this scenario).
+
+### FUN_1403a4820 — Structure (decompiled, Phase 5 Step 21)
+
+`void FUN_1403a4820(longlong *param_1)` — 2481 bytes, 317 decompile lines.
+Purpose: **opponent/target acquisition** — determines what enemy unit a
+movement order should target, updates `param_1[0x54]` (the target slot).
+
+```
+Lines 32–33:   Guard — return if param_1[0x53] (fleet/group ptr) is null
+Lines 35–51:   If "is attacking" flag set:
+               FUN_14020bd00 — range/attack check → return if result==1
+               FUN_14035f470 — conditional recheck → return if true
+               FUN_1403751f0 — targeting valid check → return if false
+Lines 53–76:   [UNCONDITIONAL] FUN_140294bc0 — frame/time query
+               vtable[0xe0](plVar6) — get movement type
+               FUN_1403729f0(fleet, movement_type, move_order, vehicle_list)
+                   → returns candidate target; null → return early
+Lines 62–73:   Optional loop: if formation flag set, walk formation members
+               for a better target candidate (goto LAB_1403a49b0)
+Lines 79–80:   [FAST EXIT] if candidate == current target → return (no change)
+Lines 82–89:   Walk pending-cancel list → return if order is being cancelled
+Lines 91–93:   FUN_140397680 — get fleet context → return if null
+Lines 95–101:  FUN_1403a5840(param_1) — teardown existing assignment
+Lines 102–105: vtable destroy old target ref (param_1[0x54])
+Lines 106–111: Recheck movement type; FUN_140370320 × 2 → return if gated
+Lines 112–165: Assign new target (vtable slot 0x20); setup attack tracking
+Lines 170–265: FUN_140395920, FUN_140264a40, FUN_140265560(6 args);
+               inner loop + FUN_14048a670, FUN_14020abe0;
+               FUN_14033e340/FUN_140281940, FUN_14012dc40, FUN_14048a3e0
+Lines 270–314: FUN_140373ac0; FUN_140264000(5 args); FUN_140265f20;
+               FUN_140266340; FUN_140264c80; FUN_140264750 × 2;
+               FUN_140264f00; FUN_140375250/260; FUN_1402646f0/264720
+```
+
+Key observation: `FUN_1403729f0` (line 61, 4 args, unconditional at this
+point) is called before the fast-exit at line 79. If it does an O(N) scan of
+potential targets (fleet-size dependent), it is the likely root cause.
+
+### Updated attribution chain (Phase 5 Step 21 confirmed)
 
 ```
 WinMain:865 → FUN_14028d400 (gsvc)
@@ -862,7 +942,7 @@ WinMain:865 → FUN_14028d400 (gsvc)
     → JMP FUN_1403639d0 (tail22)
       → FUN_1402be640 (×2, per manager)
         → FUN_1403a6b80 (per-entity)
-          ├─ ServiceRate gate → Pump_Threads → Lua AI    [Source A — 22,310ms]
+          ├─ ServiceRate gate → Pump_Threads → Lua AI    [Source A — Class-B hitch]
           └─ FUN_1403a76b0 (movement)
                → FUN_140387010 (per-component)
                     └─ FUN_140387400 (path-following / opp-target)
@@ -870,14 +950,14 @@ WinMain:865 → FUN_14028d400 (gsvc)
                               └─ FUN_14029f810 (movement order creation)
                                    └─ FUN_140388b60 (GameObjectClass ctor)
                                         └─ FUN_1403989a0 (move order init)
-                                             ├─ FUN_14038cb30 × 2 ← SUSPECT A
-                                             └─ FUN_14037c050 (path solve) ← SUSPECT B
+                                             └─ FUN_1403a4820 (target acq) ← CONFIRMED
+                                                  └─ FUN_1403729f0 ← NEXT SUSPECT
 ```
 
 Note: `FUN_14029f810` is also called by callers other than `FUN_1403825b0`
 (b388b60 count ≈ 2× b29f810 count); the stall is systemic to all movement
 order creation, not just the b3825b0 path-following update.
 
-TODO: Add sub-callee hooks for `FUN_14038cb30` (RVA `0x38cb30`) and
-      `FUN_14037c050` (RVA `0x37c050`) inside `FUN_1403989a0` (2733 bytes)
-      to confirm which function holds the stall.
+TODO: Add sub-callee hooks inside `FUN_1403a4820` (2481 bytes) targeting
+      `FUN_1403729f0` (RVA `0x3729f0`, prime suspect — target scan) and other
+      named callees to confirm which sub-function holds the ~1074ms stall.
