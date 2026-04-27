@@ -934,7 +934,53 @@ Key observation: `FUN_1403729f0` (line 61, 4 args, unconditional at this
 point) is called before the fast-exit at line 79. If it does an O(N) scan of
 potential targets (fleet-size dependent), it is the likely root cause.
 
-### Updated attribution chain (Phase 5 Step 21 confirmed)
+### Phase 5 Step 22 — FUN_1403729f0 confirmed, FUN_140375380 identified (2026-04-27)
+
+**b3729f0 confirmed (two windows):**
+```
+b3a4820(3a4820): avg=47.62 max=1047.38 ms (n=22)
+b3729f0(3729f0): avg=47.61 max=1047.36 ms (n=22)  ← STALL SOURCE — max matches
+b3a5840(3a5840): avg=0.00  max=0.00  ms (n=0)     ← eliminated
+b265560(265560): avg=0.00  max=0.00  ms (n=0)     ← eliminated
+```
+
+b3729f0 n=22 matches b3a4820 n=22; max differs by 0.02ms (noise). 100% of
+b3a4820's stall is in FUN_1403729f0.
+
+FUN_1403729f0 (228 bytes, 32 decompile lines) is almost entirely a thin
+dispatcher: it calls `FUN_140375380(param_1, param_2)` and returns a field
+from param_1 based on conditions. The work is entirely in b375380.
+
+### FUN_140375380 — Structure (decompiled, Phase 5 Step 22)
+
+`void FUN_140375380(longlong param_1, int param_2)` — 5645 bytes, 989 lines.
+Purpose: **opponent/target slot update** — resolves which enemy object should
+be assigned to each target slot (param_1+0x288/0x290/0x298/0x2a0/0x2a8/0x2b0)
+for a given fleet/movement-type. Updates ref-counted target object references.
+
+```
+Lines 58–66:   Normalize param_2 (-1 → use global DAT/vtable for movement type)
+Lines 67–68:   Guard — return if DAT_140b15490 set OR object flag +0x11 not set
+Lines 74–200:  param_2==0 (movement type 0): update slots +0x288, +0x290, +0x298
+               via FUN_14025ec10(path_string, filter_ptr) — 3 call sites
+Lines 203–415: param_2==1 (movement type 1 — combat): complex logic
+               Lines 221–259: faction-list linear scan; FUN_140022730 × 2
+               Lines 266–338: FUN_14025ec10 × 2 + FUN_1403718f0 (line 303)
+Lines 417–590: param_2==2 (movement type 2): update slots +0x2a8, +0x2b8
+               FUN_14025ec10 × 2 + FUN_1403718f0 (line 476)
+               Line 513: RECURSIVE CALL FUN_140375380(param_1+0x8c0, 2)
+Lines 592–end: Hardpoint loop: for each hardpoint at param_1+0xe38 array
+               (count at param_1+0xe40): FUN_14025ec10 per hardpoint × N
+               Line 977: RECURSIVE CALL FUN_140375380(lVar11, local_res10)
+```
+
+`FUN_14025ec10(char *path, char *filter)` — 139 lines, returns object pointer.
+Called 8 times in b375380 + N times in hardpoint loop. This is a
+**resource/object lookup by art-model path string** (`"Data/Art/Models/..."`).
+If it does a linear scan of all loaded game objects or a slow hash miss,
+it is the root cause of the stall.
+
+### Updated attribution chain (Phase 5 Step 22 confirmed)
 
 ```
 WinMain:865 → FUN_14028d400 (gsvc)
@@ -951,13 +997,15 @@ WinMain:865 → FUN_14028d400 (gsvc)
                                    └─ FUN_140388b60 (GameObjectClass ctor)
                                         └─ FUN_1403989a0 (move order init)
                                              └─ FUN_1403a4820 (target acq) ← CONFIRMED
-                                                  └─ FUN_1403729f0 ← NEXT SUSPECT
+                                                  └─ FUN_1403729f0 (dispatcher) ← CONFIRMED
+                                                       └─ FUN_140375380 (target slot update)
+                                                            └─ FUN_14025ec10 ← NEXT SUSPECT
 ```
 
 Note: `FUN_14029f810` is also called by callers other than `FUN_1403825b0`
 (b388b60 count ≈ 2× b29f810 count); the stall is systemic to all movement
 order creation, not just the b3825b0 path-following update.
 
-TODO: Add sub-callee hooks inside `FUN_1403a4820` (2481 bytes) targeting
-      `FUN_1403729f0` (RVA `0x3729f0`, prime suspect — target scan) and other
-      named callees to confirm which sub-function holds the ~1074ms stall.
+TODO: Add sub-callee hooks inside `FUN_140375380` (5645 bytes) targeting
+      `FUN_14025ec10` (RVA `0x25ec10`, 8 call sites — prime suspect) and
+      `FUN_1403718f0` (RVA `0x3718f0`, 2 call sites) to isolate the bottleneck.
