@@ -802,10 +802,82 @@ field-initialization work.  Two new hooks are installed (Phase 5 Step 17):
   `FUN_1403989a0`, isolating whether the stall is the spatial/path insert or
   the field-init preamble.
 
-Expected outcome: `b388b60_max ≈ b29f810_max ≈ 1094ms` (field init is trivial
-memory writes), and `b3989a0_max ≈ b388b60_max` (the insert is the work).
+### Phase 5 Step 17 — profiling confirmed: b3989a0 = b388b60 (Δ ≤ 0.01ms)
 
-TODO: Collect profiling data for `b388b60` and `b3989a0` to confirm.
-      Then decompile `FUN_1403989a0` (RVA `0x3989a0`) to identify what
-      pathfinding / spatial operation it performs and determine whether it
-      can be bounded, cached, deferred, or offloaded.
+Multiple 300-frame windows confirm:
+
+| Window | gsvc max | b29f810 max (n) | b388b60 max (n) | b3989a0 max (n) |
+|--------|----------|-----------------|-----------------|-----------------|
+| W1 (init) | 21872ms | 0.00ms (0) | 1034.09ms (16) | 1034.08ms (16) |
+| W3 | 2318ms | 1178.89ms (4) | 1178.88ms (4) | 1178.88ms (4) |
+| W5 | 2129ms | 1092.95ms (219) | 1092.93ms (227) | 1092.93ms (227) |
+| W7 | 1150ms | 1144.54ms (541) | 1144.53ms (1053) | 1144.53ms (1053) |
+
+Key observations:
+- **b3989a0_max = b388b60_max (Δ ≤ 0.01ms always)** — struct field-init preamble
+  is negligible; `FUN_1403989a0` accounts for 100% of `FUN_140388b60` time.
+- **b388b60_count ≈ 2× b29f810_count** — `FUN_14029f810` has multiple callers
+  beyond `FUN_1403825b0`; the movement order / pathfinding stall is systemic
+  across all path requests, not just the Source B chain traced from b3825b0.
+- In non-stall frames b3989a0 is fast (avg 0.02ms); in stall frames it blocks
+  for up to 1178ms. This bimodal behavior points to a conditional slow path
+  inside `FUN_1403989a0`.
+
+### Phase 5 Step 18 — FUN_1403989a0 decompiled: movement order init + path solve
+
+`FUN_1403989a0` (RVA `0x3989a0`, 2733 bytes, called as `(param_1, 0, 1, ?)`):
+
+```
+Lines 36–101:  Zero/reset fields — conditional on param_4 (likely 0 here, skipped)
+Lines 102–128: Copy 7 default waypoint slots from global constants
+Lines 129–150: Loop over movement-type slot array — update ref-counted object refs
+Lines 151–170: Register path start pos; FUN_1403a4820, FUN_1403a8710, FUN_1403ac530
+Lines 175–249: Movement-type path setup (fires always, param_2=0):
+               FUN_14038cb30 × 2 (lines 178, 196) ← SUSPECT A
+               Inner loop: alloc + FUN_1404b3580/1404b3900/1403b01f0 per type slot
+Lines 251–404: Hardpoint resolution (gated by param_1[0x3a0] ≥ 0 AND path obj):
+               Per hardpoint: FUN_140381a90 + FUN_14012d2a0 × 4 + FUN_140384740
+Lines 406–425: Path solve (gated by FUN_140374da0 = "needs pathfinding?"):
+               alloc 0x3b8 bytes → FUN_14055d530 (path struct init)
+               FUN_14037c050(path_struct+8, move_order, 0, 1, …) ← SUSPECT B
+               FUN_14037d7e0 → success check → FUN_14029bfe0 notification
+Lines 431–438: FUN_140532990 (final spatial insertion or notification)
+```
+
+`FUN_14037c050` (RVA `0x37c050`) at line 418 is the prime suspect: it receives the
+952-byte path result buffer and all movement parameters and is gated by a
+"needs pathfinding?" check — this is the synchronous A\* or steering solve.
+`FUN_14038cb30` (RVA `0x38cb30`, called twice) is the secondary suspect.
+
+The bimodal timing (0.02ms fast / 1178ms slow) matches a conditional pathfinding
+gate: in most frames `FUN_140374da0` returns false (path cached or trivial) so
+`FUN_14037c050` is skipped; occasionally it returns true and the full path is
+solved synchronously.
+
+### Updated attribution chain (Phase 5 Step 18 candidate)
+
+```
+WinMain:865 → FUN_14028d400 (gsvc)
+  → vtable[22] → SpaceModeClass FUN_1404d95a0
+    → JMP FUN_1403639d0 (tail22)
+      → FUN_1402be640 (×2, per manager)
+        → FUN_1403a6b80 (per-entity)
+          ├─ ServiceRate gate → Pump_Threads → Lua AI    [Source A — 22,310ms]
+          └─ FUN_1403a76b0 (movement)
+               → FUN_140387010 (per-component)
+                    └─ FUN_140387400 (path-following / opp-target)
+                         └─ FUN_1403825b0 (validate + submit movement cmd)
+                              └─ FUN_14029f810 (movement order creation)
+                                   └─ FUN_140388b60 (GameObjectClass ctor)
+                                        └─ FUN_1403989a0 (move order init)
+                                             ├─ FUN_14038cb30 × 2 ← SUSPECT A
+                                             └─ FUN_14037c050 (path solve) ← SUSPECT B
+```
+
+Note: `FUN_14029f810` is also called by callers other than `FUN_1403825b0`
+(b388b60 count ≈ 2× b29f810 count); the stall is systemic to all movement
+order creation, not just the b3825b0 path-following update.
+
+TODO: Add sub-callee hooks for `FUN_14038cb30` (RVA `0x38cb30`) and
+      `FUN_14037c050` (RVA `0x37c050`) inside `FUN_1403989a0` (2733 bytes)
+      to confirm which function holds the stall.
