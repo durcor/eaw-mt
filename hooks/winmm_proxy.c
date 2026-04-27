@@ -2575,13 +2575,16 @@ static void b38cb30_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
     g_b38cb30_count++;
 }
 
-typedef void (*B37c050Fn)(int64_t, int64_t, int64_t, int64_t);
+/* FUN_14037c050 takes 5 args: (path_buf+8, move_order, param_2, param_3, vtbl_ptr)
+ * The 5th arg is *(undefined8*)(*(longlong*)(param_1+0x2b8)+0x20) — must be passed
+ * through or the callee reads garbage off the stack and crashes. */
+typedef void (*B37c050Fn)(int64_t, int64_t, int64_t, int64_t, int64_t);
 static B37c050Fn g_b37c050_orig  = NULL;
 static LONG      g_b37c050_count = 0;
 static double    g_b37c050_sum_ms = 0, g_b37c050_max_ms = 0;
-static void b37c050_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
+static void b37c050_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e) {
     LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b37c050_orig(a, b, c, d); QueryPerformanceCounter(&t1);
+    g_b37c050_orig(a, b, c, d, e); QueryPerformanceCounter(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b37c050_sum_ms += ms; if (ms > g_b37c050_max_ms) g_b37c050_max_ms = ms;
     g_b37c050_count++;
