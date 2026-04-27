@@ -668,6 +668,65 @@ WinMain:865 → FUN_14028d400 (gsvc)
   inside FUN_1403825b0 occasionally takes 1+ seconds
 - Fix scope requires decompile of FUN_1403825b0 to identify the blocking callee
 
-TODO: Decompile `FUN_1403825b0` (RVA `0x3825b0`) to identify the pathfinding
-callee responsible for the 1,072ms spike.  Then hook sub-callees to confirm
-before designing a fix.
+### FUN_1403825b0 — Structure (decompiled, Phase 5 Step 15)
+
+"Validate and submit movement command to path-following target" (4034 bytes).
+Arguments: `(component, target_entity*, formation_data*)`.
+
+```
+Guards (lines 61–104 — fast, all return 0 on failure):
+  entity ptr (param_1+0x10) != 0
+  target entity (param_2) != 0
+  formation_data target matches param_2 (if param_3 != 0)
+  target not flagged 0x40 (team/faction check)
+  vtable[0x10](param_2, 0x11) == 0  (target alive/valid)
+  FUN_14039b140(param_2) — target reachability state
+  FUN_140540140 — entity weapon/targeting gate
+  FUN_14035f470 — game-mode pause / fleet zone check
+  FUN_14039a540 — allied/neutral entity check
+
+Param_3 setup (lines 106–108, if param_3==NULL):
+  FUN_140398440 — get owner physics state
+  param_3 = FUN_140394a80(param_2, …) — resolve formation slot from target
+
+Path warmth check (lines 111–145, move-enabled entities only):
+  FUN_140385cf0 — path-system lookup (warm cache only; returns 0 → early exit)
+  FUN_14012d2c0 — read current position from path slot
+  Distance gate: dot product of (current_pos − target_pos) vs speed tolerance
+
+Movement type resolution (lines 157–162):
+  FUN_140397e00(owner, target, team_id) — look up movement type by team
+  FUN_14039b950 — fallback movement type checks
+
+Deep path (lines 163–503, only when movement type found):
+  FUN_140383f70 — compute approach position from target geometry
+  FUN_140385c70 — alternative: read approach position from formation data
+  FUN_140385e70 — formation/physics position compute     ← suspect (gates block)
+  sqrt + FUN_1403857d0 + FUN_140397780 — distance + radii
+  FUN_140399450(nav_mgr, movement_type, team_id, pos, dir, formation)
+                  ← attack-position / approach-vector calc  ← PRIME SUSPECT
+  FUN_140383ba0 — final path reachability check
+  FUN_1403973b0 — get object type data (fast)
+  FUN_140381dc0(component, type_data, dist, pos, xml_type, formation)
+                  ← path direction compute                   ← PRIME SUSPECT
+  FUN_14029f810(nav_mgr, movement_type, team_id, approach_dir, target_pos,
+                formation_mode, 0)
+                  ← MOVEMENT ORDER + PATHFINDING SUBMISSION  ← PRIME SUSPECT
+                  returns plVar12 (movement order struct)
+  [plVar12 populated: target entity, timing, speed, team, slot, …]
+  FUN_1402d5240 — signal dispatch (fleet formation update)
+  FUN_1403a06a0 — notify entity of new movement command
+  Rate-limit timer update: param_1+0x58 = new countdown value
+  FUN_1403846c0 — release previous target (if changed)
+  FUN_140382510 — acquire new target
+```
+
+**Stall callee inside FUN_1403825b0 is unconfirmed.** The prime suspects are
+`FUN_14029f810` (RVA `0x29f810`, movement order + pathfinding submission),
+`FUN_140399450` (attack-position compute), and `FUN_140381dc0` (path direction
+compute).  `FUN_140385e70` gates the entire deep block so it is also suspect if
+it performs a physics/ray query.
+
+TODO: Add E8 hooks inside FUN_1403825b0 (4034 bytes) for `FUN_14029f810`,
+`FUN_140399450`, `FUN_140381dc0`, and `FUN_140385e70` to isolate the stall
+callee.  The one whose max matches `b3825b0_max ≈ 1,072ms` is the fix target.
