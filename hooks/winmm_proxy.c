@@ -2594,15 +2594,15 @@ static int64_t b381a90_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t 
 }
 
 /* FUN_140384740  per-hardpoint second pass (lines 396 of 3989a0, inside second loop).
- * Ghidra shows 0 explicit args; treat as void(*)(void) — if it has hidden args they
- * come from context and won't be disturbed by a no-arg hook. */
-typedef void (*B384740Fn)(void);
+ * Ghidra call site showed 0 args but function decompile has longlong param_1 in RCX.
+ * Must pass through — it dereferences param_1+0x20 on entry. */
+typedef void (*B384740Fn)(int64_t);
 static B384740Fn g_b384740_orig  = NULL;
 static LONG      g_b384740_count = 0;
 static double    g_b384740_sum_ms = 0, g_b384740_max_ms = 0;
-static void b384740_hook(void) {
+static void b384740_hook(int64_t a) {
     LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b384740_orig(); QueryPerformanceCounter(&t1);
+    g_b384740_orig(a); QueryPerformanceCounter(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b384740_sum_ms += ms; if (ms > g_b384740_max_ms) g_b384740_max_ms = ms;
     g_b384740_count++;
