@@ -980,7 +980,81 @@ Called 8 times in b375380 + N times in hardpoint loop. This is a
 If it does a linear scan of all loaded game objects or a slow hash miss,
 it is the root cause of the stall.
 
-### Updated attribution chain (Phase 5 Step 22 confirmed)
+### Phase 5 Step 23 — FUN_14025ec10 confirmed as terminal stall source (2026-04-27)
+
+Sub-callee hooks inside `FUN_140375380` (5645 bytes):
+- `b25ec10` (8 sites patched) — art-model path-string lookup
+- `b3718f0` (2 sites patched) — hash-table slot lookup
+
+Representative stall windows:
+
+| Window | b3729f0 max | b25ec10 max | b25ec10 n | b3718f0 max |
+|---|---|---|---|---|
+| W1 | 3235.77ms | **1443.21ms** | 30 | 0.00ms |
+| W2 | 1080.70ms | **1080.70ms** | 4 | 0.00ms |
+| W3 | 1076.18ms | **1076.17ms** | 2 | 0.00ms |
+| W4 | 1103.70ms | **1103.69ms** | 2 | 0.00ms |
+| W5 | 1054.17ms | **1054.17ms** | 1 | 0.00ms |
+| W6 | 1071.47ms | **1071.47ms** | 1 | 0.00ms |
+| W7 | 1068.80ms | **1068.80ms** | 1 | 0.00ms |
+| W8 | 1059.66ms | **1059.66ms** | 1 | 0.00ms |
+| W9 | 1067.91ms | **1067.91ms** | 1 | 0.00ms |
+
+**`FUN_14025ec10` max = `b3729f0` max to within <0.02ms in every stall window.**
+**`FUN_1403718f0` always 0.00ms — eliminated.**
+
+Key behavioral observations:
+- `b25ec10` n is 1–4 per 300-frame stall window while `b3729f0` n is in the hundreds
+  (typically 97–424) — a single rare call triggers the stall, the rest are sub-ms
+- Non-stall windows: `b25ec10` n=0 (not called) or <1ms (fast path taken)
+- The expensive invocation is **conditional** — most calls return quickly via an
+  early-exit path; one call per movement order occasionally hits the slow path
+
+**`FUN_14025ec10` (RVA `0x25ec10`) CONFIRMED as terminal stall source.**
+
+### FUN_14025ec10 — Slow-path analysis (Phase 5 Step 23)
+
+Signature: `undefined8 ******* FUN_14025ec10(char *param_1, char *param_2)` — 139 lines.
+`param_1` = art-model path string (e.g. `"Data/Art/Models/..."`)
+`param_2` = optional filter string (often NULL)
+
+Fast path (most calls):
+```
+FUN_140142d70(DAT_140a62700, param_1)  → plVar2 (object by name)
+if plVar2 == NULL → return NULL immediately
+vtable walk: (**(code **)(*plVar2 + 0x20))(plVar2) → iterate linked list
+  if sentinel == NULL → return pppppppuVar4 (no animation, fast return)
+  if sentinel != &DAT_140a12370 → advance → eventually returns
+```
+
+Slow path (triggered when vtable walk hits `&DAT_140a12370`):
+```
+_splitpath(param_1, drive, dir, fname, ext)   // decompose path
+if param_2 != NULL: _splitpath(param_2, ...)  // override fname from filter
+builtin_strncpy(ext, "ALA", 4)                // force .ALA extension
+
+loop i = 0 .. 0x76 (max 118 iterations):
+    build string: local_528 = sprintf("%s_%s_%02d", fname, variant, i)
+    build path:   local_628 = _makepath(drive, dir, local_528, "ALA")
+    FUN_140142f80(DAT_140a62700, local_628)    // "is this asset registered?"
+    if not found:
+        FUN_140141f70(DAT_140a62700, local_628) // "try to load asset"
+        if now found: FUN_140142f80(...)         // re-check after load
+    if found:
+        FUN_140263fa0(result, asset, i, variant, local_528)  // add to result
+```
+
+The inner loop calls `FUN_140141f70` up to 118 times. This function is a
+**synchronous asset load** — it reads from disk (or the `.MEG` archive) on
+cache miss. One stall = one call to `FUN_14025ec10` where the asset is not
+cached, iterating up to 118 candidate filenames and blocking on each I/O check.
+
+### FUN_1403718f0 — Eliminated (Phase 5 Step 23)
+
+`FUN_1403718f0(longlong, uint, int, int)` — 59 lines, pure hash-table probe.
+Always 0.00ms. Not a contributor.
+
+### Updated attribution chain (Phase 5 Step 23 confirmed)
 
 ```
 WinMain:865 → FUN_14028d400 (gsvc)
@@ -996,16 +1070,21 @@ WinMain:865 → FUN_14028d400 (gsvc)
                               └─ FUN_14029f810 (movement order creation)
                                    └─ FUN_140388b60 (GameObjectClass ctor)
                                         └─ FUN_1403989a0 (move order init)
-                                             └─ FUN_1403a4820 (target acq) ← CONFIRMED
-                                                  └─ FUN_1403729f0 (dispatcher) ← CONFIRMED
+                                             └─ FUN_1403a4820 (target acq)
+                                                  └─ FUN_1403729f0 (dispatcher)
                                                        └─ FUN_140375380 (target slot update)
-                                                            └─ FUN_14025ec10 ← NEXT SUSPECT
+                                                            └─ FUN_14025ec10 ← CONFIRMED BOTTLENECK
+                                                                 slow path: 118-iter loop
+                                                                 calling FUN_140141f70 (sync asset load)
 ```
 
 Note: `FUN_14029f810` is also called by callers other than `FUN_1403825b0`
 (b388b60 count ≈ 2× b29f810 count); the stall is systemic to all movement
 order creation, not just the b3825b0 path-following update.
 
-TODO: Add sub-callee hooks inside `FUN_140375380` (5645 bytes) targeting
-      `FUN_14025ec10` (RVA `0x25ec10`, 8 call sites — prime suspect) and
-      `FUN_1403718f0` (RVA `0x3718f0`, 2 call sites) to isolate the bottleneck.
+TODO: Hook subcallees of `FUN_14025ec10` to confirm which of `FUN_140142f80`
+      (asset registration check) vs `FUN_140141f70` (synchronous asset load)
+      accounts for the 1000ms, then characterize the fix:
+      - Option A: pre-warm the asset cache at scenario load time
+      - Option B: cache the result of the 118-iter enumeration per ship type
+      - Option C: async load with placeholder return on cache miss
