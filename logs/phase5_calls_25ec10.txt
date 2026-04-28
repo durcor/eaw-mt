@@ -1,0 +1,26 @@
+=== FUN_14025ec10 (RVA 0x25ec10, 774 bytes) ===
+  +0x03d  E8 1E 41 EE FF                 CALL -> RVA 0x142d70  [FUN_140142d70]
+  +0x04f  E8 F4 AF 50 00                 CALL -> RVA 0x769c58  [FUN_140769c58]
+  +0x05c  E8 AF 4D 00 00                 CALL -> RVA 0x263a20  [FUN_140263a20]
+  +0x06a  E8 91 70 00 00                 CALL -> RVA 0x265d10  [FUN_140265d10]
+  +0x075  FF 50 20                       CALL -> indirect (qword ptr [RAX + 0x20])
+  +0x0da  E8 2D 1C 52 00                 CALL -> RVA 0x78091c  [_splitpath]
+  +0x0f8  E8 0F 1C 52 00                 CALL -> RVA 0x78091c  [_splitpath]
+  +0x155  EB 6D                          JMP -> RVA 0x25edd4
+  +0x182  E8 C1 AE 50 00                 CALL -> RVA 0x769c58  [FUN_140769c58]
+  +0x19f  EB 0F                          JMP -> RVA 0x25edc0
+  +0x1a6  E8 9D AE 50 00                 CALL -> RVA 0x769c58  [FUN_140769c58]
+  +0x1ab  EB 03                          JMP -> RVA 0x25edc0
+  +0x1bf  E8 AC CF 50 00                 CALL -> RVA 0x76bd80  [FUN_14076bd80]
+  +0x205  E8 A6 A0 DE FF                 CALL -> RVA 0x48ec0  [FUN_140048ec0]
+  +0x22d  E8 2A 59 52 00                 CALL -> RVA 0x78476c  [_makepath]
+  +0x23e  E8 2D 41 EE FF                 CALL -> RVA 0x142f80  [FUN_140142f80]
+  +0x257  E8 04 31 EE FF                 CALL -> RVA 0x141f70  [FUN_140141f70]
+  +0x26f  E8 FC 40 EE FF                 CALL -> RVA 0x142f80  [FUN_140142f80]
+  +0x280  E8 83 0F 52 00                 CALL -> RVA 0x77fe18  [_strupr]
+  +0x29a  E8 F1 50 00 00                 CALL -> RVA 0x263fa0  [FUN_140263fa0]
+  +0x2ac  E9 2F FF FF FF                 JMP -> RVA 0x25edf0
+  +0x2e5  E8 9A AD 50 00                 CALL -> RVA 0x769c94  [thunk_FUN_1407864b8]
+  +0x2f7  E9 18 FE FF FF                 JMP -> RVA 0x25ed24
+  +0x2fc  E8 DF 36 DC FF                 CALL -> RVA 0x225f0  [FUN_1400225f0]
+  +0x302  E8 B5 22 51 00                 CALL -> RVA 0x7711cc  [FUN_1407711cc]

@@ -2678,6 +2678,10 @@ static void b3a59f0_hook(int64_t a, int64_t b) {
 #define B25EC10_RVA        0x25ec10ULL
 #define B3718F0_RVA        0x3718f0ULL
 
+#define B25EC10_BODY_SIZE  774
+#define B142F80_RVA        0x142f80ULL
+#define B141F70_RVA        0x141f70ULL
+
 /* FUN_1403729f0 — target scan, 4 args from call site:
  * (param_1[0x53]=fleet, uVar4=movement_type, param_1=move_order, plVar8=vehicle_list) */
 typedef int64_t (*B3729f0Fn)(int64_t, int64_t, int64_t, int64_t);
@@ -2839,6 +2843,79 @@ static BOOL install_b375380_subcallee_hooks(void)
             n25ec10, n3718f0);
     log_write(m);
     return (n25ec10 + n3718f0) > 0;
+}
+
+/* FUN_140142f80 — asset registration check (in-memory linear scan).
+ * 2 args: (asset_db, path_longlong) — returns asset ptr or 0. Fast path expected. */
+typedef int64_t (*B142f80Fn)(int64_t, int64_t);
+static B142f80Fn g_b142f80_orig  = NULL;
+static LONG      g_b142f80_count = 0;
+static double    g_b142f80_sum_ms = 0, g_b142f80_max_ms = 0;
+static int64_t b142f80_hook(int64_t a, int64_t b) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b142f80_orig(a, b); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b142f80_sum_ms += ms; if (ms > g_b142f80_max_ms) g_b142f80_max_ms = ms;
+    g_b142f80_count++; return r;
+}
+
+/* FUN_140141f70 — synchronous asset load via MEG archive search (FUN_1402136f0).
+ * 2 args: (asset_db, path_char*) — returns bool (loaded). Likely I/O path. */
+typedef int64_t (*B141f70Fn)(int64_t, int64_t);
+static B141f70Fn g_b141f70_orig  = NULL;
+static LONG      g_b141f70_count = 0;
+static double    g_b141f70_sum_ms = 0, g_b141f70_max_ms = 0;
+static int64_t b141f70_hook(int64_t a, int64_t b) {
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b141f70_orig(a, b); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b141f70_sum_ms += ms; if (ms > g_b141f70_max_ms) g_b141f70_max_ms = ms;
+    g_b141f70_count++; return r;
+}
+
+static BOOL install_b25ec10_subcallee_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_b25ec10 = (BYTE *)exe + B25EC10_RVA;
+    BYTE *fn_b142f80 = (BYTE *)exe + B142F80_RVA;
+    BYTE *fn_b141f70 = (BYTE *)exe + B141F70_RVA;
+
+    g_b142f80_orig = (B142f80Fn)fn_b142f80;
+    g_b141f70_orig = (B141f70Fn)fn_b141f70;
+
+    BYTE *stubs = alloc_near(fn_b25ec10, 14 * 2);
+    if (!stubs) {
+        log_write("[eaw-mt] WARN: alloc_near failed for b25ec10 sub stubs\n");
+        return FALSE;
+    }
+    write_abs_jmp(stubs +  0, (uint64_t)b142f80_hook);
+    write_abs_jmp(stubs + 14, (uint64_t)b141f70_hook);
+
+    int n142f80 = 0, n141f70 = 0;
+    DWORD old_prot;
+    for (int i = 0; i <= B25EC10_BODY_SIZE - 5; i++) {
+        if (fn_b25ec10[i] != 0xE8) continue;
+        int32_t rel;
+        memcpy(&rel, fn_b25ec10 + i + 1, 4);
+        BYTE *target = fn_b25ec10 + i + 5 + rel;
+        BYTE *stub = NULL; int *cnt = NULL;
+        if      (target == fn_b142f80) { stub = stubs +  0; cnt = &n142f80; }
+        else if (target == fn_b141f70) { stub = stubs + 14; cnt = &n141f70; }
+        else continue;
+        int32_t new_rel = (int32_t)(stub - (fn_b25ec10 + i + 5));
+        VirtualProtect(fn_b25ec10 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old_prot);
+        memcpy(fn_b25ec10 + i + 1, &new_rel, 4);
+        VirtualProtect(fn_b25ec10 + i + 1, 4, old_prot, &old_prot);
+        FlushInstructionCache(GetCurrentProcess(), fn_b25ec10 + i, 5);
+        (*cnt)++;
+    }
+    char m[128];
+    sprintf(m, "[eaw-mt] b25ec10_sub: b142f80=%d b141f70=%d site(s) patched in 25ec10\n",
+            n142f80, n141f70);
+    log_write(m);
+    return (n142f80 + n141f70) > 0;
 }
 
 typedef void (*B38cb30Fn)(int64_t, int64_t, int64_t, int64_t);
@@ -3515,6 +3592,8 @@ static void profile_report_and_reset(void) {
         double f0n   = (double)(g_b3a59f0_count  ? g_b3a59f0_count  : 1);
         double ec10n = (double)(g_b25ec10_count  ? g_b25ec10_count  : 1);
         double f8f0n = (double)(g_b3718f0_count  ? g_b3718f0_count  : 1);
+        double f80n  = (double)(g_b142f80_count  ? g_b142f80_count  : 1);
+        double f70n  = (double)(g_b141f70_count  ? g_b141f70_count  : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -3567,7 +3646,9 @@ static void profile_report_and_reset(void) {
             "  b38cf30(38cf30): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b3a59f0(3a59f0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b25ec10(25ec10): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  b3718f0(3718f0): avg=%.2f max=%.2f ms (n=%ld)\n",
+            "  b3718f0(3718f0): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b142f80(142f80): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b141f70(141f70): avg=%.2f max=%.2f ms (n=%ld)\n",
             g_gsvc_sum_ms    / gn,   g_gsvc_max_ms,    (long)g_gsvc_count,
             g_sslot22_sum_ms / ssn,  g_sslot22_max_ms, (long)g_sslot22_count,
             g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
@@ -3619,7 +3700,9 @@ static void profile_report_and_reset(void) {
             g_b38cf30_sum_ms / cf30n, g_b38cf30_max_ms, (long)g_b38cf30_count,
             g_b3a59f0_sum_ms / f0n,   g_b3a59f0_max_ms, (long)g_b3a59f0_count,
             g_b25ec10_sum_ms / ec10n, g_b25ec10_max_ms, (long)g_b25ec10_count,
-            g_b3718f0_sum_ms / f8f0n, g_b3718f0_max_ms, (long)g_b3718f0_count);
+            g_b3718f0_sum_ms / f8f0n, g_b3718f0_max_ms, (long)g_b3718f0_count,
+            g_b142f80_sum_ms / f80n,  g_b142f80_max_ms, (long)g_b142f80_count,
+            g_b141f70_sum_ms / f70n,  g_b141f70_max_ms, (long)g_b141f70_count);
         log_write(ibuf);
     }
 
@@ -3692,6 +3775,8 @@ static void profile_report_and_reset(void) {
     g_b3a59f0_count  = 0; g_b3a59f0_sum_ms  = 0; g_b3a59f0_max_ms  = 0;
     g_b25ec10_count  = 0; g_b25ec10_sum_ms  = 0; g_b25ec10_max_ms  = 0;
     g_b3718f0_count  = 0; g_b3718f0_sum_ms  = 0; g_b3718f0_max_ms  = 0;
+    g_b142f80_count  = 0; g_b142f80_sum_ms  = 0; g_b142f80_max_ms  = 0;
+    g_b141f70_count  = 0; g_b141f70_sum_ms  = 0; g_b141f70_max_ms  = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -4006,6 +4091,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* Sub-callee hooks inside FUN_140375380: b25ec10 (path lookup) + b3718f0 (slot lookup) */
         install_b375380_subcallee_hooks();
+
+        /* Sub-callee hooks inside FUN_14025ec10: b142f80 (reg check) + b141f70 (sync asset load) */
+        install_b25ec10_subcallee_hooks();
 
         /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();
