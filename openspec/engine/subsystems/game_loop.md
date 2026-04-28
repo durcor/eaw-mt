@@ -1082,9 +1082,81 @@ Note: `FUN_14029f810` is also called by callers other than `FUN_1403825b0`
 (b388b60 count ≈ 2× b29f810 count); the stall is systemic to all movement
 order creation, not just the b3825b0 path-following update.
 
-TODO: Hook subcallees of `FUN_14025ec10` to confirm which of `FUN_140142f80`
-      (asset registration check) vs `FUN_140141f70` (synchronous asset load)
-      accounts for the 1000ms, then characterize the fix:
-      - Option A: pre-warm the asset cache at scenario load time
-      - Option B: cache the result of the 118-iter enumeration per ship type
-      - Option C: async load with placeholder return on cache miss
+### Phase 5 Step 24 — Root cause confirmed: 119 uncached MEG archive probes (2026-04-27)
+
+Sub-callee hooks inside `FUN_14025ec10` (774 bytes):
+- `b142f80` (2 sites patched) — in-memory asset registration check
+- `b141f70` (1 site patched) — synchronous MEG archive probe
+
+#### Data — clean single-call stall windows (n(b25ec10)=1):
+
+| Window | b25ec10 max | b142f80 n | b142f80 max | b141f70 n | b141f70 avg | b141f70 max |
+|---|---|---|---|---|---|---|
+| W1 | 1002.58ms | 119 | 0.01ms | 119 | 8.42ms | 9.02ms |
+| W2 | 1060.30ms | 119 | 0.01ms | 119 | 8.90ms | 10.07ms |
+| W3 | 1065.52ms | 119 | 0.01ms | 119 | 8.95ms | 9.68ms |
+| W4 | 1078.84ms | 119 | 0.00ms | 119 | 9.02ms | 9.57ms |
+
+**119 × ~8.9ms avg = ~1,059ms** — accounts for 100% of the stall.
+
+**`FUN_140142f80` eliminated** (max 0.01ms — pure in-memory scan, instant).
+**`FUN_140141f70` confirmed** as the per-probe bottleneck.
+
+#### Loop mechanics (confirmed by call counts)
+
+The slow path inside `FUN_14025ec10` runs a two-level nested loop:
+
+```
+outer loop: i = 0 .. 0x76 (119 iterations) — variant name slots in global table
+  inner loop: j = 0, 1, 2, ... — animation frame indices
+    b142f80(db, path_i_j.ALA)  → 0 (not registered in asset db)
+    b141f70(db, path_i_j.ALA)  → MEG archive probe (~9ms)
+      if found: register asset, add to result, cVar1 = '\x01' → inner continues
+      if not found: cVar1 = '\0' → inner exits (next outer iteration)
+```
+
+On first encounter of a ship type: **every variant slot fails** — b141f70 probes the MEG
+archive for each of the 119 variant names and finds nothing. The inner loop exits after
+one iteration per outer slot. Result: **119 MEG probes × ~9ms = ~1,060ms per call**.
+
+The second `b142f80` call (at offset +0x26f, after a successful b141f70 load) fires
+**0 times** in single-call stall windows — confirming b141f70 always returns failure.
+Nothing is cached, nothing is added to the result set.
+
+#### Root cause
+
+`FUN_14025ec10` has **no result cache**. Every call that hits the slow path (animation
+variant sentinel in vtable walk) re-probes all 119 MEG variant slots from scratch.
+`FUN_140141f70` performs a **synchronous linear scan** of the MEG archive index
+(`FUN_1402136f0`) for each probe — ~9ms per probe on Wine/HDD. On bare-metal Windows
+this would be faster but still O(N) in archive size.
+
+The stall fires once per movement order for each ship type whose animation variant table
+has not been probed in the current session. After the first probe run, subsequent calls
+for the SAME ship type still go through all 119 probes (b142f80 returning 0 each time
+because the assets weren't found) — the function never writes a "not found" cache entry.
+
+#### Fix options
+
+**Fix A — Memoize at b25ec10 level (implementable in hook DLL now):**
+In `b25ec10_hook`, maintain a string-keyed hash map of `path → result`. On first call,
+let `g_b25ec10_orig` run (pay the ~1s cost once), store the result. On subsequent calls
+with the same path, return the cached result immediately. Cost: one 1s stall per unique
+ship type per session; all subsequent calls are sub-microsecond.
+
+**Fix B — Pre-warm at scenario load:**
+Before combat begins, call `FUN_14025ec10` for every ship type in the scenario.
+Amortizes the cost to the loading screen. Requires knowing which ship types are present.
+
+**Fix C — Optimize `FUN_140141f70` / `FUN_1402136f0`:**
+Replace the linear MEG archive scan with a hash-indexed lookup. Would eliminate the
+~9ms per-probe cost. Complex — requires modifying the archive subsystem.
+
+**Fix D — Write a "not found" sentinel per path:**
+On failure in the outer loop, record `(path → empty)` so the next call short-circuits
+the 119-probe scan immediately. Simplest behavioral fix inside the game engine.
+
+**Recommended immediate action:** Implement Fix A in `b25ec10_hook` — it is the only
+option implementable entirely within the hook DLL with no game binary modification.
+A simple open-addressing hash table keyed on `param_1` (path pointer contents) would
+reduce all repeat stalls to 0ms.
