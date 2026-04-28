@@ -2860,12 +2860,67 @@ static int64_t b142f80_hook(int64_t a, int64_t b) {
 }
 
 /* FUN_140141f70 — synchronous asset load via MEG archive search (FUN_1402136f0).
- * 2 args: (asset_db, path_char*) — returns bool (loaded). Likely I/O path. */
+ * 2 args: (asset_db, path_char*) — returns bool (loaded). MEG archive I/O path.
+ * FIX: "not found" result cache — paths that returned 0 are permanently absent from
+ * the MEG archive and never need to be re-probed. Caching them eliminates the
+ * ~9ms × 119-probe × N-movement-order stall on repeat calls for the same ship type. */
+
+/* djb2 hash over a NUL-terminated ASCII string. */
+static uint32_t djb2(const char *s) {
+    uint32_t h = 5381;
+    unsigned char c;
+    while ((c = (unsigned char)*s++)) h = ((h << 5) + h) ^ c;
+    return h;
+}
+
+#define NF_SLOTS 65536   /* must be power of 2; handles ~24k unique paths at <40% load */
+static uint32_t g_nf_hash[NF_SLOTS];
+static BOOL     g_nf_used[NF_SLOTS];
+static LONG     g_nf_hits  = 0;   /* cache hits (probes skipped) */
+static LONG     g_nf_miss  = 0;   /* cache misses (real MEG probes, result=0, inserted) */
+
+static BOOL nf_lookup(uint32_t h) {
+    uint32_t slot = h & (NF_SLOTS - 1);
+    for (int i = 0; i < 16; i++) {
+        uint32_t s = (slot + i) & (NF_SLOTS - 1);
+        if (!g_nf_used[s]) return FALSE;
+        if (g_nf_hash[s] == h) return TRUE;
+    }
+    return FALSE;
+}
+
+static void nf_insert(uint32_t h) {
+    uint32_t slot = h & (NF_SLOTS - 1);
+    for (int i = 0; i < 16; i++) {
+        uint32_t s = (slot + i) & (NF_SLOTS - 1);
+        if (!g_nf_used[s]) { g_nf_hash[s] = h; g_nf_used[s] = TRUE; return; }
+        if (g_nf_hash[s] == h) return;   /* already present */
+    }
+    /* probe chain full — drop silently (conservative: just takes the slow path) */
+}
+
 typedef int64_t (*B141f70Fn)(int64_t, int64_t);
 static B141f70Fn g_b141f70_orig  = NULL;
 static LONG      g_b141f70_count = 0;
 static double    g_b141f70_sum_ms = 0, g_b141f70_max_ms = 0;
 static int64_t b141f70_hook(int64_t a, int64_t b) {
+    const char *path = (const char *)b;
+    if (path) {
+        uint32_t h = djb2(path);
+        if (nf_lookup(h)) {
+            InterlockedIncrement(&g_nf_hits);
+            g_b141f70_count++;   /* count for profiling even though we skip the call */
+            return 0;
+        }
+        LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+        int64_t r = g_b141f70_orig(a, b); QueryPerformanceCounter(&t1);
+        double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+        g_b141f70_sum_ms += ms; if (ms > g_b141f70_max_ms) g_b141f70_max_ms = ms;
+        g_b141f70_count++;
+        if (r == 0) { nf_insert(h); InterlockedIncrement(&g_nf_miss); }
+        return r;
+    }
+    /* NULL path — fall through to original (handles any edge case) */
     LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
     int64_t r = g_b141f70_orig(a, b); QueryPerformanceCounter(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
@@ -3648,7 +3703,8 @@ static void profile_report_and_reset(void) {
             "  b25ec10(25ec10): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b3718f0(3718f0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b142f80(142f80): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  b141f70(141f70): avg=%.2f max=%.2f ms (n=%ld)\n",
+            "  b141f70(141f70): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  nf_cache: hits=%ld miss=%ld\n",
             g_gsvc_sum_ms    / gn,   g_gsvc_max_ms,    (long)g_gsvc_count,
             g_sslot22_sum_ms / ssn,  g_sslot22_max_ms, (long)g_sslot22_count,
             g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
@@ -3702,7 +3758,8 @@ static void profile_report_and_reset(void) {
             g_b25ec10_sum_ms / ec10n, g_b25ec10_max_ms, (long)g_b25ec10_count,
             g_b3718f0_sum_ms / f8f0n, g_b3718f0_max_ms, (long)g_b3718f0_count,
             g_b142f80_sum_ms / f80n,  g_b142f80_max_ms, (long)g_b142f80_count,
-            g_b141f70_sum_ms / f70n,  g_b141f70_max_ms, (long)g_b141f70_count);
+            g_b141f70_sum_ms / f70n,  g_b141f70_max_ms, (long)g_b141f70_count,
+            (long)g_nf_hits, (long)g_nf_miss);
         log_write(ibuf);
     }
 
@@ -3777,6 +3834,7 @@ static void profile_report_and_reset(void) {
     g_b3718f0_count  = 0; g_b3718f0_sum_ms  = 0; g_b3718f0_max_ms  = 0;
     g_b142f80_count  = 0; g_b142f80_sum_ms  = 0; g_b142f80_max_ms  = 0;
     g_b141f70_count  = 0; g_b141f70_sum_ms  = 0; g_b141f70_max_ms  = 0;
+    g_nf_hits = 0; g_nf_miss = 0;   /* counters reset per window; hash table persists */
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
