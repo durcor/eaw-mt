@@ -1160,3 +1160,31 @@ the 119-probe scan immediately. Simplest behavioral fix inside the game engine.
 option implementable entirely within the hook DLL with no game binary modification.
 A simple open-addressing hash table keyed on `param_1` (path pointer contents) would
 reduce all repeat stalls to 0ms.
+
+### Fix A implemented and validated — Phase 5 Step 24 (2026-04-27)
+
+Implemented in `b141f70_hook` (winmm_proxy.c): djb2-hashed open-addressing table
+(`NF_SLOTS=65536`). On `r==0` from the real MEG probe, insert the path hash. On
+future calls with the same path hash, return 0 immediately (skip the ~9ms probe).
+Cache persists for the lifetime of the process (not reset per 300-frame window).
+
+**Validation data:**
+
+| Window | b25ec10 max | nf_cache hits | nf_cache miss | Notes |
+|---|---|---|---|---|
+| W1 (prime) | 1298ms | 1071 | 5831 | First encounter — all ship types primed |
+| W2 | 1093ms | 119 | 238 | 1 cached type + 2 new types primed |
+| W3 | 0.62ms | 0 | 0 | Fast path (no slow-path sentinel hit) |
+| W4 | 1058ms | 238 | 238 | 2 cached + 2 new |
+| W5 | 3.80ms | 0 | 0 | Fast path |
+| **W6** | **0.15ms** | **119** | **0** | **All hits — stall eliminated** |
+
+**W6: b25ec10 max = 0.15ms vs pre-fix ~1,060ms — 7,000× speedup.**
+
+Behavior after priming:
+- Each unique ship type pays the 119-probe cost exactly once (~1,060ms, first encounter only)
+- All subsequent movement orders for known ship types: 119 cache hits, 0ms MEG I/O
+- After all ship types in a battle are primed, stalls cease entirely for that session
+
+Remaining stall source: first-encounter priming for new ship types. Eliminable with
+Fix B (pre-warm at scenario load) but requires enumerating ship types before combat.
