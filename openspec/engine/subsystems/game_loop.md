@@ -1188,3 +1188,38 @@ Behavior after priming:
 
 Remaining stall source: first-encounter priming for new ship types. Eliminable with
 Fix B (pre-warm at scenario load) but requires enumerating ship types before combat.
+
+### Fix E attempted and abandoned — Phase 5 Step 25 (2026-04-28)
+
+**Hypothesis:** Pre-build a hash index of all MEG archive filenames at DLL load time.
+In `b2136f0_hook`, skip the ~9ms vtable+0x18 call for paths not present in the index,
+returning 0 immediately. This would eliminate the first-encounter priming cost entirely.
+
+**Implementation:** Scanned base game `Data/*.meg` and all workshop MEG files under
+`steamapps/workshop/content/32470/<item>/Data/**/*.meg` (37 files, ~29 700 unique filenames)
+using djb2 with backslash→slash / lowercase→uppercase normalization.
+
+**Result: crashes every run.** Investigation via targeted false-negative logging revealed
+that `FUN_1402136f0`'s vtable+0x18 method is **not a pure MEG archive searcher**. It
+performs MEG lookup AND filesystem fallback: if the file is absent from all MEG archives
+it still searches the loose-file tree and returns 1 (found) when it exists on disk.
+
+Workshop mod assets (`i_EOTH_Govt_Menu.alo`, `NR_Lusankya.ALO`,
+`endurance-class_fleet_carrier.ALO`, etc.) are shipped as loose files rather than being
+packed into MEG archives. For those paths:
+- MEG scan: ~9ms (full archive scan, not found)
+- Filesystem fallback: ~0.4ms (stat → found)
+- b2136f0 returns 1 (not 0)
+
+Skipping b2136f0 entirely (returning 0) for `meg_has=0` paths causes the game to fail
+to locate these loose-file assets → crash after mode transition.
+
+**Fix E is not viable without hooking the vtable+0x18 method itself** to short-circuit
+only the MEG portion of the scan while preserving the filesystem fallback. That
+approach requires identifying and hooking a deeper vtable call with unknown arity/ABI —
+out of scope for the current phase.
+
+**Current state:** `b2136f0_hook` is a pure call-through with timing statistics.
+Fix A (b141f70 NF cache) remains the active optimization — it eliminates all repeat
+stalls after the first encounter per ship type. The once-per-ship-type priming cost
+(~1 060ms) remains.

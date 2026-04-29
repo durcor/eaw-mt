@@ -2681,6 +2681,8 @@ static void b3a59f0_hook(int64_t a, int64_t b) {
 #define B25EC10_BODY_SIZE  774
 #define B142F80_RVA        0x142f80ULL
 #define B141F70_RVA        0x141f70ULL
+#define B141F70_BODY_SIZE  501
+#define B2136F0_RVA        0x2136f0ULL
 
 /* FUN_1403729f0 — target scan, 4 args from call site:
  * (param_1[0x53]=fleet, uVar4=movement_type, param_1=move_order, plVar8=vehicle_list) */
@@ -2873,6 +2875,18 @@ static uint32_t djb2(const char *s) {
     return h;
 }
 
+/* djb2 with case-folding and slash normalization — used for MEG filename index. */
+static uint32_t djb2u(const char *s) {
+    uint32_t h = 5381;
+    unsigned char c;
+    while ((c = (unsigned char)*s++)) {
+        if (c == '\\') c = '/';
+        if (c >= 'a' && c <= 'z') c -= 32;
+        h = ((h << 5) + h) ^ c;
+    }
+    return h;
+}
+
 #define NF_SLOTS 65536   /* must be power of 2; handles ~24k unique paths at <40% load */
 static uint32_t g_nf_hash[NF_SLOTS];
 static BOOL     g_nf_used[NF_SLOTS];
@@ -2899,13 +2913,157 @@ static void nf_insert(uint32_t h) {
     /* probe chain full — drop silently (conservative: just takes the slow path) */
 }
 
+/* =========================================================================
+ * MEG filename index (Fix E) — built at DLL init by scanning Data\*.meg headers.
+ * Lets b2136f0_hook skip the ~9ms vtable MEG scan for paths absent from all
+ * MEG archives.  Hash keys use djb2u (uppercase, backslash→slash).
+ * ========================================================================= */
+#define MEG_SLOTS 262144  /* 256K power-of-2; handles ~50k filenames at <20% load */
+static uint32_t g_meg_hash[MEG_SLOTS];
+static BOOL     g_meg_used[MEG_SLOTS];
+static int      g_meg_file_count = 0;
+static BOOL     g_meg_ready = FALSE;
+
+static void meg_insert(uint32_t h) {
+    uint32_t slot = h & (MEG_SLOTS - 1);
+    for (int i = 0; i < 32; i++) {
+        uint32_t s = (slot + i) & (MEG_SLOTS - 1);
+        if (!g_meg_used[s]) { g_meg_hash[s] = h; g_meg_used[s] = TRUE; return; }
+        if (g_meg_hash[s] == h) return;
+    }
+    /* chain full — silent drop; path takes the slow scan path */
+}
+
+static BOOL meg_has(const char *path) {
+    if (!g_meg_ready) return TRUE;  /* index not built yet — allow all */
+    /* MEG filenames are stored as "DATA\ART\..." (DATA\ prefix, backslashes, uppercase).
+     * Game queries arrive as "data/art/..." (lowercase, forward slashes, same DATA prefix).
+     * djb2u normalizes both to "DATA/ART/..." before hashing — no prefix stripping needed. */
+    uint32_t h = djb2u(path);
+    uint32_t slot = h & (MEG_SLOTS - 1);
+    for (int i = 0; i < 32; i++) {
+        uint32_t s = (slot + i) & (MEG_SLOTS - 1);
+        if (!g_meg_used[s]) return FALSE;
+        if (g_meg_hash[s] == h) return TRUE;
+    }
+    return FALSE;
+}
+
+static void parse_meg(const char *meg_path) {
+    FILE *f = fopen(meg_path, "rb");
+    if (!f) return;
+    uint32_t num_filenames = 0, num_files = 0;
+    if (fread(&num_filenames, 4, 1, f) != 1 ||
+        fread(&num_files,     4, 1, f) != 1) { fclose(f); return; }
+    char name_buf[512];
+    for (uint32_t i = 0; i < num_filenames; i++) {
+        uint16_t len = 0;
+        if (fread(&len, 2, 1, f) != 1) break;
+        if (len == 0 || len >= (uint16_t)sizeof(name_buf)) {
+            fseek(f, (long)len, SEEK_CUR);
+            continue;
+        }
+        if (fread(name_buf, len, 1, f) != 1) break;
+        name_buf[len] = '\0';
+        meg_insert(djb2u(name_buf));
+        g_meg_file_count++;
+    }
+    fclose(f);
+}
+
+static void scan_meg_dir(const char *dir_path, int *meg_count) {
+    char pattern[MAX_PATH];
+    snprintf(pattern, MAX_PATH, "%s\\*.meg", dir_path);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        char full[MAX_PATH];
+        snprintf(full, MAX_PATH, "%s\\%s", dir_path, fd.cFileName);
+        parse_meg(full);
+        (*meg_count)++;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static void build_meg_index(void) {
+    char dir[MAX_PATH];
+    GetCurrentDirectoryA(MAX_PATH, dir);
+    int meg_count = 0;
+
+    /* Base game MEGs: <game>\Data\*.meg */
+    char data_dir[MAX_PATH];
+    snprintf(data_dir, MAX_PATH, "%s\\Data", dir);
+    scan_meg_dir(data_dir, &meg_count);
+
+    /* Workshop MEGs: go 3 levels up (corruption→EaW→common→steamapps),
+     * then enumerate workshop\content\32470\<item>\Data\*.meg and one level deeper. */
+    char steamapps[MAX_PATH];
+    char rel3up[MAX_PATH];
+    snprintf(rel3up, MAX_PATH, "%s\\..\\..\\..", dir);
+    GetFullPathNameA(rel3up, MAX_PATH, steamapps, NULL);
+
+    char workshop_base[MAX_PATH];
+    snprintf(workshop_base, MAX_PATH, "%s\\workshop\\content\\32470", steamapps);
+
+    char item_pattern[MAX_PATH];
+    snprintf(item_pattern, MAX_PATH, "%s\\*", workshop_base);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(item_pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            if (fd.cFileName[0] == '.') continue;  /* skip . and .. */
+            char item_data[MAX_PATH];
+            snprintf(item_data, MAX_PATH, "%s\\%s\\Data", workshop_base, fd.cFileName);
+            /* Scan Data/*.meg */
+            scan_meg_dir(item_data, &meg_count);
+            /* Scan Data/<subdir>/*.meg one level deeper (e.g. Audio/, Art/) */
+            char sub_pat[MAX_PATH];
+            snprintf(sub_pat, MAX_PATH, "%s\\*", item_data);
+            WIN32_FIND_DATAA fd2;
+            HANDLE h2 = FindFirstFileA(sub_pat, &fd2);
+            if (h2 != INVALID_HANDLE_VALUE) {
+                do {
+                    if (!(fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                    if (fd2.cFileName[0] == '.') continue;
+                    char sub_dir[MAX_PATH];
+                    snprintf(sub_dir, MAX_PATH, "%s\\%s", item_data, fd2.cFileName);
+                    scan_meg_dir(sub_dir, &meg_count);
+                } while (FindNextFileA(h2, &fd2));
+                FindClose(h2);
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+
+    if (meg_count == 0) {
+        log_write("[eaw-mt] build_meg_index: no .meg files found\n");
+        return;
+    }
+    g_meg_ready = TRUE;
+    char m[192];
+    snprintf(m, sizeof(m),
+             "[eaw-mt] build_meg_index: %d .meg files, %d filenames indexed\n",
+             meg_count, g_meg_file_count);
+    log_write(m);
+}
+
 typedef int64_t (*B141f70Fn)(int64_t, int64_t);
 static B141f70Fn g_b141f70_orig  = NULL;
 static LONG      g_b141f70_count = 0;
 static double    g_b141f70_sum_ms = 0, g_b141f70_max_ms = 0;
+static LONG g_path_sample_count = 0;  /* one-shot sampler: log first 16 paths seen */
+
 static int64_t b141f70_hook(int64_t a, int64_t b) {
     const char *path = (const char *)b;
     if (path) {
+        long n = InterlockedIncrement(&g_path_sample_count);
+        if (n <= 16 && g_log_fp) {
+            fprintf(g_log_fp, "[eaw-mt] b141f70 path[%ld]: \"%s\" meg=%d\n",
+                    n, path, (int)meg_has(path));
+            fflush(g_log_fp);
+        }
         uint32_t h = djb2(path);
         if (nf_lookup(h)) {
             InterlockedIncrement(&g_nf_hits);
@@ -2971,6 +3129,65 @@ static BOOL install_b25ec10_subcallee_hooks(void)
             n142f80, n141f70);
     log_write(m);
     return (n142f80 + n141f70) > 0;
+}
+
+/* FUN_1402136f0 — MEG archive searcher, 5 args: (longlong* asset_db, longlong path, uint, u1, u1).
+ * Called at 2 sites in FUN_140141f70 (+0x081, +0x126).
+ * FIX E: if path not in any MEG archive, return 0 without the ~9ms vtable scan. */
+typedef int64_t (*B2136f0Fn)(int64_t, int64_t, int64_t, int64_t, int64_t);
+static B2136f0Fn g_b2136f0_orig  = NULL;
+static LONG      g_b2136f0_count = 0;
+static LONG      g_b2136f0_skip  = 0;
+static double    g_b2136f0_sum_ms = 0, g_b2136f0_max_ms = 0;
+
+static int64_t b2136f0_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e) {
+    /* Fix E abandoned: vtable+0x18 does MEG scan AND filesystem fallback.
+     * Returning 0 for meg=0 paths skips the filesystem fallback, breaking loose-file assets.
+     * Call-through always; Fix A's b141f70 NF cache handles repeat stalls. */
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    int64_t r = g_b2136f0_orig(a, b, c, d, e); QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_b2136f0_sum_ms += ms; if (ms > g_b2136f0_max_ms) g_b2136f0_max_ms = ms;
+    g_b2136f0_count++;
+    return r;
+}
+
+static BOOL install_b141f70_subcallee_hooks(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_b141f70 = (BYTE *)exe + B141F70_RVA;
+    BYTE *fn_b2136f0 = (BYTE *)exe + B2136F0_RVA;
+
+    g_b2136f0_orig = (B2136f0Fn)fn_b2136f0;
+
+    BYTE *stubs = alloc_near(fn_b141f70, 14);
+    if (!stubs) {
+        log_write("[eaw-mt] WARN: alloc_near failed for b141f70 sub stubs\n");
+        return FALSE;
+    }
+    write_abs_jmp(stubs, (uint64_t)b2136f0_hook);
+
+    int n2136f0 = 0;
+    DWORD old_prot;
+    for (int i = 0; i <= B141F70_BODY_SIZE - 5; i++) {
+        if (fn_b141f70[i] != 0xE8) continue;
+        int32_t rel;
+        memcpy(&rel, fn_b141f70 + i + 1, 4);
+        BYTE *target = fn_b141f70 + i + 5 + rel;
+        if (target != fn_b2136f0) continue;
+        int32_t new_rel = (int32_t)(stubs - (fn_b141f70 + i + 5));
+        VirtualProtect(fn_b141f70 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old_prot);
+        memcpy(fn_b141f70 + i + 1, &new_rel, 4);
+        VirtualProtect(fn_b141f70 + i + 1, 4, old_prot, &old_prot);
+        FlushInstructionCache(GetCurrentProcess(), fn_b141f70 + i, 5);
+        n2136f0++;
+    }
+    char m[128];
+    sprintf(m, "[eaw-mt] b141f70_sub: b2136f0=%d site(s) patched in 141f70\n", n2136f0);
+    log_write(m);
+    return n2136f0 > 0;
 }
 
 typedef void (*B38cb30Fn)(int64_t, int64_t, int64_t, int64_t);
@@ -3649,6 +3866,7 @@ static void profile_report_and_reset(void) {
         double f8f0n = (double)(g_b3718f0_count  ? g_b3718f0_count  : 1);
         double f80n  = (double)(g_b142f80_count  ? g_b142f80_count  : 1);
         double f70n  = (double)(g_b141f70_count  ? g_b141f70_count  : 1);
+        double f36n  = (double)(g_b2136f0_count  ? g_b2136f0_count  : 1);
         sprintf(ibuf,
             "[eaw-mt] gsvc(28d400):    avg=%.2f max=%.2f ms (n=%ld)\n"
             "  sslot22(4d95a0): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -3704,7 +3922,9 @@ static void profile_report_and_reset(void) {
             "  b3718f0(3718f0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b142f80(142f80): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b141f70(141f70): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  nf_cache: hits=%ld miss=%ld\n",
+            "  nf_cache: hits=%ld miss=%ld\n"
+            "  b2136f0(2136f0): avg=%.2f max=%.2f ms (n=%ld skip=%ld)\n"
+            "  meg_idx: files=%d ready=%d\n",
             g_gsvc_sum_ms    / gn,   g_gsvc_max_ms,    (long)g_gsvc_count,
             g_sslot22_sum_ms / ssn,  g_sslot22_max_ms, (long)g_sslot22_count,
             g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
@@ -3759,7 +3979,9 @@ static void profile_report_and_reset(void) {
             g_b3718f0_sum_ms / f8f0n, g_b3718f0_max_ms, (long)g_b3718f0_count,
             g_b142f80_sum_ms / f80n,  g_b142f80_max_ms, (long)g_b142f80_count,
             g_b141f70_sum_ms / f70n,  g_b141f70_max_ms, (long)g_b141f70_count,
-            (long)g_nf_hits, (long)g_nf_miss);
+            (long)g_nf_hits, (long)g_nf_miss,
+            g_b2136f0_sum_ms / f36n,  g_b2136f0_max_ms, (long)g_b2136f0_count, (long)g_b2136f0_skip,
+            g_meg_file_count, (int)g_meg_ready);
         log_write(ibuf);
     }
 
@@ -3835,6 +4057,7 @@ static void profile_report_and_reset(void) {
     g_b142f80_count  = 0; g_b142f80_sum_ms  = 0; g_b142f80_max_ms  = 0;
     g_b141f70_count  = 0; g_b141f70_sum_ms  = 0; g_b141f70_max_ms  = 0;
     g_nf_hits = 0; g_nf_miss = 0;   /* counters reset per window; hash table persists */
+    g_b2136f0_count  = 0; g_b2136f0_sum_ms  = 0; g_b2136f0_max_ms  = 0; g_b2136f0_skip = 0;
     g_flush_sum_ms = g_frame_sum_ms = g_inter_sum_ms = g_sim_sum_ms = g_pump_sum_ms = 0;
     g_flush_min_ms = g_frame_min_ms = g_inter_min_ms = g_sim_min_ms = g_pump_min_ms = 1e9;
     g_flush_max_ms = g_frame_max_ms = g_inter_max_ms = g_sim_max_ms = g_pump_max_ms = 0;
@@ -4152,6 +4375,12 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         /* Sub-callee hooks inside FUN_14025ec10: b142f80 (reg check) + b141f70 (sync asset load) */
         install_b25ec10_subcallee_hooks();
+
+        /* Build MEG filename index then patch FUN_1402136f0 call sites in FUN_140141f70.
+         * MEG filenames use "DATA\ART\..." format; djb2u normalizes both sides to "DATA/ART/..."
+         * so game queries ("data/art/...") hash-match MEG entries without any prefix stripping. */
+        build_meg_index();
+        install_b141f70_subcallee_hooks();
 
         /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();
