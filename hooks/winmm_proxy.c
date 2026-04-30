@@ -1605,15 +1605,29 @@ static BOOL install_2be640_body_hooks(void)
 typedef void (*PumpEFn)(int64_t);
 static PumpEFn g_pumpe_orig   = NULL;
 static LONG    g_pumpe_count  = 0;
+static LONG    g_pumpe_skip   = 0;   /* calls skipped due to budget exhaustion */
 static double  g_pumpe_sum_ms = 0, g_pumpe_max_ms = 0;
+
+/* Per-gsvc-call Lua AI time budget.  Prevents stall accumulation when multiple
+ * entities run slow Lua coroutines in the same service dispatch.  A single entity
+ * can still run long on its first call (Lua cannot be interrupted mid-execution);
+ * all subsequent entities in the same gsvc pass are skipped once the cap is hit.
+ * Reset by game_service_hook at the start of each gsvc call. */
+#define PUMPE_BUDGET_MS 33.0
+static double g_pumpe_frame_used_ms = 0.0;
 
 static void pumpe_hook(int64_t a)
 {
+    if (g_pumpe_frame_used_ms >= PUMPE_BUDGET_MS) {
+        InterlockedIncrement(&g_pumpe_skip);
+        return;
+    }
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     g_pumpe_orig(a);
     QueryPerformanceCounter(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_pumpe_frame_used_ms += ms;
     g_pumpe_sum_ms += ms;
     if (ms > g_pumpe_max_ms) g_pumpe_max_ms = ms;
     g_pumpe_count++;
@@ -3444,6 +3458,7 @@ static LONG   g_bsel_count     = 0;
 static double g_bsel_sum_ms    = 0, g_bsel_max_ms    = 0;
 
 static void game_service_hook(int64_t a, int32_t b) {
+    g_pumpe_frame_used_ms = 0.0;  /* reset per-gsvc Lua AI budget */
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     g_gsvc_orig(a, b);
@@ -3873,7 +3888,7 @@ static void profile_report_and_reset(void) {
             "  tail22i(3639d0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld)\n"
             "  a76b0(3a76b0):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b87010(387010):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  d12d520(12d520): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -3930,7 +3945,7 @@ static void profile_report_and_reset(void) {
             g_tail22i_sum_ms / t22n, g_tail22i_max_ms, (long)g_tail22i_count,
             g_t2be640_sum_ms / t2bn, g_t2be640_max_ms, (long)g_t2be640_count,
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
-            g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count,
+            g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count, (long)g_pumpe_skip,
             g_a76b0_sum_ms   / a76n, g_a76b0_max_ms,   (long)g_a76b0_count,
             g_b87010_sum_ms  / b87n,  g_b87010_max_ms,  (long)g_b87010_count,
             g_d12d520_sum_ms / d52n,  g_d12d520_max_ms,  (long)g_d12d520_count,
@@ -4020,7 +4035,7 @@ static void profile_report_and_reset(void) {
     g_ta6b80_count  = 0; g_ta6b80_sum_ms  = 0; g_ta6b80_max_ms  = 0;
     g_ta62d0_count  = 0; g_ta62d0_sum_ms  = 0; g_ta62d0_max_ms  = 0;
     g_t20ed70_count = 0; g_t20ed70_sum_ms = 0; g_t20ed70_max_ms = 0;
-    g_pumpe_count   = 0; g_pumpe_sum_ms   = 0; g_pumpe_max_ms   = 0;
+    g_pumpe_count   = 0; g_pumpe_sum_ms   = 0; g_pumpe_max_ms   = 0; g_pumpe_skip = 0;
     g_a76b0_count   = 0; g_a76b0_sum_ms   = 0; g_a76b0_max_ms   = 0;
     g_a9e30_count   = 0; g_a9e30_sum_ms   = 0; g_a9e30_max_ms   = 0;
     g_e369e0_count  = 0; g_e369e0_sum_ms  = 0; g_e369e0_max_ms  = 0;
