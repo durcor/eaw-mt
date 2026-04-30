@@ -1223,3 +1223,112 @@ out of scope for the current phase.
 Fix A (b141f70 NF cache) remains the active optimization — it eliminates all repeat
 stalls after the first encounter per ship type. The once-per-ship-type priming cost
 (~1 060ms) remains.
+
+---
+
+## Phase 5 Step 26 — Pump_Threads Time Budget (Fix B3) — 2026-04-28/29
+
+### Symptom
+W1 profiling showed pumpe max ~14 000ms with skip=0. The single slow entity's
+Lua AI initialization stall blocked all 7 subsequent entities (their pumpe calls
+were enqueued but hadn't run). This caused a 14s visible freeze at battle start.
+
+### Fix
+Per-gsvc Lua AI budget: `PUMPE_BUDGET_MS = 33.0` ms. `g_pumpe_frame_used_ms` is
+reset to 0 at the start of each `game_service_hook` call. Each `pumpe_hook` call
+increments the accumulator; once exhausted, subsequent pumpe calls return early
+(`InterlockedIncrement(&g_pumpe_skip)`).
+
+**Validation (from log):**
+- W1: pumpe max=~14 000ms, skip=7 — the 7 entities after the slow one are skipped,
+  preventing cascading stalls. The first entity (slow one) still runs because the
+  budget is 0.0ms at its entry.
+- W2+: pumpe max=2–9ms, skip=0 — steady-state is stall-free.
+
+**Limitation:** The first entity's 14s run is unaffected. The budget only prevents
+new pumpe calls from starting once the cap is hit; it cannot interrupt a running
+`lua_resume` call.
+
+---
+
+## Phase 5 Step 27 — Lua AI 14s Stall Root Cause Investigation — 2026-04-29
+
+### Stall profile
+- Pattern: W1 pumpe max ~14 000ms, skip=7. Deterministic, once per battle process.
+- Trigger: Lua AI initialization for the first entity in the thread table.
+
+### Pump_Threads coroutine lifecycle (FUN_140247a90, RVA 0x247a90)
+
+The outer loop iterates all slots in the entity's thread table (`param_1 + 0x40`,
+64-byte slots). For each non-null slot:
+
+```
+iVar3 = thunk_FUN_1407bc310(coroutine_state, ...);  // lua_resume — runs to completion
+if (iVar3 == 0) {               // success
+    FUN_140248d10(…);           // read results from LuaThreadTable global
+    *puVar9 = 0;                // CLEAR coroutine slot
+} else {                        // error
+    FUN_140246940();            // log error ("LuaScriptClass::ERROR -- %s")
+    FUN_140248d10(…);           // read results (finds nothing — error string on stack)
+    *puVar9 = 0;                // CLEAR coroutine slot — same path
+}
+```
+
+**Critical:** both success and error paths zero the coroutine slot. This is a
+**run-once-discard** pattern. Each coroutine is resumed exactly once, runs to
+completion (or errors), and is then discarded. There is no re-enqueue, no retry.
+
+Coroutines are created by `FUN_140244740` (RVA 0x244740) via `lua_newthread`
+(`FUN_1407b9190`) on the entity's own root `lua_State` (`entity + 0x58`).
+Each entity has an independent Lua universe.
+
+### Why lua_sethook + lua_error is not viable
+
+If the debug hook fires `lua_error` (the only available abort in Lua 5.1):
+- `lua_resume` returns `LUA_ERRRUN` (non-zero)
+- The `else` branch runs: logs error, clears slot
+- **The initialization coroutine is permanently dead for this battle**
+- Entity AI is partially initialized → incorrect behavior for the entire battle
+
+`lua_yield` from a debug hook in Lua 5.1 raises "attempt to yield across C-call
+boundary" when `nCcalls > 0` (always the case during the VM execution path from
+`lua_resume`). So there is no way to pause-and-resume a running coroutine from
+a debug hook in Lua 5.1.
+
+### Game's existing lua_sethook usage (FUN_1402531f0, RVA 0x2531f0)
+
+The game installs `FUN_1402531f0` as a debug hook with mask=4 (`LUA_MASKLINE` —
+fires on every Lua source line transition) on all entity states and their coroutines.
+This is EaW's **in-game Lua script debugger**:
+- When no debugger is attached (`FUN_140245790()` returns 0): hook exits immediately
+- When a breakpoint condition is met: sets `DAT_140b09e71 = 1`, enters a Windows
+  message pump loop (`PeekMessageA / TranslateMessage / DispatchMessageA`) until the
+  flag is cleared externally
+
+This mechanism cannot be repurposed for frame-level time-slicing because:
+1. While paused, only the Win32 message loop runs — game logic does not advance
+2. The "resume" requires an external trigger from the debugger UI
+
+### Entity Lua state isolation
+
+Evidence that entities have independent lua_States (safe for potential threading):
+- Each entity object has its own `lua_State*` at `entity + 0x58`
+- `FUN_140244740` creates child coroutines via `lua_newthread` on that entity's state
+- `FUN_140251360` ("pause all") iterates the global entity list and calls
+  `lua_sethook(entity->lua_state, …)` on each entity separately — no shared state
+
+Cross-entity Lua communication has not been confirmed or ruled out.
+
+### Remaining approaches for the 14s stall
+
+| Approach | Assessment |
+|---|---|
+| lua_sethook + lua_error | Not viable — kills AI initialization permanently |
+| lua_sethook + lua_yield | Not viable — forbidden across C-call boundary in Lua 5.1 |
+| Game's debugger pause | Not viable — message-pump-only loop, no frame advance |
+| Worker thread offload | Viable: entities have independent lua_States. Risk: Lua-callable C APIs may access shared game state. Requires thread-safety audit. |
+| Pre-warm during loading | Viable: if coroutines are enqueued before the battle is visible, the 14s moves to the loading screen. Requires identifying when `FUN_140244740` first runs relative to the loading→battle transition. |
+
+**Current state:** 14s stall is a known limitation. The pumpe_budget fix (Step 26)
+prevents cascading stalls for all subsequent entities. Pre-warm during loading is the
+recommended next investigation path — lower risk than worker threads.
