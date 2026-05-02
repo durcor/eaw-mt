@@ -1605,23 +1605,90 @@ static BOOL install_2be640_body_hooks(void)
 typedef void (*PumpEFn)(int64_t);
 static PumpEFn g_pumpe_orig   = NULL;
 static LONG    g_pumpe_count  = 0;
-static LONG    g_pumpe_skip   = 0;   /* calls skipped due to budget exhaustion */
+static LONG    g_pumpe_skip   = 0;   /* calls skipped (budget or BG busy) */
+static LONG    g_pumpe_bg_dispatched = 0; /* calls dispatched to BG thread */
 static double  g_pumpe_sum_ms = 0, g_pumpe_max_ms = 0;
+static double  g_pumpe_bg_sum_ms = 0, g_pumpe_bg_max_ms = 0;
 
 /* Per-gsvc-call Lua AI time budget.  Prevents stall accumulation when multiple
- * entities run slow Lua coroutines in the same service dispatch.  A single entity
- * can still run long on its first call (Lua cannot be interrupted mid-execution);
- * all subsequent entities in the same gsvc pass are skipped once the cap is hit.
+ * entities run slow Lua coroutines in the same service dispatch.
  * Reset by game_service_hook at the start of each gsvc call. */
 #define PUMPE_BUDGET_MS 33.0
 static double g_pumpe_frame_used_ms = 0.0;
 
+/* Worker thread: one background Lua-AI thread at a time.  When an entity's
+ * lua_resume is dispatched here, the main thread returns immediately and the
+ * 14s init stall becomes invisible to the frame loop.
+ *
+ * Safety: each entity has an independent lua_State (entity+0x2d8).  After
+ * pumpe_hook returns without calling g_pumpe_orig, FUN_1403a6b80 only reads
+ * entity_manager+0x121 (done flag) and writes LastService timestamp — neither
+ * field is written by the BG thread until after lua_resume completes.
+ * If the main thread arrives for the same entity again while BG is running,
+ * g_pumpe_bg_running blocks the call (skip), preventing double-resume. */
+static volatile LONG g_pumpe_bg_running = 0;
+
+typedef struct { int64_t a; LARGE_INTEGER t0; } PumpeWorkItem;
+
+static DWORD WINAPI pumpe_bg_worker(LPVOID arg)
+{
+    PumpeWorkItem *item = (PumpeWorkItem *)arg;
+    int64_t a = item->a;
+    LARGE_INTEGER t0 = item->t0, t1;
+    free(item);
+
+    g_pumpe_orig(a);
+
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    g_pumpe_bg_sum_ms += ms;
+    if (ms > g_pumpe_bg_max_ms) g_pumpe_bg_max_ms = ms;
+
+    if (ms >= 100.0) {
+        char s[80];
+        sprintf(s, "[eaw-mt] PUMPE-BG %.1fms (entity Lua AI, background)\n", ms);
+        log_write(s);
+    }
+
+    InterlockedExchange(&g_pumpe_bg_running, 0);
+    return 0;
+}
+
 static void pumpe_hook(int64_t a)
 {
+    /* If a BG pumpe thread is still running, skip to prevent double-resume. */
+    if (InterlockedCompareExchange(&g_pumpe_bg_running, 0, 0) != 0) {
+        InterlockedIncrement(&g_pumpe_skip);
+        return;
+    }
+
+    /* Per-gsvc budget: once exceeded, skip remaining entities this pass. */
     if (g_pumpe_frame_used_ms >= PUMPE_BUDGET_MS) {
         InterlockedIncrement(&g_pumpe_skip);
         return;
     }
+
+    /* Dispatch to background thread — main thread returns immediately.
+     * The BG thread calls g_pumpe_orig(a) and clears g_pumpe_bg_running when done.
+     * On CreateThread failure fall through to synchronous execution. */
+    PumpeWorkItem *item = (PumpeWorkItem *)malloc(sizeof(PumpeWorkItem));
+    if (item) {
+        item->a = a;
+        QueryPerformanceCounter(&item->t0);
+        InterlockedExchange(&g_pumpe_bg_running, 1);
+        HANDLE h = CreateThread(NULL, 0, pumpe_bg_worker, item, 0, NULL);
+        if (h) {
+            CloseHandle(h);
+            InterlockedIncrement(&g_pumpe_bg_dispatched);
+            /* Don't charge g_pumpe_frame_used_ms — we didn't wait. */
+            return;
+        }
+        /* CreateThread failed: fall through to synchronous. */
+        InterlockedExchange(&g_pumpe_bg_running, 0);
+        free(item);
+    }
+
+    /* Synchronous fallback (also used if malloc failed). */
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     g_pumpe_orig(a);
@@ -1633,7 +1700,7 @@ static void pumpe_hook(int64_t a)
     g_pumpe_count++;
     if (ms >= 100.0) {
         char s[64];
-        sprintf(s, "[eaw-mt] PUMPE %.1fms (entity Lua AI)\n", ms);
+        sprintf(s, "[eaw-mt] PUMPE %.1fms (entity Lua AI, sync fallback)\n", ms);
         log_write(s);
     }
 }
@@ -3888,7 +3955,7 @@ static void profile_report_and_reset(void) {
             "  tail22i(3639d0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld)\n"
+            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld bg=%ld bg_max=%.0fms)\n"
             "  a76b0(3a76b0):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b87010(387010):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  d12d520(12d520): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -3946,6 +4013,7 @@ static void profile_report_and_reset(void) {
             g_t2be640_sum_ms / t2bn, g_t2be640_max_ms, (long)g_t2be640_count,
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
             g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count, (long)g_pumpe_skip,
+            (long)g_pumpe_bg_dispatched, g_pumpe_bg_max_ms,
             g_a76b0_sum_ms   / a76n, g_a76b0_max_ms,   (long)g_a76b0_count,
             g_b87010_sum_ms  / b87n,  g_b87010_max_ms,  (long)g_b87010_count,
             g_d12d520_sum_ms / d52n,  g_d12d520_max_ms,  (long)g_d12d520_count,
@@ -4036,6 +4104,7 @@ static void profile_report_and_reset(void) {
     g_ta62d0_count  = 0; g_ta62d0_sum_ms  = 0; g_ta62d0_max_ms  = 0;
     g_t20ed70_count = 0; g_t20ed70_sum_ms = 0; g_t20ed70_max_ms = 0;
     g_pumpe_count   = 0; g_pumpe_sum_ms   = 0; g_pumpe_max_ms   = 0; g_pumpe_skip = 0;
+    g_pumpe_bg_dispatched = 0; g_pumpe_bg_sum_ms = 0; g_pumpe_bg_max_ms = 0;
     g_a76b0_count   = 0; g_a76b0_sum_ms   = 0; g_a76b0_max_ms   = 0;
     g_a9e30_count   = 0; g_a9e30_sum_ms   = 0; g_a9e30_max_ms   = 0;
     g_e369e0_count  = 0; g_e369e0_sum_ms  = 0; g_e369e0_max_ms  = 0;
