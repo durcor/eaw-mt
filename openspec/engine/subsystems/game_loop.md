@@ -1340,8 +1340,11 @@ dispatch to a background thread when `g_space_mode_seen >= 3` (confirmed space b
 The BG thread calls `g_pumpe_orig(lua_state)` and clears `g_pumpe_bg_running` when done.
 The main thread returns immediately — the 14s stall no longer blocks the frame loop.
 
-**Limitation:** The BG thread still pays the full 21s Lua init cost on the first call.
-The loading screen stall remains the unsolved piece.
+**Limitation / regression (Step 30):** EaW's Lua C closures access shared game state
+(entity lists, resource counts, vtable objects). Running `lua_resume` on a BG thread
+while the main thread reads the same state causes main-thread vtable corruption → crash
+(`av_read` at heap address, confirmed on main-menu battle scene). BG dispatch reverted
+in Step 30; replaced by loading-screen prewarm (Step 29).
 
 ## Phase 5 Step 29 — Loading Screen Pre-warm — 2026-05-04
 
@@ -1406,3 +1409,24 @@ Expected log output:
 **Safety:** At the hook point, the main thread is not in service dispatch. All entity
 Lua states are independent (one per entity). No render thread or BG thread is running.
 The pre-warm is synchronous and completes before WinMain's main loop begins.
+
+## Phase 5 Step 30 — Revert BG Thread Dispatch (Use-After-Free Fix) — 2026-05-04
+
+BG thread dispatch (Step 28) caused a main-thread crash via vtable corruption.
+
+**Root cause:** EaW's Lua C closures (called from inside `lua_resume`) access shared
+game state — entity lists, resource counts, object vtables. Running them on a BG thread
+while the main thread reads the same state is a data race. Confirmed: `rip=0x39424190`
+(`av_read` at heap address, main thread, tid=388) after BG dispatches `bg=9`.
+
+The `g_space_mode_seen >= 3` guard was intended to prevent false triggers on the galactic
+map, but the main-menu animated space battle also increments the counter, enabling BG
+dispatch for a scene where ships regularly die and free entity memory mid-resume.
+
+**Fix:** `pumpe_hook` always runs `lua_resume` synchronously (BG dispatch block removed).
+Per-gsvc budget cap (`PUMPE_BUDGET_MS = 33ms`) is retained to bound frame cost.
+
+**Architecture going forward:** The prewarm hook (Step 29) absorbs the first-call 14s
+Lua-init cost during the loading screen. Post-prewarm, each `lua_resume` takes ~1ms;
+synchronous dispatch is sufficient. BG dispatch would require a full audit of every EaW
+Lua C binding to confirm no shared-state writes before it can safely be re-enabled.

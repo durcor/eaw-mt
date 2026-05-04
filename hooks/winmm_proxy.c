@@ -1710,48 +1710,21 @@ static void pumpe_hook(int64_t a)
     static LONG g_pumpe_once = 0;
     if (InterlockedCompareExchange(&g_pumpe_once, 1, 0) == 0)
         log_write("[eaw-mt] DBG: pumpe_hook first call\n");
-    /* BG dispatch once g_space_mode_seen reaches 3: requires 3 confirmed
-     * space_slot22_hook firings.  In campaign galactic init, space vtable fires
-     * briefly then galactic_slot22_hook resets the counter to 0 before it reaches 3.
-     * In skirmish (no galactic mode) or post-galactic space battle the counter
-     * climbs quickly and BG dispatch activates after the first few service ticks. */
-    if (InterlockedCompareExchange(&g_space_mode_seen, 0, 0) < 3)
-        goto pumpe_sync;
 
-    /* Space mode: guard against a still-running BG thread before dispatching. */
-    if (InterlockedCompareExchange(&g_pumpe_bg_running, 0, 0) != 0) {
-        InterlockedIncrement(&g_pumpe_skip);
-        return;
-    }
-
-    /* Per-gsvc budget: once exceeded, skip remaining entities this pass. */
+    /* BG dispatch disabled (Step 30): EaW's Lua C closures access shared game
+     * state (entity lists, resource counts, vtable objects).  Running lua_resume
+     * on a background thread while the main thread reads the same state causes
+     * main-thread vtable corruption → crash (confirmed: av_read@heap addr).
+     * The prewarm hook (Step 29) moves the first-call 14s Lua-init cost to the
+     * loading screen; post-prewarm calls take ~1ms and synchronous dispatch is fine.
+     *
+     * Per-gsvc budget still applies: skips remaining entities once the cumulative
+     * synchronous time exceeds PUMPE_BUDGET_MS for this service pass. */
     if (g_pumpe_frame_used_ms >= PUMPE_BUDGET_MS) {
         InterlockedIncrement(&g_pumpe_skip);
         return;
     }
 
-    /* Dispatch to background thread — main thread returns immediately.
-     * The BG thread calls g_pumpe_orig(a) and clears g_pumpe_bg_running when done.
-     * On CreateThread failure fall through to synchronous execution. */
-    PumpeWorkItem *item = (PumpeWorkItem *)malloc(sizeof(PumpeWorkItem));
-    if (item) {
-        item->a = a;
-        tgt_fake_qpc(&item->t0);
-        InterlockedExchange(&g_pumpe_bg_running, 1);
-        HANDLE h = CreateThread(NULL, 0, pumpe_bg_worker, item, 0, NULL);
-        if (h) {
-            CloseHandle(h);
-            InterlockedIncrement(&g_pumpe_bg_dispatched);
-            /* Don't charge g_pumpe_frame_used_ms — we didn't wait. */
-            return;
-        }
-        /* CreateThread failed: fall through to synchronous. */
-        InterlockedExchange(&g_pumpe_bg_running, 0);
-        free(item);
-    }
-
-    /* Synchronous fallback (also used if malloc failed or in galactic mode). */
-pumpe_sync:;
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
     g_pumpe_orig(a);
@@ -1763,7 +1736,7 @@ pumpe_sync:;
     g_pumpe_count++;
     if (ms >= 100.0) {
         char s[64];
-        sprintf(s, "[eaw-mt] PUMPE %.1fms (entity Lua AI, sync fallback)\n", ms);
+        sprintf(s, "[eaw-mt] PUMPE %.1fms (entity Lua AI, synchronous)\n", ms);
         log_write(s);
     }
 }
