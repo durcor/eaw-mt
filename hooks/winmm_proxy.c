@@ -91,29 +91,50 @@ static RenderFlushFn g_trampoline = NULL;
  * DAT_140b15418 (RVA 0xb15418) is the current game-mode pointer.  We re-patch
  * whenever the active vtable changes (galactic ↔ tactical ↔ cinematic, etc.).
  * ========================================================================= */
-#define GAME_MODE_PTR_RVA  0xb15418ULL
-#define SIM_TICK_VTBL_IDX  (0x158 / 8)    /* = 43 */
-#define SLOT22_VTBL_IDX    (0x0b0 / 8)    /* = 22 — GalacticModeClass::Service (FUN_14045e030) */
+#define GAME_MODE_PTR_RVA        0xb15418ULL
+#define SIM_TICK_VTBL_IDX        (0x158 / 8)    /* = 43 */
+#define SLOT22_VTBL_IDX          (0x0b0 / 8)    /* = 22 — GalacticModeClass::Service (FUN_14045e030) */
+/* FUN_14035cc10 — combat_mode_sim_tick.  vtable[43] must equal this for the
+ * object at GAME_MODE_PTR_RVA to be SpaceModeClass (active combat mode).
+ * During galactic mode or mid-transition, vtable[43]=0x4b1600 (wrong class)
+ * and FUN_140180dc0 (render flush body) calls that slot from the render thread —
+ * patching it causes the galactic sim tick to run on the render thread → crash. */
+#define COMBAT_MODE_SIM_TICK_RVA 0x35cc10ULL
 
 typedef void (WINAPI *SimTickFn)(void *, void *, void *, void *);
 static SimTickFn  g_saved_sim_tick = NULL;
 static void     **g_patched_vtable = NULL;
 
+/* QPC frequency — set once at DLL init before any hook runs. */
+static LARGE_INTEGER g_qpc_freq;
+
+/* Drop-in replacement for QueryPerformanceCounter that reads KUSER_SHARED_DATA
+ * (VDSO) via real_timeGetTime instead of going through Wine's syscall JIT thunk.
+ * The JIT thunk checks pending wake-address notifications before each syscall;
+ * a corrupted wake_addr pointer causes a write-AV at ~3000 QPC calls/second.
+ * real_timeGetTime is safe: it reads a shared memory page, no kernel transition.
+ * Scale: ms * (freq/1000) → QPC ticks, so existing delta/(freq/1000) math is
+ * correct and all profiling output stays in the right units. */
+static void tgt_fake_qpc(LARGE_INTEGER *li) {
+    li->QuadPart = (int64_t)real_timeGetTime() * (g_qpc_freq.QuadPart / 1000LL);
+}
+
 /* Set in sim_tick_hook; read at flush#1 entry (same thread, no race). */
 static LARGE_INTEGER g_sim_tick_start;
 static LARGE_INTEGER g_sim_tick_end;
 static BOOL          g_sim_tick_valid = FALSE;
+/* Forward-declared here so try_patch_sim_tick can test it; set by space_slot22_hook. */
+static volatile LONG g_space_mode_seen     = 0; /* counter: incremented by space_slot22_hook, reset by galactic_slot22_hook */
+static volatile LONG g_galactic_ever_active = 0; /* set by galactic_slot22_hook; informational only */
 
 static void WINAPI sim_tick_hook(void *a, void *b, void *c, void *d)
 {
-    QueryPerformanceCounter(&g_sim_tick_start);
-    g_saved_sim_tick(a, b, c, d);
-    QueryPerformanceCounter(&g_sim_tick_end);
+    tgt_fake_qpc(&g_sim_tick_start);
+    if (g_saved_sim_tick)
+        g_saved_sim_tick(a, b, c, d);
+    tgt_fake_qpc(&g_sim_tick_end);
     g_sim_tick_valid = TRUE;
 }
-
-/* Forward declaration needed by slot22_vtbl_hook below. */
-static LARGE_INTEGER g_qpc_freq;
 
 /* vtable slot-22 timing hook — co-managed with sim_tick via try_patch_sim_tick.
  * FUN_14045e030 decompile shows 3 params (param_1, param_2*, param_3*); use
@@ -126,9 +147,9 @@ static double g_slot22v_sum_ms = 0, g_slot22v_max_ms = 0;
 static void slot22_vtbl_hook(int64_t a, int64_t b, int64_t c, int64_t d)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_saved_slot22_vtbl(a, b, c, d);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_slot22v_sum_ms += ms;
     if (ms > g_slot22v_max_ms) g_slot22v_max_ms = ms;
@@ -145,6 +166,14 @@ static void slot22_vtbl_hook(int64_t a, int64_t b, int64_t c, int64_t d)
  * vtable pointer changes on mode transitions. */
 static void try_patch_sim_tick(void)
 {
+    /* DISABLED: reading *(void***)game_mode every render frame races against the
+     * galactic→space transition when the game mode object is freed mid-frame,
+     * causing a crash regardless of whether we actually patch.  The safe fix is
+     * an inline hook on FUN_14035cc10 (combat_mode_sim_tick, RVA 0x35cc10) at
+     * DLL init — no per-frame vtable reads needed.  Disabled until then; sim_tick
+     * timing stats will read zero in the profile output. */
+    return;
+
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return;
 
@@ -172,6 +201,12 @@ static void try_patch_sim_tick(void)
         g_saved_sim_tick = NULL;
     }
 
+    /* Only patch when vtable[43] is combat_mode_sim_tick (FUN_14035cc10).
+     * Any other value means DAT_140b15418 is not yet SpaceModeClass — skip. */
+    void *expected_sim_tick = (BYTE *)exe + COMBAT_MODE_SIM_TICK_RVA;
+    if (vtable[SIM_TICK_VTBL_IDX] != expected_sim_tick)
+        return;
+
     DWORD old;
     if (!VirtualProtect(&vtable[SIM_TICK_VTBL_IDX], 8,
                         PAGE_EXECUTE_READWRITE, &old)) {
@@ -186,7 +221,14 @@ static void try_patch_sim_tick(void)
      * not GalacticModeClass. FUN_14045e030 is hooked directly via inline trampoline
      * in install_galactic_slot22_hook(). */
     g_patched_vtable = vtable;
-    log_write("[eaw-mt] Sim tick hook patched\n");
+    {
+        char s[128];
+        int64_t vtbl_rva = (BYTE *)vtable - (BYTE *)exe;
+        int64_t fn_rva   = (BYTE *)g_saved_sim_tick - (BYTE *)exe;
+        sprintf(s, "[eaw-mt] Sim tick hook patched vtbl_rva=%llx fn_rva=%llx\n",
+                (long long)vtbl_rva, (long long)fn_rva);
+        log_write(s);
+    }
 }
 
 /* Forward declaration — definition appears in the Profiling section. */
@@ -225,9 +267,9 @@ static double g_pump_sum_ms = 0, g_pump_min_ms = 1e9, g_pump_max_ms = 0;
 static void __fastcall pump_threads_hook(void *param_1)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_pump_threads_orig(param_1);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
 
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_pump_sum_ms += ms;
@@ -404,7 +446,8 @@ static BOOL install_wait_message_iat_hook(void) {
  * calls >= 10ms.  Per-window totals reported as a separate ODS line.
  * ========================================================================= */
 
-static DWORD g_main_thread_id = 0;
+static DWORD g_main_thread_id   = 0;
+static DWORD g_render_thread_id = 0;
 static char  g_last_opened_file[MAX_PATH] = "";
 
 static double g_io_win_sum_ms = 0.0;
@@ -448,9 +491,9 @@ static BOOL WINAPI readfile_hook(HANDLE hFile, LPVOID lpBuf, DWORD nToRead,
         return real_ReadFile_fn(hFile, lpBuf, nToRead, lpRead, lpOv);
 
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     BOOL ok = real_ReadFile_fn(hFile, lpBuf, nToRead, lpRead, lpOv);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
 
     double ms = (double)(t1.QuadPart - t0.QuadPart) /
                 ((double)g_qpc_freq.QuadPart / 1000.0);
@@ -610,17 +653,17 @@ static void ifc_sample(int i, LARGE_INTEGER t0, LARGE_INTEGER t1) {
 
 #define IFC_WRAP(call, idx) do { \
     LARGE_INTEGER _t0, _t1; \
-    QueryPerformanceCounter(&_t0); \
+    tgt_fake_qpc(&_t0); \
     (call); \
-    QueryPerformanceCounter(&_t1); \
+    tgt_fake_qpc(&_t1); \
     ifc_sample((idx), _t0, _t1); \
 } while (0)
 
 #define IFC_WRAP_R(ret, call, idx) do { \
     LARGE_INTEGER _t0, _t1; \
-    QueryPerformanceCounter(&_t0); \
+    tgt_fake_qpc(&_t0); \
     (ret) = (call); \
-    QueryPerformanceCounter(&_t1); \
+    tgt_fake_qpc(&_t1); \
     ifc_sample((idx), _t0, _t1); \
 } while (0)
 
@@ -662,7 +705,7 @@ static void ifc_hook7(void)                              { IFC_WRAP(g_ifc7(),   
    a parameter cannot corrupt the callee's argument registers. */
 static void ifc_hook8(int64_t a, int64_t b, int64_t c, int64_t d) {
     LARGE_INTEGER _t0, _t1;
-    QueryPerformanceCounter(&_t0);
+    tgt_fake_qpc(&_t0);
     if (g_gap_base_E_valid) {
         double ms = (_t0.QuadPart - g_gap_base_E.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
         g_gap[4].sum_ms += ms;
@@ -671,12 +714,12 @@ static void ifc_hook8(int64_t a, int64_t b, int64_t c, int64_t d) {
         g_gap_base_E_valid = FALSE;
     }
     g_ifc8(a, b, c, d);
-    QueryPerformanceCounter(&_t1);
+    tgt_fake_qpc(&_t1);
     ifc_sample(8, _t0, _t1);
 }
 static void ifc_hook9 (int64_t a,int64_t b,int64_t c,int64_t d){
     LARGE_INTEGER _t0, _t1;
-    QueryPerformanceCounter(&_t0);
+    tgt_fake_qpc(&_t0);
     if (g_gap_base_A_valid) {
         double ms = (_t0.QuadPart - g_gap_base_A.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
         g_gap[0].sum_ms += ms;
@@ -685,23 +728,23 @@ static void ifc_hook9 (int64_t a,int64_t b,int64_t c,int64_t d){
         g_gap_base_A_valid = FALSE;
     }
     g_ifc9(a,b,c,d);
-    QueryPerformanceCounter(&_t1);
+    tgt_fake_qpc(&_t1);
     ifc_sample(9, _t0, _t1);
 }
 static void ifc_hook10(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc10(a,b,c,d),10);}
 static void ifc_hook11(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc11(a,b,c,d),11);}
 static void ifc_hook12(int64_t a,int64_t b,int64_t c,int64_t d){
     LARGE_INTEGER _t0, _t1;
-    QueryPerformanceCounter(&_t0);
+    tgt_fake_qpc(&_t0);
     g_ifc12(a,b,c,d);
-    QueryPerformanceCounter(&_t1);
+    tgt_fake_qpc(&_t1);
     ifc_sample(12, _t0, _t1);
     g_gap_base_B = _t1;
     g_gap_base_B_valid = TRUE;
 }
 static void ifc_hook13(int64_t a,int64_t b,int64_t c,int64_t d){
     LARGE_INTEGER _t0, _t1;
-    QueryPerformanceCounter(&_t0);
+    tgt_fake_qpc(&_t0);
     if (g_gap_base_B_valid) {
         double ms = (_t0.QuadPart - g_gap_base_B.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
         g_gap[1].sum_ms += ms;
@@ -710,7 +753,7 @@ static void ifc_hook13(int64_t a,int64_t b,int64_t c,int64_t d){
         g_gap_base_B_valid = FALSE;
     }
     g_ifc13(a,b,c,d);
-    QueryPerformanceCounter(&_t1);
+    tgt_fake_qpc(&_t1);
     ifc_sample(13, _t0, _t1);
     g_gap_base_C = _t1;
     g_gap_base_C_valid = TRUE;
@@ -718,7 +761,7 @@ static void ifc_hook13(int64_t a,int64_t b,int64_t c,int64_t d){
 static void ifc_hook14(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc14(a,b,c,d),14);}
 static int64_t ifc_hook15(void) {
     LARGE_INTEGER _t0, _t1;
-    QueryPerformanceCounter(&_t0);
+    tgt_fake_qpc(&_t0);
     if (g_gap_base_C_valid) {
         double ms = (_t0.QuadPart - g_gap_base_C.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
         g_gap[2].sum_ms += ms;
@@ -727,16 +770,16 @@ static int64_t ifc_hook15(void) {
         g_gap_base_C_valid = FALSE;
     }
     int64_t r = g_ifc15();
-    QueryPerformanceCounter(&_t1);
+    tgt_fake_qpc(&_t1);
     ifc_sample(15, _t0, _t1);
     return r;
 }
 static void ifc_hook16(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc16(a,b,c,d),16);}
 static void ifc_hook17(int64_t a, int64_t b, int64_t c, int64_t d) {
     LARGE_INTEGER _t0, _t1;
-    QueryPerformanceCounter(&_t0);
+    tgt_fake_qpc(&_t0);
     g_ifc17(a, b, c, d);
-    QueryPerformanceCounter(&_t1);
+    tgt_fake_qpc(&_t1);
     ifc_sample(17, _t0, _t1);
     g_gap_base_E = _t1;
     g_gap_base_E_valid = TRUE;
@@ -744,9 +787,9 @@ static void ifc_hook17(int64_t a, int64_t b, int64_t c, int64_t d) {
 static void ifc_hook18(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_ifc18(a,b,c,d),18);}
 static void ifc_hook19(int64_t a,int64_t b,int64_t c,int64_t d){
     LARGE_INTEGER _t0, _t1;
-    QueryPerformanceCounter(&_t0);
+    tgt_fake_qpc(&_t0);
     g_ifc19(a,b,c,d);
-    QueryPerformanceCounter(&_t1);
+    tgt_fake_qpc(&_t1);
     ifc_sample(19, _t0, _t1);
     g_gap_base_D = _t1;
     g_gap_base_D_valid = TRUE;
@@ -757,9 +800,9 @@ static void    ifc_hook22(int64_t a,int64_t b,int64_t c,int64_t d){IFC_WRAP(g_if
 static int64_t ifc_hook23(void) { int64_t r; IFC_WRAP_R(r, g_ifc23(), 23); return r; }
 static void    ifc_hook24(int64_t a,int64_t b,int64_t c,int64_t d){
     LARGE_INTEGER _t0, _t1;
-    QueryPerformanceCounter(&_t0);
+    tgt_fake_qpc(&_t0);
     g_ifc24(a,b,c,d);
-    QueryPerformanceCounter(&_t1);
+    tgt_fake_qpc(&_t1);
     ifc_sample(24, _t0, _t1);
     g_gap_base_A = _t1;
     g_gap_base_A_valid = TRUE;
@@ -971,10 +1014,15 @@ static double g_gslot22_sum_ms = 0, g_gslot22_max_ms = 0;
 
 static void galactic_slot22_hook(int64_t a, int64_t b, int64_t c, int64_t d)
 {
+    /* Mark galactic active; reset the space-mode counter so pumpe stays sync while
+     * the galactic loop is running.  Counter reaching 0 here also defeats any
+     * spurious space_mode_seen accumulated during galactic init. */
+    InterlockedExchange(&g_galactic_ever_active, 1);
+    InterlockedExchange(&g_space_mode_seen, 0);
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_gslot22_trampoline(a, b, c, d);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_gslot22_sum_ms += ms;
     if (ms > g_gslot22_max_ms) g_gslot22_max_ms = ms;
@@ -1050,13 +1098,16 @@ typedef void (*SpaceSlot22Fn)(int64_t, int32_t);
 static SpaceSlot22Fn g_sslot22_trampoline = NULL;
 static LONG    g_sslot22_count  = 0;
 static double  g_sslot22_sum_ms = 0, g_sslot22_max_ms = 0;
+/* g_space_mode_seen is declared near try_patch_sim_tick (above) and set here
+ * on first space_slot22_hook call to confirm space mode is active. */
 
 static void space_slot22_hook(int64_t a, int32_t b)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
+    InterlockedIncrement(&g_space_mode_seen);
     g_sslot22_trampoline(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_sslot22_sum_ms += ms;
     if (ms > g_sslot22_max_ms) g_sslot22_max_ms = ms;
@@ -1112,9 +1163,9 @@ static double  g_sunit22_sum_ms = 0, g_sunit22_max_ms = 0;
 static void space_unit_svc_hook(int64_t a, int32_t b)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_sunit22_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_sunit22_sum_ms += ms;
     if (ms > g_sunit22_max_ms) g_sunit22_max_ms = ms;
@@ -1230,9 +1281,9 @@ static double  g_tail22i_sum_ms = 0, g_tail22i_max_ms = 0;
 static void tail22i_hook(int64_t a, int32_t b)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_tail22i_trampoline(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_tail22i_sum_ms += ms;
     if (ms > g_tail22i_max_ms) g_tail22i_max_ms = ms;
@@ -1283,9 +1334,9 @@ static double   g_a1a240_sum_ms = 0, g_a1a240_max_ms = 0;
 static void* a1a240_hook(void)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     void *ret = g_a1a240_orig();
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_a1a240_sum_ms += ms;
     if (ms > g_a1a240_max_ms) g_a1a240_max_ms = ms;
@@ -1301,9 +1352,9 @@ static double   g_s9d270_sum_ms = 0, g_s9d270_max_ms = 0;
 static void s9d270_hook(int64_t a)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_s9d270_orig(a);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_s9d270_sum_ms += ms;
     if (ms > g_s9d270_max_ms) g_s9d270_max_ms = ms;
@@ -1379,9 +1430,9 @@ static double    g_t364920_sum_ms = 0, g_t364920_max_ms = 0;
 static void t364920_hook(int64_t a, int64_t b)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_t364920_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_t364920_sum_ms += ms;
     if (ms > g_t364920_max_ms) g_t364920_max_ms = ms;
@@ -1396,9 +1447,9 @@ static double    g_t2be640_sum_ms = 0, g_t2be640_max_ms = 0;
 static void t2be640_hook(int64_t a, int64_t b)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_t2be640_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_t2be640_sum_ms += ms;
     if (ms > g_t2be640_max_ms) g_t2be640_max_ms = ms;
@@ -1413,9 +1464,9 @@ static double    g_t490580_sum_ms = 0, g_t490580_max_ms = 0;
 static void t490580_hook(int64_t a)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_t490580_orig(a);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_t490580_sum_ms += ms;
     if (ms > g_t490580_max_ms) g_t490580_max_ms = ms;
@@ -1495,9 +1546,9 @@ static double   g_ta6b80_sum_ms = 0, g_ta6b80_max_ms = 0;
 static void ta6b80_hook(int64_t a, int32_t b, int8_t c)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_ta6b80_orig(a, b, c);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_ta6b80_sum_ms += ms;
     if (ms > g_ta6b80_max_ms) g_ta6b80_max_ms = ms;
@@ -1512,9 +1563,9 @@ static double   g_ta62d0_sum_ms = 0, g_ta62d0_max_ms = 0;
 static void ta62d0_hook(int64_t a)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_ta62d0_orig(a);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_ta62d0_sum_ms += ms;
     if (ms > g_ta62d0_max_ms) g_ta62d0_max_ms = ms;
@@ -1529,9 +1580,9 @@ static double    g_t20ed70_sum_ms = 0, g_t20ed70_max_ms = 0;
 static void t20ed70_hook(int64_t a)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_t20ed70_orig(a);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_t20ed70_sum_ms += ms;
     if (ms > g_t20ed70_max_ms) g_t20ed70_max_ms = ms;
@@ -1639,7 +1690,7 @@ static DWORD WINAPI pumpe_bg_worker(LPVOID arg)
 
     g_pumpe_orig(a);
 
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_pumpe_bg_sum_ms += ms;
     if (ms > g_pumpe_bg_max_ms) g_pumpe_bg_max_ms = ms;
@@ -1656,7 +1707,18 @@ static DWORD WINAPI pumpe_bg_worker(LPVOID arg)
 
 static void pumpe_hook(int64_t a)
 {
-    /* If a BG pumpe thread is still running, skip to prevent double-resume. */
+    static LONG g_pumpe_once = 0;
+    if (InterlockedCompareExchange(&g_pumpe_once, 1, 0) == 0)
+        log_write("[eaw-mt] DBG: pumpe_hook first call\n");
+    /* BG dispatch once g_space_mode_seen reaches 3: requires 3 confirmed
+     * space_slot22_hook firings.  In campaign galactic init, space vtable fires
+     * briefly then galactic_slot22_hook resets the counter to 0 before it reaches 3.
+     * In skirmish (no galactic mode) or post-galactic space battle the counter
+     * climbs quickly and BG dispatch activates after the first few service ticks. */
+    if (InterlockedCompareExchange(&g_space_mode_seen, 0, 0) < 3)
+        goto pumpe_sync;
+
+    /* Space mode: guard against a still-running BG thread before dispatching. */
     if (InterlockedCompareExchange(&g_pumpe_bg_running, 0, 0) != 0) {
         InterlockedIncrement(&g_pumpe_skip);
         return;
@@ -1674,7 +1736,7 @@ static void pumpe_hook(int64_t a)
     PumpeWorkItem *item = (PumpeWorkItem *)malloc(sizeof(PumpeWorkItem));
     if (item) {
         item->a = a;
-        QueryPerformanceCounter(&item->t0);
+        tgt_fake_qpc(&item->t0);
         InterlockedExchange(&g_pumpe_bg_running, 1);
         HANDLE h = CreateThread(NULL, 0, pumpe_bg_worker, item, 0, NULL);
         if (h) {
@@ -1688,11 +1750,12 @@ static void pumpe_hook(int64_t a)
         free(item);
     }
 
-    /* Synchronous fallback (also used if malloc failed). */
+    /* Synchronous fallback (also used if malloc failed or in galactic mode). */
+pumpe_sync:;
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_pumpe_orig(a);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_pumpe_frame_used_ms += ms;
     g_pumpe_sum_ms += ms;
@@ -1762,9 +1825,9 @@ static double  g_a76b0_sum_ms = 0, g_a76b0_max_ms = 0;
 static void a76b0_hook(int64_t a, int32_t b)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_a76b0_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_a76b0_sum_ms += ms;
     if (ms > g_a76b0_max_ms) g_a76b0_max_ms = ms;
@@ -1783,9 +1846,9 @@ static void a9e30_hook(int64_t a, int32_t b, int64_t c, int32_t d, int64_t e,
                         int32_t j, int32_t k2, int32_t l, int32_t m2, int32_t n2)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_a9e30_orig(a, b, c, d, e, f, g, h, i2, j, k2, l, m2, n2);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_a9e30_sum_ms += ms;
     if (ms > g_a9e30_max_ms) g_a9e30_max_ms = ms;
@@ -1800,9 +1863,9 @@ static double   g_e369e0_sum_ms = 0, g_e369e0_max_ms = 0;
 static void e369e0_hook(int64_t a, int32_t b)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_e369e0_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_e369e0_sum_ms += ms;
     if (ms > g_e369e0_max_ms) g_e369e0_max_ms = ms;
@@ -1880,9 +1943,9 @@ static double   g_b87010_sum_ms = 0, g_b87010_max_ms = 0;
 static void b87010_hook(int64_t a, int32_t b)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_b87010_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b87010_sum_ms += ms;
     if (ms > g_b87010_max_ms) g_b87010_max_ms = ms;
@@ -1951,9 +2014,9 @@ static double    g_d12d520_sum_ms = 0, g_d12d520_max_ms = 0;
 static int32_t d12d520_hook(int64_t manager, const char *name)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     int32_t r = g_d12d520_orig(manager, name);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_d12d520_sum_ms += ms;
     if (ms > g_d12d520_max_ms) g_d12d520_max_ms = ms;
@@ -2009,9 +2072,9 @@ static double    g_d12d480_sum_ms = 0, g_d12d480_max_ms = 0;
 static void d12d480_hook(int64_t system, int32_t slot, void *vec)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_d12d480_orig(system, slot, vec);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_d12d480_sum_ms += ms;
     if (ms > g_d12d480_max_ms) g_d12d480_max_ms = ms;
@@ -2087,9 +2150,9 @@ static void b387400_hook(int64_t a, int32_t b)
 {
     g_opp_per_call = 0;
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_b387400_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b387400_sum_ms += ms;
     if (ms > g_b387400_max_ms) g_b387400_max_ms = ms;
@@ -2104,9 +2167,9 @@ static double    g_b385cf0_sum_ms = 0, g_b385cf0_max_ms = 0;
 static int64_t b385cf0_hook(int64_t a)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     int64_t r = g_b385cf0_orig(a);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b385cf0_sum_ms += ms;
     if (ms > g_b385cf0_max_ms) g_b385cf0_max_ms = ms;
@@ -2122,9 +2185,9 @@ static double    g_b381ff0_sum_ms = 0, g_b381ff0_max_ms = 0;
 static int64_t b381ff0_hook(int64_t a)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     int64_t r = g_b381ff0_orig(a);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b381ff0_sum_ms += ms;
     if (ms > g_b381ff0_max_ms) g_b381ff0_max_ms = ms;
@@ -2228,9 +2291,9 @@ static int64_t * b385190_hook(int64_t component, int64_t candidate, float *score
     }
     g_opp_per_call++;
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     int64_t *r = g_b385190_orig(component, candidate, score);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b385190_sum_ms += ms;
     if (ms > g_b385190_max_ms) g_b385190_max_ms = ms;
@@ -2313,9 +2376,9 @@ static double    g_b384850_sum_ms = 0, g_b384850_max_ms = 0;
 static char b384850_hook(int64_t a, int64_t b, int64_t c, int64_t d)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     char r = g_b384850_orig(a, b, c, d);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b384850_sum_ms += ms;
     if (ms > g_b384850_max_ms) g_b384850_max_ms = ms;
@@ -2331,9 +2394,9 @@ static double    g_b3825b0_sum_ms = 0, g_b3825b0_max_ms = 0;
 static char b3825b0_hook(int64_t a, int64_t b, int64_t c, int64_t d)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     char r = g_b3825b0_orig(a, b, c, d);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3825b0_sum_ms += ms;
     if (ms > g_b3825b0_max_ms) g_b3825b0_max_ms = ms;
@@ -2409,8 +2472,8 @@ static B385e70Fn g_b385e70_orig  = NULL;
 static LONG      g_b385e70_count = 0;
 static double    g_b385e70_sum_ms = 0, g_b385e70_max_ms = 0;
 static int64_t b385e70_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b385e70_orig(a, b, c, d); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b385e70_orig(a, b, c, d); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b385e70_sum_ms += ms; if (ms > g_b385e70_max_ms) g_b385e70_max_ms = ms;
     g_b385e70_count++; return r;
@@ -2421,8 +2484,8 @@ static B399450Fn g_b399450_orig  = NULL;
 static LONG      g_b399450_count = 0;
 static double    g_b399450_sum_ms = 0, g_b399450_max_ms = 0;
 static int64_t b399450_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b399450_orig(a, b, c, d, e, f); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b399450_orig(a, b, c, d, e, f); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b399450_sum_ms += ms; if (ms > g_b399450_max_ms) g_b399450_max_ms = ms;
     g_b399450_count++; return r;
@@ -2433,8 +2496,8 @@ static B381dc0Fn g_b381dc0_orig  = NULL;
 static LONG      g_b381dc0_count = 0;
 static double    g_b381dc0_sum_ms = 0, g_b381dc0_max_ms = 0;
 static int64_t b381dc0_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b381dc0_orig(a, b, c, d, e, f); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b381dc0_orig(a, b, c, d, e, f); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b381dc0_sum_ms += ms; if (ms > g_b381dc0_max_ms) g_b381dc0_max_ms = ms;
     g_b381dc0_count++; return r;
@@ -2445,8 +2508,8 @@ static B29f810Fn g_b29f810_orig  = NULL;
 static LONG      g_b29f810_count = 0;
 static double    g_b29f810_sum_ms = 0, g_b29f810_max_ms = 0;
 static int64_t b29f810_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b29f810_orig(a, b, c, d, e, f, g); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b29f810_orig(a, b, c, d, e, f, g); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b29f810_sum_ms += ms; if (ms > g_b29f810_max_ms) g_b29f810_max_ms = ms;
     g_b29f810_count++; return r;
@@ -2534,8 +2597,8 @@ static LONG      g_b388b60_count = 0;
 static double    g_b388b60_sum_ms = 0, g_b388b60_max_ms = 0;
 static int64_t * b388b60_hook(int64_t a, int64_t b, int64_t c, int64_t d,
                                int64_t e, int64_t f, int64_t g2, int64_t h) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t *r = g_b388b60_orig(a, b, c, d, e, f, g2, h); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t *r = g_b388b60_orig(a, b, c, d, e, f, g2, h); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b388b60_sum_ms += ms; if (ms > g_b388b60_max_ms) g_b388b60_max_ms = ms;
     g_b388b60_count++; return r;
@@ -2546,8 +2609,8 @@ static B3989a0Fn g_b3989a0_orig  = NULL;
 static LONG      g_b3989a0_count = 0;
 static double    g_b3989a0_sum_ms = 0, g_b3989a0_max_ms = 0;
 static void b3989a0_hook(int64_t a, int64_t b, int64_t c) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b3989a0_orig(a, b, c); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b3989a0_orig(a, b, c); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3989a0_sum_ms += ms; if (ms > g_b3989a0_max_ms) g_b3989a0_max_ms = ms;
     g_b3989a0_count++;
@@ -2659,8 +2722,8 @@ static B3727a0Fn g_b3727a0_orig  = NULL;
 static LONG      g_b3727a0_count = 0;
 static double    g_b3727a0_sum_ms = 0, g_b3727a0_max_ms = 0;
 static int64_t b3727a0_hook(int64_t a, int64_t b) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b3727a0_orig(a, b); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b3727a0_orig(a, b); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3727a0_sum_ms += ms; if (ms > g_b3727a0_max_ms) g_b3727a0_max_ms = ms;
     g_b3727a0_count++; return r;
@@ -2672,8 +2735,8 @@ static B3a4820Fn g_b3a4820_orig  = NULL;
 static LONG      g_b3a4820_count = 0;
 static double    g_b3a4820_sum_ms = 0, g_b3a4820_max_ms = 0;
 static void b3a4820_hook(int64_t a) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b3a4820_orig(a); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b3a4820_orig(a); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3a4820_sum_ms += ms; if (ms > g_b3a4820_max_ms) g_b3a4820_max_ms = ms;
     g_b3a4820_count++;
@@ -2686,8 +2749,8 @@ static B3a8710Fn g_b3a8710_orig  = NULL;
 static LONG      g_b3a8710_count = 0;
 static double    g_b3a8710_sum_ms = 0, g_b3a8710_max_ms = 0;
 static void b3a8710_hook(int64_t a, int64_t b) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b3a8710_orig(a, b); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b3a8710_orig(a, b); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3a8710_sum_ms += ms; if (ms > g_b3a8710_max_ms) g_b3a8710_max_ms = ms;
     g_b3a8710_count++;
@@ -2700,8 +2763,8 @@ static B3ac530Fn g_b3ac530_orig  = NULL;
 static LONG      g_b3ac530_count = 0;
 static double    g_b3ac530_sum_ms = 0, g_b3ac530_max_ms = 0;
 static void b3ac530_hook(int64_t a, int64_t b) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b3ac530_orig(a, b); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b3ac530_orig(a, b); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3ac530_sum_ms += ms; if (ms > g_b3ac530_max_ms) g_b3ac530_max_ms = ms;
     g_b3ac530_count++;
@@ -2713,8 +2776,8 @@ static B38cf30Fn g_b38cf30_orig  = NULL;
 static LONG      g_b38cf30_count = 0;
 static double    g_b38cf30_sum_ms = 0, g_b38cf30_max_ms = 0;
 static void b38cf30_hook(int64_t a, int64_t b, int64_t c) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b38cf30_orig(a, b, c); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b38cf30_orig(a, b, c); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b38cf30_sum_ms += ms; if (ms > g_b38cf30_max_ms) g_b38cf30_max_ms = ms;
     g_b38cf30_count++;
@@ -2727,8 +2790,8 @@ static B3a59f0Fn g_b3a59f0_orig  = NULL;
 static LONG      g_b3a59f0_count = 0;
 static double    g_b3a59f0_sum_ms = 0, g_b3a59f0_max_ms = 0;
 static void b3a59f0_hook(int64_t a, int64_t b) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b3a59f0_orig(a, b); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b3a59f0_orig(a, b); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3a59f0_sum_ms += ms; if (ms > g_b3a59f0_max_ms) g_b3a59f0_max_ms = ms;
     g_b3a59f0_count++;
@@ -2772,8 +2835,8 @@ static B3729f0Fn g_b3729f0_orig  = NULL;
 static LONG      g_b3729f0_count = 0;
 static double    g_b3729f0_sum_ms = 0, g_b3729f0_max_ms = 0;
 static int64_t b3729f0_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b3729f0_orig(a, b, c, d); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b3729f0_orig(a, b, c, d); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3729f0_sum_ms += ms; if (ms > g_b3729f0_max_ms) g_b3729f0_max_ms = ms;
     g_b3729f0_count++; return r;
@@ -2785,8 +2848,8 @@ static B3a5840Fn g_b3a5840_orig  = NULL;
 static LONG      g_b3a5840_count = 0;
 static double    g_b3a5840_sum_ms = 0, g_b3a5840_max_ms = 0;
 static void b3a5840_hook(int64_t a) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b3a5840_orig(a); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b3a5840_orig(a); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3a5840_sum_ms += ms; if (ms > g_b3a5840_max_ms) g_b3a5840_max_ms = ms;
     g_b3a5840_count++;
@@ -2798,8 +2861,8 @@ static B265560Fn g_b265560_orig  = NULL;
 static LONG      g_b265560_count = 0;
 static double    g_b265560_sum_ms = 0, g_b265560_max_ms = 0;
 static void b265560_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b265560_orig(a, b, c, d, e, f); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b265560_orig(a, b, c, d, e, f); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b265560_sum_ms += ms; if (ms > g_b265560_max_ms) g_b265560_max_ms = ms;
     g_b265560_count++;
@@ -2861,8 +2924,8 @@ static B25ec10Fn g_b25ec10_orig  = NULL;
 static LONG      g_b25ec10_count = 0;
 static double    g_b25ec10_sum_ms = 0, g_b25ec10_max_ms = 0;
 static int64_t b25ec10_hook(int64_t a, int64_t b) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b25ec10_orig(a, b); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b25ec10_orig(a, b); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b25ec10_sum_ms += ms; if (ms > g_b25ec10_max_ms) g_b25ec10_max_ms = ms;
     g_b25ec10_count++; return r;
@@ -2876,8 +2939,8 @@ static B3718f0Fn g_b3718f0_orig  = NULL;
 static LONG      g_b3718f0_count = 0;
 static double    g_b3718f0_sum_ms = 0, g_b3718f0_max_ms = 0;
 static int64_t b3718f0_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b3718f0_orig(a, b, c, d); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b3718f0_orig(a, b, c, d); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b3718f0_sum_ms += ms; if (ms > g_b3718f0_max_ms) g_b3718f0_max_ms = ms;
     g_b3718f0_count++; return r;
@@ -2935,8 +2998,8 @@ static B142f80Fn g_b142f80_orig  = NULL;
 static LONG      g_b142f80_count = 0;
 static double    g_b142f80_sum_ms = 0, g_b142f80_max_ms = 0;
 static int64_t b142f80_hook(int64_t a, int64_t b) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b142f80_orig(a, b); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b142f80_orig(a, b); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b142f80_sum_ms += ms; if (ms > g_b142f80_max_ms) g_b142f80_max_ms = ms;
     g_b142f80_count++; return r;
@@ -3151,8 +3214,14 @@ static int64_t b141f70_hook(int64_t a, int64_t b) {
             g_b141f70_count++;   /* count for profiling even though we skip the call */
             return 0;
         }
-        LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-        int64_t r = g_b141f70_orig(a, b); QueryPerformanceCounter(&t1);
+        /* Yield before entering b141f70_orig to let any game background IO thread
+         * complete its work.  Without this yield the game crashes deterministically
+         * during the galactic initialization asset-loading pass (Heisenbug: the crash
+         * disappears when fflush adds a syscall delay before each call).
+         * SwitchToThread gives the scheduler an explicit yield point with no disk I/O. */
+        SwitchToThread();
+        LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+        int64_t r = g_b141f70_orig(a, b); tgt_fake_qpc(&t1);
         double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
         g_b141f70_sum_ms += ms; if (ms > g_b141f70_max_ms) g_b141f70_max_ms = ms;
         g_b141f70_count++;
@@ -3160,8 +3229,8 @@ static int64_t b141f70_hook(int64_t a, int64_t b) {
         return r;
     }
     /* NULL path — fall through to original (handles any edge case) */
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b141f70_orig(a, b); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b141f70_orig(a, b); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b141f70_sum_ms += ms; if (ms > g_b141f70_max_ms) g_b141f70_max_ms = ms;
     g_b141f70_count++; return r;
@@ -3225,8 +3294,8 @@ static int64_t b2136f0_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t 
     /* Fix E abandoned: vtable+0x18 does MEG scan AND filesystem fallback.
      * Returning 0 for meg=0 paths skips the filesystem fallback, breaking loose-file assets.
      * Call-through always; Fix A's b141f70 NF cache handles repeat stalls. */
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b2136f0_orig(a, b, c, d, e); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b2136f0_orig(a, b, c, d, e); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b2136f0_sum_ms += ms; if (ms > g_b2136f0_max_ms) g_b2136f0_max_ms = ms;
     g_b2136f0_count++;
@@ -3276,8 +3345,8 @@ static B38cb30Fn g_b38cb30_orig  = NULL;
 static LONG      g_b38cb30_count = 0;
 static double    g_b38cb30_sum_ms = 0, g_b38cb30_max_ms = 0;
 static void b38cb30_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b38cb30_orig(a, b, c, d); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b38cb30_orig(a, b, c, d); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b38cb30_sum_ms += ms; if (ms > g_b38cb30_max_ms) g_b38cb30_max_ms = ms;
     g_b38cb30_count++;
@@ -3292,8 +3361,8 @@ static B381a90Fn g_b381a90_orig  = NULL;
 static LONG      g_b381a90_count = 0;
 static double    g_b381a90_sum_ms = 0, g_b381a90_max_ms = 0;
 static int64_t b381a90_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    int64_t r = g_b381a90_orig(a, b, c, d, e); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    int64_t r = g_b381a90_orig(a, b, c, d, e); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b381a90_sum_ms += ms; if (ms > g_b381a90_max_ms) g_b381a90_max_ms = ms;
     g_b381a90_count++; return r;
@@ -3307,8 +3376,8 @@ static B384740Fn g_b384740_orig  = NULL;
 static LONG      g_b384740_count = 0;
 static double    g_b384740_sum_ms = 0, g_b384740_max_ms = 0;
 static void b384740_hook(int64_t a) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b384740_orig(a); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b384740_orig(a); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b384740_sum_ms += ms; if (ms > g_b384740_max_ms) g_b384740_max_ms = ms;
     g_b384740_count++;
@@ -3322,8 +3391,8 @@ static B37c050Fn g_b37c050_orig  = NULL;
 static LONG      g_b37c050_count = 0;
 static double    g_b37c050_sum_ms = 0, g_b37c050_max_ms = 0;
 static void b37c050_hook(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e) {
-    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-    g_b37c050_orig(a, b, c, d, e); QueryPerformanceCounter(&t1);
+    LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+    g_b37c050_orig(a, b, c, d, e); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_b37c050_sum_ms += ms; if (ms > g_b37c050_max_ms) g_b37c050_max_ms = ms;
     g_b37c050_count++;
@@ -3430,9 +3499,9 @@ static double  g_ga4d0_sum_ms = 0, g_ga4d0_max_ms = 0;
 static void ga4d0_hook(int64_t a)
 {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_ga4d0_orig(a);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_ga4d0_sum_ms += ms;
     if (ms > g_ga4d0_max_ms) g_ga4d0_max_ms = ms;
@@ -3527,9 +3596,9 @@ static double g_bsel_sum_ms    = 0, g_bsel_max_ms    = 0;
 static void game_service_hook(int64_t a, int32_t b) {
     g_pumpe_frame_used_ms = 0.0;  /* reset per-gsvc Lua AI budget */
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_gsvc_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_gsvc_sum_ms += ms;
     if (ms > g_gsvc_max_ms) g_gsvc_max_ms = ms;
@@ -3554,9 +3623,9 @@ static void game_service_hook(int64_t a, int32_t b) {
 
 static void slot22_tail_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     g_slot22_tail_orig(a, b, c, d);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_tail22_sum_ms += ms;
     if (ms > g_tail22_max_ms) g_tail22_max_ms = ms;
@@ -3570,9 +3639,9 @@ static void slot22_tail_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
 
 static int64_t signal_dispatch_hook(void *a, int32_t b, int32_t c, int32_t d, int64_t e, uint8_t f) {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     int64_t r = g_sigdisp_orig(a, b, c, d, e, f);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_sigdisp_sum_ms += ms;
     if (ms > g_sigdisp_max_ms) g_sigdisp_max_ms = ms;
@@ -3582,9 +3651,9 @@ static int64_t signal_dispatch_hook(void *a, int32_t b, int32_t c, int32_t d, in
 
 static int64_t battle_select_hook(void *a, void *b) {
     LARGE_INTEGER t0, t1;
-    QueryPerformanceCounter(&t0);
+    tgt_fake_qpc(&t0);
     int64_t r = g_bsel_orig(a, b);
-    QueryPerformanceCounter(&t1);
+    tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_bsel_sum_ms += ms;
     if (ms > g_bsel_max_ms) g_bsel_max_ms = ms;
@@ -4164,6 +4233,7 @@ static void profile_report_and_reset(void) {
 
 static DWORD WINAPI render_thread_proc(LPVOID unused) {
     (void)unused;
+    g_render_thread_id = GetCurrentThreadId();
     log_write("[eaw-mt] Render thread started\n");
 
     while (!InterlockedCompareExchange(&g_shutdown, 0, 0)) {
@@ -4171,12 +4241,12 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
         if (wait == WAIT_TIMEOUT) continue;
         if (InterlockedCompareExchange(&g_shutdown, 0, 0)) break;
 
-        QueryPerformanceCounter(&g_flush_start);
+        tgt_fake_qpc(&g_flush_start);
         /* Full flush+drain via trampoline (FUN_140180dc0 + FUN_140149650).
          * Main thread is blocked on render_done so there is no concurrent
          * access to render task lists or the allocator pools. */
         g_trampoline((void *)g_render_param);
-        QueryPerformanceCounter(&g_flush_end);
+        tgt_fake_qpc(&g_flush_end);
 
         SetEvent(g_render_done);
     }
@@ -4194,7 +4264,7 @@ static void WINAPI render_flush_hook(void *param_1) {
     try_patch_sim_tick();
 
     LARGE_INTEGER entry_now;
-    QueryPerformanceCounter(&entry_now);
+    tgt_fake_qpc(&entry_now);
     double freq = (double)g_qpc_freq.QuadPart / 1000.0;
 
     LONG serial   = InterlockedIncrement(&g_flush_serial);
@@ -4250,15 +4320,16 @@ static void WINAPI render_flush_hook(void *param_1) {
         }
     }
 
-    /* Kick render thread and block until this flush+drain completes. */
-    g_render_param = param_1;
-    SetEvent(g_render_kick);
-    WaitForSingleObject(g_render_done, INFINITE);
+    /* DIAGNOSTIC: call on main thread to check if crash is render-thread-related.
+     * If crash disappears → render thread is the cause; revert to BG kick. */
+    tgt_fake_qpc(&g_flush_start);
+    g_trampoline(param_1);
+    tgt_fake_qpc(&g_flush_end);
 
     /* After the wait, g_flush_end is valid for THIS flush.
      * Record the inter-flush anchor now (time flush#1 finished). */
     if (is_flush1) {
-        QueryPerformanceCounter(&g_flush1_done);
+        tgt_fake_qpc(&g_flush1_done);
         g_flush1_done_valid = TRUE;
     }
 }
@@ -4340,6 +4411,132 @@ static BOOL install_render_hook(void) {
 }
 
 /* =========================================================================
+ * Vectored Exception Handler — crash diagnostics
+ * ========================================================================= */
+
+static volatile LONG g_veh_entered = 0;
+static volatile LONG g_wake_suppressed = 0; /* count of suppressed Wine wake_addr faults */
+
+static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
+{
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+
+    /* -----------------------------------------------------------------------
+     * Fast path: suppress the Wine JIT-thunk wake_addr corruption crash.
+     *
+     * Wine's JIT syscall dispatcher does, for every pending wake-address
+     * notification before each syscall:
+     *
+     *   TEST rax, rax              ; rax = wake_addr (ptr to waiter byte)
+     *   JZ   skip                  ; null → no waiter
+     *   MOV BYTE PTR [rax], 0      ; ← CRASHES if wake_addr is corrupted
+     *   MOV rcx, [rcx+0x298]      ; load next waiter pointer into rcx
+     *   ...
+     * skip:
+     *
+     * Under Proton/Wine a race condition sometimes writes 0x6fff00000000
+     * (invalid) into the wake_addr field of a sync object.  The write faults.
+     * Fix: verify the exact 10-byte sequence, then skip both instructions so
+     * rcx retains the valid kernel-object pointer and execution continues.
+     * ---------------------------------------------------------------------- */
+    if (code == EXCEPTION_ACCESS_VIOLATION &&
+        ep->ExceptionRecord->NumberParameters >= 2 &&
+        ep->ExceptionRecord->ExceptionInformation[0] == 1) {
+        ULONG_PTR bad = ep->ExceptionRecord->ExceptionInformation[1];
+        /* Corrupted wake_addr: upper bits in Wine DLL range, lower 32 bits = 0 */
+        if ((bad & 0xFFFFFFFFULL) == 0 && bad >= 0x6f0000000000ULL) {
+            volatile unsigned char *ip =
+                (volatile unsigned char *)ep->ContextRecord->Rip;
+            /* MOV BYTE PTR [rax],0  = c6 00 00  (3 bytes)
+             * MOV rcx,[rcx+disp32] = 48 8b 89 ?? ?? ?? ??  (7 bytes) */
+            if (ip[0] == 0xc6 && ip[1] == 0x00 && ip[2] == 0x00 &&
+                ip[3] == 0x48 && ip[4] == 0x8b && ip[5] == 0x89) {
+                ep->ContextRecord->Rip += 10; /* skip both instructions */
+                LONG n = InterlockedIncrement(&g_wake_suppressed);
+                char s[80];
+                snprintf(s, sizeof(s),
+                    "[eaw-mt] WAKE_SUPPR #%ld addr=%016llx\n",
+                    (long)n, (unsigned long long)bad);
+                if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+        }
+    }
+
+    if (code == EXCEPTION_ACCESS_VIOLATION ||
+        code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+        code == EXCEPTION_STACK_OVERFLOW ||
+        code == EXCEPTION_PRIV_INSTRUCTION) {
+        /* Re-entrancy guard: only log the first fault */
+        if (InterlockedCompareExchange(&g_veh_entered, 1, 0) != 0)
+            return EXCEPTION_CONTINUE_SEARCH;
+        PVOID fault_insn = ep->ExceptionRecord->ExceptionAddress;
+        DWORD tid = GetCurrentThreadId();
+        const char *who = (tid == g_main_thread_id)   ? "MAIN"   :
+                          (tid == g_render_thread_id)  ? "RENDER" : "OTHER";
+        ULONG_PTR av_type = 0, av_addr = 0;
+        if (code == EXCEPTION_ACCESS_VIOLATION &&
+            ep->ExceptionRecord->NumberParameters >= 2) {
+            av_type = ep->ExceptionRecord->ExceptionInformation[0];
+            av_addr = ep->ExceptionRecord->ExceptionInformation[1];
+        }
+        char s[256];
+        snprintf(s, sizeof(s),
+            "[eaw-mt] CRASH code=%08lx insn=%p tid=%lu(%s)\n"
+            "[eaw-mt] CRASH av_%s @%p rip=%p rsp=%p\n",
+            (unsigned long)code, fault_insn, (unsigned long)tid, who,
+            av_type == 1 ? "write" : "read", (void *)av_addr,
+            (void *)ep->ContextRecord->Rip,
+            (void *)ep->ContextRecord->Rsp);
+        if (g_log_fp) fputs(s, g_log_fp);
+        /* Full register dump — identifies which register holds the bad address */
+        char r[512];
+        snprintf(r, sizeof(r),
+            "[eaw-mt] REGS rax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx\n"
+            "[eaw-mt] REGS rsi=%016llx rdi=%016llx r8 =%016llx r9 =%016llx\n"
+            "[eaw-mt] REGS r10=%016llx r11=%016llx r12=%016llx r13=%016llx\n"
+            "[eaw-mt] REGS r14=%016llx r15=%016llx rbp=%016llx\n",
+            (unsigned long long)ep->ContextRecord->Rax,
+            (unsigned long long)ep->ContextRecord->Rbx,
+            (unsigned long long)ep->ContextRecord->Rcx,
+            (unsigned long long)ep->ContextRecord->Rdx,
+            (unsigned long long)ep->ContextRecord->Rsi,
+            (unsigned long long)ep->ContextRecord->Rdi,
+            (unsigned long long)ep->ContextRecord->R8,
+            (unsigned long long)ep->ContextRecord->R9,
+            (unsigned long long)ep->ContextRecord->R10,
+            (unsigned long long)ep->ContextRecord->R11,
+            (unsigned long long)ep->ContextRecord->R12,
+            (unsigned long long)ep->ContextRecord->R13,
+            (unsigned long long)ep->ContextRecord->R14,
+            (unsigned long long)ep->ContextRecord->R15,
+            (unsigned long long)ep->ContextRecord->Rbp);
+        if (g_log_fp) { fputs(r, g_log_fp); fflush(g_log_fp); }
+        /* Stack dump — 64 slots to find game code return address above the JIT frames */
+        ULONG_PTR rsp = (ULONG_PTR)ep->ContextRecord->Rsp;
+        for (int i = 0; i < 64; i++) {
+            ULONG_PTR val = ((volatile ULONG_PTR *)rsp)[i];
+            char stk[64];
+            snprintf(stk, sizeof(stk), "[eaw-mt] STK [%03x]=%016llx\n",
+                i * 8, (unsigned long long)val);
+            if (g_log_fp) fputs(stk, g_log_fp);
+        }
+        /* Dump 32 bytes of crash instruction bytes */
+        ULONG_PTR rip = (ULONG_PTR)ep->ContextRecord->Rip;
+        char ibuf[128];
+        int iboff = 0;
+        iboff += snprintf(ibuf, sizeof(ibuf), "[eaw-mt] INSN @%016llx:", (unsigned long long)rip);
+        for (int i = -8; i < 24 && iboff < (int)sizeof(ibuf) - 4; i++)
+            iboff += snprintf(ibuf + iboff, sizeof(ibuf) - iboff,
+                "%s%02x", i == 0 ? " [" : (i == 1 ? "]" : " "),
+                ((volatile unsigned char *)rip)[i]);
+        ibuf[iboff++] = '\n'; ibuf[iboff] = 0;
+        if (g_log_fp) { fputs(ibuf, g_log_fp); fflush(g_log_fp); }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* =========================================================================
  * DllMain
  * ========================================================================= */
 
@@ -4350,6 +4547,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         DisableThreadLibraryCalls(hinstDLL);
         g_main_thread_id = GetCurrentThreadId();
         g_log_fp = fopen("eaw-mt.log", "w");
+        AddVectoredExceptionHandler(1, veh_crash_handler);
 
         /* Load real winmm */
         real_winmm = LoadLibraryA("C:\\windows\\system32\\winmm.dll");
@@ -4381,106 +4579,46 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         /* Install inline hook (also builds g_trampoline) */
         if (!install_render_hook()) return FALSE;
 
-        /* Install Pump_Threads call-site hook (non-fatal if scan fails) */
+        /* BISECT LEVEL 4: all non-sub-callee hooks restored.
+         * Confirmed innocent: render hook (Level 2), WaitMessage IAT (Level 3).
+         * If crash returns → culprit is in this group; split further.
+         * If stable → crash lives in sub-callee hooks below. */
         install_pump_hook();
-
-        /* Replace WaitMessage with 1ms-capped equivalent via IAT patch */
         install_wait_message_iat_hook();
-
-        /* Hook CreateFileA/W + ReadFile to measure main-thread disk I/O */
         install_io_iat_hooks();
-
-        /* Install inter-flush decomposition hooks (non-fatal) */
         install_inter_hooks();
-
-        /* Install slot-22 tail call + sub-hooks (non-fatal) */
         install_slot22_hooks();
-
-        /* Install mode-agnostic game service hook on FUN_14028d400 (non-fatal) */
         install_game_service_hook();
-
-        /* Inline hook SpaceModeClass slot 22 (FUN_1404d95a0) — non-fatal */
         install_space_slot22_hook();
-
-        /* Call-site hook FUN_140527dd0 inside FUN_1404d95a0 (non-fatal) */
         install_space_unit_svc_hook();
-
-        /* Inline hook FUN_1403639d0 — tail call target from FUN_1404d95a0 (non-fatal) */
         install_tail22i_hook();
-
-        /* E8 call-site hooks for FUN_14041a240 + FUN_14059d270 in FUN_1404d95a0 (non-fatal) */
         install_post_loop_hooks();
-
-        /* E8 hooks inside FUN_1403639d0 body — 364920, 2be640, 490580 (non-fatal) */
         install_tail22_body_hooks();
-
-        /* E8 hooks inside FUN_1402be640 body — 3a6b80, 2a62d0, 20ed70 (non-fatal) */
         install_2be640_body_hooks();
-
-        /* Per-entity Pump_Threads call site inside FUN_1403a6b80 (non-fatal) */
         install_pumpe_hook();
-
-        /* Second stall source hooks inside FUN_1403a6b80 — movement, cmd, preamble (non-fatal) */
         install_a6b80_stall2_hooks();
-
-        /* Per-movement-component hook inside FUN_1403a76b0 (non-fatal) */
         install_b87010_hook();
-
-        /* Phase 5 Step 13 — name→index lookup inside FUN_140385cf0 (non-fatal) */
         install_d12d520_hook();
-
-        /* Phase 5 Step 13 — physics write inside FUN_140381ff0 (non-fatal) */
         install_d12d480_hook();
-
-        /* Phase 5 Step 14 — sub-callee hooks inside FUN_140387010 (non-fatal) */
         install_b87010_subcallee_hooks();
-
-        /* Fix B: patch opp-target interval + budget-cap b385190 (non-fatal) */
         install_fix_b();
-
-        /* Sub-callee hooks inside FUN_140387400 to isolate true stall source */
         install_b387400_subcallee_hooks();
-
-        /* Sub-callee hooks inside FUN_1403825b0 to isolate stall within b3825b0 */
         install_b3825b0_subcallee_hooks();
-
-        /* Sub-callee hooks inside FUN_14029f810: b388b60 ctor + b3989a0 inside it */
         install_b29f810_subcallee_hooks();
         install_b388b60_subcallee_hooks();
-
-        /* Sub-callee hooks inside FUN_1403989a0 */
         install_b3989a0_subcallee_hooks();
-
-        /* Sub-callee hooks inside FUN_1403a4820: b3729f0 (target scan — prime suspect) */
         install_b3a4820_subcallee_hooks();
-
-        /* Sub-callee hooks inside FUN_140375380: b25ec10 (path lookup) + b3718f0 (slot lookup) */
         install_b375380_subcallee_hooks();
-
-        /* Sub-callee hooks inside FUN_14025ec10: b142f80 (reg check) + b141f70 (sync asset load) */
         install_b25ec10_subcallee_hooks();
-
-        /* Build MEG filename index then patch FUN_1402136f0 call sites in FUN_140141f70.
-         * MEG filenames use "DATA\ART\..." format; djb2u normalizes both sides to "DATA/ART/..."
-         * so game queries ("data/art/...") hash-match MEG entries without any prefix stripping. */
         build_meg_index();
         install_b141f70_subcallee_hooks();
-
-        /* Hook FUN_14028a4d0 call-site inside FUN_14028d400 (non-fatal) */
         install_ga4d0_hook();
-
-        /* Inline hook GalacticModeClass slot 22 (FUN_14045e030) — non-fatal */
         install_galactic_slot22_hook();
 
-        /* Start render thread */
-        HANDLE thread = CreateThread(NULL, 0, render_thread_proc, NULL, 0, NULL);
-        if (!thread) {
-            log_write("[eaw-mt] FATAL: CreateThread failed\n");
-            return FALSE;
-        }
-        CloseHandle(thread);
-
-        log_write("[eaw-mt] Model A render thread active (serialized)\n");
+        /* DIAGNOSTIC: render thread disabled — g_trampoline called directly on main thread.
+         * Keeping thread creation suppressed to isolate whether idle render thread
+         * polling (WaitForSingleObject every 1000ms) was causing the use-after-free. */
+        log_write("[eaw-mt] Model A: render on main thread (no render thread)\n");
     }
 
     if (fdwReason == DLL_PROCESS_DETACH) {
