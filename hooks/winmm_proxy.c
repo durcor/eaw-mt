@@ -1804,8 +1804,10 @@ static BOOL install_pumpe_hook(void)
  *   FUN_140247a90(param_1[0x5b])  where param_1 is the entity pointer.
  * ========================================================================= */
 #define LEVEL_LOAD_RVA   0x52d10ULL  /* FUN_140052d10 */
-#define WINMAIN_RVA      0x5d990ULL  /* FUN_14005d990 (WinMain) */
+#define WINMAIN_RVA      0x5d990ULL  /* FUN_14005d990 (WinMain) — pre-loop callsite 0x5e627 */
 #define WINMAIN_SCAN     4096        /* bytes to scan for the E8 call */
+#define FN_55B60_RVA     0x55b60ULL  /* FUN_140055b60 — interactive/skirmish loader, callsite 0x55ba7 */
+#define FN_55B60_SCAN    200         /* callsite at offset +0x47 */
 #define BATTLE_MODE_RVA  0xb15418ULL /* DAT_140b15418 — GameModeManager+0x38 */
 
 typedef char (*LevelLoadFn)(int64_t, int64_t, int64_t, int64_t);
@@ -1870,41 +1872,49 @@ static BOOL install_prewarm_hook(void)
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
 
-    BYTE *fn_winmain   = (BYTE *)exe + WINMAIN_RVA;
     BYTE *fn_levelload = (BYTE *)exe + LEVEL_LOAD_RVA;
     g_level_load_orig  = (LevelLoadFn)fn_levelload;
 
-    BYTE *stub = alloc_near(fn_winmain, 14);
+    /* Single stub near fn_levelload — within ±2GB of all known callers. */
+    BYTE *stub = alloc_near(fn_levelload, 14);
     if (!stub) {
         log_write("[eaw-mt] WARN: alloc_near failed for prewarm stub\n");
         return FALSE;
     }
     write_abs_jmp(stub, (uint64_t)level_load_prewarm_hook);
 
-    int n = 0;
-    for (int i = 0; i <= WINMAIN_SCAN - 5; i++) {
-        if (fn_winmain[i] == 0xE8) {
-            int32_t rel;
-            memcpy(&rel, fn_winmain + i + 1, 4);
-            BYTE *target = fn_winmain + i + 5 + (ptrdiff_t)rel;
-            if (target == fn_levelload) {
-                int32_t new_rel = (int32_t)(stub - (fn_winmain + i + 5));
-                DWORD old;
-                VirtualProtect(fn_winmain + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
-                memcpy(fn_winmain + i + 1, &new_rel, 4);
-                VirtualProtect(fn_winmain + i + 1, 4, old, &old);
-                FlushInstructionCache(GetCurrentProcess(), fn_winmain + i, 5);
-                n++;
-                break;
+    /* Scan every known caller of FUN_140052d10 for its E8 CALL. */
+    struct { BYTE *start; int size; const char *name; } callers[] = {
+        { (BYTE *)exe + WINMAIN_RVA,  WINMAIN_SCAN,  "WinMain(0x5d990)"   },
+        { (BYTE *)exe + FN_55B60_RVA, FN_55B60_SCAN, "FUN_140055b60"      },
+    };
+
+    int total = 0;
+    for (int c = 0; c < 2; c++) {
+        BYTE *fn = callers[c].start;
+        int n = 0;
+        for (int i = 0; i <= callers[c].size - 5; i++) {
+            if (fn[i] == 0xE8) {
+                int32_t rel;
+                memcpy(&rel, fn + i + 1, 4);
+                BYTE *target = fn + i + 5 + (ptrdiff_t)rel;
+                if (target == fn_levelload) {
+                    int32_t new_rel = (int32_t)(stub - (fn + i + 5));
+                    DWORD old;
+                    VirtualProtect(fn + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                    memcpy(fn + i + 1, &new_rel, 4);
+                    VirtualProtect(fn + i + 1, 4, old, &old);
+                    FlushInstructionCache(GetCurrentProcess(), fn + i, 5);
+                    n++;
+                }
             }
         }
+        char m[128];
+        sprintf(m, "[eaw-mt] prewarm: %s — %d callsite(s) patched\n", callers[c].name, n);
+        log_write(m);
+        total += n;
     }
-
-    char m[128];
-    sprintf(m, "[eaw-mt] prewarm: FUN_140052d10 callsite in WinMain %s\n",
-            n > 0 ? "patched" : "NOT FOUND — pre-warm disabled");
-    log_write(m);
-    return n > 0;
+    return total > 0;
 }
 
 /* =========================================================================
