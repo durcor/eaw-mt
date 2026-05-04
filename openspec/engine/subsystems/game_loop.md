@@ -1329,6 +1329,80 @@ Cross-entity Lua communication has not been confirmed or ruled out.
 | Worker thread offload | Viable: entities have independent lua_States. Risk: Lua-callable C APIs may access shared game state. Requires thread-safety audit. |
 | Pre-warm during loading | Viable: if coroutines are enqueued before the battle is visible, the 14s moves to the loading screen. Requires identifying when `FUN_140244740` first runs relative to the loading→battle transition. |
 
-**Current state:** 14s stall is a known limitation. The pumpe_budget fix (Step 26)
+**Current state as of Step 27:** 14s stall is a known limitation. The pumpe_budget fix (Step 26)
 prevents cascading stalls for all subsequent entities. Pre-warm during loading is the
 recommended next investigation path — lower risk than worker threads.
+
+## Phase 5 Step 28 — Pump_Threads Background Thread Offload — 2026-04-30
+
+`pumpe_hook` (hooks all calls to `FUN_140247a90` within `FUN_1403a6b80`) was extended to
+dispatch to a background thread when `g_space_mode_seen >= 3` (confirmed space battle).
+The BG thread calls `g_pumpe_orig(lua_state)` and clears `g_pumpe_bg_running` when done.
+The main thread returns immediately — the 14s stall no longer blocks the frame loop.
+
+**Limitation:** The BG thread still pays the full 21s Lua init cost on the first call.
+The loading screen stall remains the unsolved piece.
+
+## Phase 5 Step 29 — Loading Screen Pre-warm — 2026-05-04
+
+### Investigation: does coroutine creation happen during the loading screen?
+
+**Call chain traced (8 Ghidra scripts):**
+
+```
+WinMain (rva=0x5d990)
+  callsite 0x5e627: FUN_140052d10(...)             ← level-load, PRE-MAIN-LOOP
+    tag 0x3e9: FUN_14028b080(&DAT_140b153e0, ...)  ← GameModeManager deserializer
+      *(param_1 + 0x38) = mode_ptr                 ← SETS DAT_140b15418
+    FUN_1402a8730(DAT_140b15418[3])                ← entity/AI manager init
+      for each node in linked list (ai_manager+0x48, node+8 next):
+        FUN_140394510(entity)                      ← per-entity init
+          for each service (entity+0x278, count at +0x288):
+            (*vtable[+0x68])(service, entity)      ← dispatches FUN_1406cacd0
+              dirty flag set → FUN_1406c8710
+                → FUN_1406c8970
+                  → FUN_1406bad60                 ← CREATE coroutines
+  return → WinMain main game loop starts
+```
+
+**Confirmed:** `DAT_140b15418` (battle context pointer) is set, and entity AI
+coroutines are **created** inside `FUN_140052d10` before it returns — before the first
+battle frame. The main game loop begins ~4 lines after `FUN_140052d10` returns in WinMain.
+
+### Key structures
+
+| Symbol | Address / RVA | Role |
+|---|---|---|
+| `DAT_140b15418` | RVA 0xb15418 | GameModeManager+0x38 — current battle mode pointer |
+| `FUN_140052d10` | RVA 0x52d10 | Level-load function (size=3088) |
+| `FUN_14028b080` | RVA 0x28b080 | GameModeManager deserializer — writes `*(param_1+0x38)` |
+| `FUN_1402a8730` | RVA 0x2a8730 | Entity/AI manager init — iterates linked list |
+| `FUN_140394510` | RVA 0x394510 | Per-entity service dispatch — calls vtable+0x68 per service |
+| `FUN_1406cacd0` | RVA 0x6cacd0 | Entity AI service — creates coroutines when dirty flag set |
+| AI manager ptr  | `*(DAT_140b15418 + 0x18)` = `DAT_140b15418[3]` | Top of entity list |
+| Entity list     | `ai_manager+0x40` sentinel, `ai_manager+0x48` head, `node+0x8` next | Linked list |
+| Entity ptr      | `*(node + 0x18) - 0x18` | Recover entity struct base |
+| Lua state arg   | `*(entity + 0x2d8)` = `entity[0x5b]` | Argument to `FUN_140247a90` |
+
+The last two rows were confirmed from `phase5_3a6b80.c` line 304:
+```c
+FUN_140247a90(param_1[0x5b]);   /* param_1 = entity ptr, [0x5b] = +0x2d8 */
+```
+
+### Fix implemented — `install_prewarm_hook()`
+
+Hooks the `E8 CALL` to `FUN_140052d10` in WinMain (scan within 4096 bytes of
+`WINMAIN_RVA=0x5d990`). After the original returns, `prewarm_pump_all_entities()`
+enumerates every entity in the AI manager linked list and calls `g_pumpe_orig(lua_state)`
+for each entity that has a non-null Lua state. This fires `lua_resume` synchronously
+during the loading screen — the 21s Lua init cost runs before the first battle frame.
+
+Expected log output:
+```
+[eaw-mt] prewarm: FUN_140052d10 callsite in WinMain patched
+[eaw-mt] PREWARM: <N> entities walked, <M> pumped, <T>ms total
+```
+
+**Safety:** At the hook point, the main thread is not in service dispatch. All entity
+Lua states are independent (one per entity). No render thread or BG thread is running.
+The pre-warm is synchronous and completes before WinMain's main loop begins.

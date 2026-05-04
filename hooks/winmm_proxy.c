@@ -1809,6 +1809,132 @@ static BOOL install_pumpe_hook(void)
 }
 
 /* =========================================================================
+ * Pre-warm hook — FUN_140052d10 (level-load) callsite in WinMain (Phase 5 Step 29)
+ *
+ * Problem: Pump_Threads (FUN_140247a90) stalls ~21s on its first call because
+ * lua_resume initialises Lua state cold.  Even with the BG-thread dispatch from
+ * Step 28, that init cost blocks the BG thread for ~21s at battle-start.
+ *
+ * Solution: after FUN_140052d10 returns (level loaded, DAT_140b15418 set,
+ * entity AI coroutines created via FUN_1402a8730→FUN_140394510→vtable+0x68),
+ * call Pump_Threads synchronously for every AI entity.  This moves the 21s
+ * Lua init cost to the loading screen where the user already expects to wait.
+ *
+ * Entity enumeration follows FUN_1402a8730 (rva=0x2a8730):
+ *   ai_manager = *(battle_mode + 0x18)        // DAT_140b15418[3]
+ *   sentinel   = ai_manager + 0x40
+ *   node       = *(ai_manager + 0x48)
+ *   entity     = *(node + 0x18) - 0x18        // recover struct base
+ *   lua_state  = *(entity + 0x2d8)            // entity[0x5b] per phase5_3a6b80.c:304
+ *
+ * Pump_Threads argument confirmed: FUN_1403a6b80 line 304 calls
+ *   FUN_140247a90(param_1[0x5b])  where param_1 is the entity pointer.
+ * ========================================================================= */
+#define LEVEL_LOAD_RVA   0x52d10ULL  /* FUN_140052d10 */
+#define WINMAIN_RVA      0x5d990ULL  /* FUN_14005d990 (WinMain) */
+#define WINMAIN_SCAN     4096        /* bytes to scan for the E8 call */
+#define BATTLE_MODE_RVA  0xb15418ULL /* DAT_140b15418 — GameModeManager+0x38 */
+
+typedef char (*LevelLoadFn)(int64_t, int64_t, int64_t, int64_t);
+static LevelLoadFn g_level_load_orig = NULL;
+
+static void prewarm_pump_all_entities(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe || !g_pumpe_orig) return;
+
+    int64_t battle_mode = *(int64_t *)((BYTE *)exe + BATTLE_MODE_RVA);
+    if (!battle_mode) {
+        log_write("[eaw-mt] PREWARM: battle_mode null — no entities to warm\n");
+        return;
+    }
+
+    /* ai_manager = DAT_140b15418[3] = *(battle_mode + 0x18) */
+    int64_t ai_manager = *(int64_t *)(battle_mode + 0x18);
+    if (!ai_manager) {
+        log_write("[eaw-mt] PREWARM: ai_manager null\n");
+        return;
+    }
+
+    int64_t sentinel = ai_manager + 0x40;
+    int64_t node     = *(int64_t *)(ai_manager + 0x48);
+    int count = 0, pumped = 0;
+
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+
+    while (node != sentinel && count < 2048) {
+        int64_t ref = *(int64_t *)(node + 0x18);
+        if (ref) {
+            int64_t entity    = ref - 0x18;
+            int64_t lua_state = *(int64_t *)(entity + 0x2d8); /* entity[0x5b] */
+            if (lua_state) {
+                g_pumpe_orig(lua_state);
+                pumped++;
+            }
+        }
+        node = *(int64_t *)(node + 8);
+        count++;
+    }
+
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+    char s[128];
+    sprintf(s, "[eaw-mt] PREWARM: %d entities walked, %d pumped, %.1fms total\n",
+            count, pumped, ms);
+    log_write(s);
+}
+
+static char level_load_prewarm_hook(int64_t a, int64_t b, int64_t c, int64_t d)
+{
+    char r = g_level_load_orig(a, b, c, d);
+    prewarm_pump_all_entities();
+    return r;
+}
+
+static BOOL install_prewarm_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_winmain   = (BYTE *)exe + WINMAIN_RVA;
+    BYTE *fn_levelload = (BYTE *)exe + LEVEL_LOAD_RVA;
+    g_level_load_orig  = (LevelLoadFn)fn_levelload;
+
+    BYTE *stub = alloc_near(fn_winmain, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for prewarm stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)level_load_prewarm_hook);
+
+    int n = 0;
+    for (int i = 0; i <= WINMAIN_SCAN - 5; i++) {
+        if (fn_winmain[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, fn_winmain + i + 1, 4);
+            BYTE *target = fn_winmain + i + 5 + (ptrdiff_t)rel;
+            if (target == fn_levelload) {
+                int32_t new_rel = (int32_t)(stub - (fn_winmain + i + 5));
+                DWORD old;
+                VirtualProtect(fn_winmain + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(fn_winmain + i + 1, &new_rel, 4);
+                VirtualProtect(fn_winmain + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), fn_winmain + i, 5);
+                n++;
+                break;
+            }
+        }
+    }
+
+    char m[128];
+    sprintf(m, "[eaw-mt] prewarm: FUN_140052d10 callsite in WinMain %s\n",
+            n > 0 ? "patched" : "NOT FOUND — pre-warm disabled");
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
  * Second stall source hooks inside FUN_1403a6b80 (Phase 5 Step 11)
  *
  * Window 2 shows ta6b80 max=1050ms with pumpe=0.03ms — a second stall source
@@ -4596,6 +4722,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_tail22_body_hooks();
         install_2be640_body_hooks();
         install_pumpe_hook();
+        install_prewarm_hook();
         install_a6b80_stall2_hooks();
         install_b87010_hook();
         install_d12d520_hook();
