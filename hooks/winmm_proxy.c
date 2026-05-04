@@ -1793,43 +1793,41 @@ static BOOL install_pumpe_hook(void)
  * call Pump_Threads synchronously for every AI entity.  This moves the 21s
  * Lua init cost to the loading screen where the user already expects to wait.
  *
- * Entity enumeration follows FUN_1402a8730 (rva=0x2a8730):
- *   ai_manager = *(battle_mode + 0x18)        // DAT_140b15418[3]
- *   sentinel   = ai_manager + 0x40
- *   node       = *(ai_manager + 0x48)
- *   entity     = *(node + 0x18) - 0x18        // recover struct base
- *   lua_state  = *(entity + 0x2d8)            // entity[0x5b] per phase5_3a6b80.c:304
+ * Hook point: FUN_1402a8730 (rva=0x2a8730) — entity/AI manager init.
+ * Called from every battle loading path:
+ *   FUN_140052d10 @ 0x53659  — save-game / pre-loop WinMain path
+ *   FUN_140056480 @ 0x56d11  — skirmish / interactive battle path
+ *   FUN_14008df00 @ 0x8e4e6  — galactic conquest space battle path
  *
- * Pump_Threads argument confirmed: FUN_1403a6b80 line 304 calls
- *   FUN_140247a90(param_1[0x5b])  where param_1 is the entity pointer.
+ * FUN_1402a8730(param_1=ai_manager): iterates entity linked list, dispatches
+ * per-entity service vtable+0x68 → FUN_1406cacd0 → coroutine CREATE path.
+ * After it returns, entity AI coroutines exist; calling Pump_Threads for each
+ * entity pre-warms the Lua state so battle-frame-1 sees ~1ms not ~14s.
+ *
+ * Entity enumeration (from FUN_1402a8730 decompile):
+ *   sentinel   = ai_manager + 0x40
+ *   node       = *(ai_manager + 0x48)         // linked list head
+ *   entity     = *(node + 0x18) - 0x18        // struct base
+ *   lua_state  = *(entity + 0x2d8)            // entity[0x5b]
+ *
+ * Pump_Threads argument confirmed: phase5_3a6b80.c:304
+ *   FUN_140247a90(param_1[0x5b])  (param_1 = entity ptr, [0x5b] = +0x2d8)
  * ========================================================================= */
-#define LEVEL_LOAD_RVA   0x52d10ULL  /* FUN_140052d10 */
-#define WINMAIN_RVA      0x5d990ULL  /* FUN_14005d990 (WinMain) — pre-loop callsite 0x5e627 */
-#define WINMAIN_SCAN     4096        /* bytes to scan for the E8 call */
-#define FN_55B60_RVA     0x55b60ULL  /* FUN_140055b60 — interactive/skirmish loader, callsite 0x55ba7 */
-#define FN_55B60_SCAN    200         /* callsite at offset +0x47 */
-#define BATTLE_MODE_RVA  0xb15418ULL /* DAT_140b15418 — GameModeManager+0x38 */
+#define AI_INIT_RVA      0x2a8730ULL  /* FUN_1402a8730 — entity AI manager init */
+/* Known callers of FUN_1402a8730 and their scan windows: */
+#define FN_52D10_RVA     0x52d10ULL   /* FUN_140052d10 — save/pre-loop loader */
+#define FN_52D10_SCAN    1100         /* callsite at offset +0x3f9 (0x53659) */
+#define FN_56480_RVA     0x56480ULL   /* FUN_140056480 — skirmish loader */
+#define FN_56480_SCAN    2300         /* callsite at offset +0x891 (0x56d11) */
+#define FN_8DF00_RVA     0x8df00ULL   /* FUN_14008df00 — galactic conquest loader */
+#define FN_8DF00_SCAN    1600         /* callsite at offset +0x5e6 (0x8e4e6) */
 
-typedef char (*LevelLoadFn)(int64_t, int64_t, int64_t, int64_t);
-static LevelLoadFn g_level_load_orig = NULL;
+typedef void (*AiInitFn)(int64_t);
+static AiInitFn g_ai_init_orig = NULL;
 
-static void prewarm_pump_all_entities(void)
+static void prewarm_from_ai_manager(int64_t ai_manager)
 {
-    HMODULE exe = GetModuleHandleA(NULL);
-    if (!exe || !g_pumpe_orig) return;
-
-    int64_t battle_mode = *(int64_t *)((BYTE *)exe + BATTLE_MODE_RVA);
-    if (!battle_mode) {
-        log_write("[eaw-mt] PREWARM: battle_mode null — no entities to warm\n");
-        return;
-    }
-
-    /* ai_manager = DAT_140b15418[3] = *(battle_mode + 0x18) */
-    int64_t ai_manager = *(int64_t *)(battle_mode + 0x18);
-    if (!ai_manager) {
-        log_write("[eaw-mt] PREWARM: ai_manager null\n");
-        return;
-    }
+    if (!ai_manager || !g_pumpe_orig) return;
 
     int64_t sentinel = ai_manager + 0x40;
     int64_t node     = *(int64_t *)(ai_manager + 0x48);
@@ -1855,16 +1853,15 @@ static void prewarm_pump_all_entities(void)
     QueryPerformanceCounter(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     char s[128];
-    sprintf(s, "[eaw-mt] PREWARM: %d entities walked, %d pumped, %.1fms total\n",
-            count, pumped, ms);
+    sprintf(s, "[eaw-mt] PREWARM: ai_mgr=0x%llx  %d walked  %d pumped  %.0fms\n",
+            (unsigned long long)ai_manager, count, pumped, ms);
     log_write(s);
 }
 
-static char level_load_prewarm_hook(int64_t a, int64_t b, int64_t c, int64_t d)
+static void ai_init_prewarm_hook(int64_t ai_manager)
 {
-    char r = g_level_load_orig(a, b, c, d);
-    prewarm_pump_all_entities();
-    return r;
+    g_ai_init_orig(ai_manager);
+    prewarm_from_ai_manager(ai_manager);
 }
 
 static BOOL install_prewarm_hook(void)
@@ -1872,25 +1869,26 @@ static BOOL install_prewarm_hook(void)
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
 
-    BYTE *fn_levelload = (BYTE *)exe + LEVEL_LOAD_RVA;
-    g_level_load_orig  = (LevelLoadFn)fn_levelload;
+    BYTE *fn_ai_init = (BYTE *)exe + AI_INIT_RVA;
+    g_ai_init_orig   = (AiInitFn)fn_ai_init;
 
-    /* Single stub near fn_levelload — within ±2GB of all known callers. */
-    BYTE *stub = alloc_near(fn_levelload, 14);
+    /* Single stub near fn_ai_init — within ±2GB of all three caller functions. */
+    BYTE *stub = alloc_near(fn_ai_init, 14);
     if (!stub) {
         log_write("[eaw-mt] WARN: alloc_near failed for prewarm stub\n");
         return FALSE;
     }
-    write_abs_jmp(stub, (uint64_t)level_load_prewarm_hook);
+    write_abs_jmp(stub, (uint64_t)ai_init_prewarm_hook);
 
-    /* Scan every known caller of FUN_140052d10 for its E8 CALL. */
+    /* Patch every known callsite of FUN_1402a8730. */
     struct { BYTE *start; int size; const char *name; } callers[] = {
-        { (BYTE *)exe + WINMAIN_RVA,  WINMAIN_SCAN,  "WinMain(0x5d990)"   },
-        { (BYTE *)exe + FN_55B60_RVA, FN_55B60_SCAN, "FUN_140055b60"      },
+        { (BYTE *)exe + FN_52D10_RVA, FN_52D10_SCAN, "FUN_140052d10(save)"      },
+        { (BYTE *)exe + FN_56480_RVA, FN_56480_SCAN, "FUN_140056480(skirmish)"  },
+        { (BYTE *)exe + FN_8DF00_RVA, FN_8DF00_SCAN, "FUN_14008df00(galactic)"  },
     };
 
     int total = 0;
-    for (int c = 0; c < 2; c++) {
+    for (int c = 0; c < 3; c++) {
         BYTE *fn = callers[c].start;
         int n = 0;
         for (int i = 0; i <= callers[c].size - 5; i++) {
@@ -1898,7 +1896,7 @@ static BOOL install_prewarm_hook(void)
                 int32_t rel;
                 memcpy(&rel, fn + i + 1, 4);
                 BYTE *target = fn + i + 5 + (ptrdiff_t)rel;
-                if (target == fn_levelload) {
+                if (target == fn_ai_init) {
                     int32_t new_rel = (int32_t)(stub - (fn + i + 5));
                     DWORD old;
                     VirtualProtect(fn + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
