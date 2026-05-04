@@ -1829,6 +1829,16 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
 {
     if (!ai_manager || !g_pumpe_orig) return;
 
+    /* Guard: skip on initial startup (menu load).  During DLL init the main menu
+     * battle calls the same loader; entity structs are partially initialised and
+     * entity+0x2d8 may contain heap garbage that passes the lua_state != 0 check
+     * and crashes g_pumpe_orig.  Once g_pumpe_count > 0, the game loop has run at
+     * least one service pass and all entity fields are properly set up. */
+    if (!g_pumpe_count) {
+        log_write("[eaw-mt] PREWARM: skipped (game not yet live)\n");
+        return;
+    }
+
     int64_t sentinel = ai_manager + 0x40;
     int64_t node     = *(int64_t *)(ai_manager + 0x48);
     int count = 0, pumped = 0;
