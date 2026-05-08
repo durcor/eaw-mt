@@ -32,6 +32,13 @@ When spawning subagents via the `Agent` tool, you MUST select the model accordin
 
 ---
 
+## Build and Deploy Discipline
+
+- **Always use `just build-winmm` to compile and deploy the hook DLL.** Never roll a manual `gcc` + `cp` sequence — `just build-winmm` does both atomically and uses the correct nix-shell toolchain.
+- Do not invoke `nix develop --command gcc ...` directly for hook builds; that bypasses the justfile and risks mismatched flags or a stale copy in the game directory.
+
+---
+
 ## Commit Discipline
 
 - Commit after every confirmed finding committed to `openspec/`. Do not batch multiple discoveries into one commit.

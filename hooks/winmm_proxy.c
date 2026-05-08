@@ -31,6 +31,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <setjmp.h>
 
 static FILE *g_log_fp = NULL;
 
@@ -973,6 +974,9 @@ static BOOL install_inter_hooks(void)
 #define GAME_SERVICE_RVA     0x28d400ULL  /* FUN_14028d400 — mode-agnostic slot-22 dispatch */
 #define GALACTIC_SLOT22_RVA  0x45e030ULL  /* FUN_14045e030 — GalacticModeClass vtable slot 22 */
 #define GA4D0_RVA            0x28a4d0ULL  /* FUN_14028a4d0 — periodic sub-call inside FUN_14028d400 */
+#define GA4D0_SIZE           150          /* body size for internal E8 scan */
+#define A7190_RVA            0x2a7190ULL  /* FUN_1402a7190 — called per-entry by FUN_14028a4d0; crashes if arg=0 */
+#define GAE40_RVA            0x28ae40ULL  /* FUN_14028ae40 — reads battle-mode/thread entries after ai_init */
 #define GSVC_BODY_SIZE       654          /* FUN_14028d400 size for E8 scan */
 
 typedef void (*GameServiceFn)(int64_t, int32_t);
@@ -1667,6 +1671,19 @@ static double  g_pumpe_bg_sum_ms = 0, g_pumpe_bg_max_ms = 0;
 #define PUMPE_BUDGET_MS 33.0
 static double g_pumpe_frame_used_ms = 0.0;
 
+/* Deferred prewarm (Step 29e): ai_manager saved during loading, fired from
+ * pumpe_hook once g_pumpe_count > 0 (battle game loop running, Lua AI safe). */
+static volatile int64_t g_deferred_ai_mgr = 0;
+static void prewarm_from_ai_manager(int64_t); /* forward decl — defined below */
+
+/* VEH / prewarm SEH-recovery globals — declared here so prewarm_from_ai_manager
+ * can reference them; the VEH handler (defined later) also uses them. */
+static volatile LONG g_veh_entered        = 0;
+static volatile LONG g_wake_suppressed    = 0;
+static volatile LONG g_in_prewarm_pumpe   = 0;
+static volatile LONG g_prewarm_jmp_valid  = 0;
+static jmp_buf        g_prewarm_jmp;
+
 /* Worker thread: one background Lua-AI thread at a time.  When an entity's
  * lua_resume is dispatched here, the main thread returns immediately and the
  * 14s init stall becomes invisible to the frame loop.
@@ -1711,12 +1728,24 @@ static void pumpe_hook(int64_t a)
     if (InterlockedCompareExchange(&g_pumpe_once, 1, 0) == 0)
         log_write("[eaw-mt] DBG: pumpe_hook first call\n");
 
+    /* Deferred prewarm (Step 29e): ai_init_prewarm_hook saves the ai_manager
+     * during loading; we fire here once g_pumpe_count > 0, which guarantees
+     * the battle game loop is running and Lua AI scripts can access battle state.
+     * pumpe_count=0 case = menu/first load: skip to avoid prewarming menu entities.
+     * Return immediately after prewarm — the triggering entity `a` was already
+     * pumped by prewarm (its coroutine slot is zeroed).  Calling g_pumpe_orig(a)
+     * again with an empty slot reads stale LuaThreadTable state → crash. */
+    if (g_deferred_ai_mgr && g_pumpe_count > 0) {
+        int64_t mgr = g_deferred_ai_mgr;
+        g_deferred_ai_mgr = 0;
+        prewarm_from_ai_manager(mgr);
+        return;
+    }
+
     /* BG dispatch disabled (Step 30): EaW's Lua C closures access shared game
      * state (entity lists, resource counts, vtable objects).  Running lua_resume
      * on a background thread while the main thread reads the same state causes
      * main-thread vtable corruption → crash (confirmed: av_read@heap addr).
-     * The prewarm hook (Step 29) moves the first-call 14s Lua-init cost to the
-     * loading screen; post-prewarm calls take ~1ms and synchronous dispatch is fine.
      *
      * Per-gsvc budget still applies: skips remaining entities once the cumulative
      * synchronous time exceeds PUMPE_BUDGET_MS for this service pass. */
@@ -1816,27 +1845,40 @@ static BOOL install_pumpe_hook(void)
 #define AI_INIT_RVA      0x2a8730ULL  /* FUN_1402a8730 — entity AI manager init */
 /* Known callers of FUN_1402a8730 and their scan windows: */
 #define FN_52D10_RVA     0x52d10ULL   /* FUN_140052d10 — save/pre-loop loader */
-#define FN_52D10_SCAN    1100         /* callsite at offset +0x3f9 (0x53659) */
+#define FN_52D10_SCAN    2500         /* callsite at offset +0x949 (0x53659); was 1100 — too small */
 #define FN_56480_RVA     0x56480ULL   /* FUN_140056480 — skirmish loader */
-#define FN_56480_SCAN    2300         /* callsite at offset +0x891 (0x56d11) */
+#define FN_56480_SCAN    2300         /* covers fn+0x8c2 (28ae40 callsite at offset 0x8c2 = 2242) */
 #define FN_8DF00_RVA     0x8df00ULL   /* FUN_14008df00 — galactic conquest loader */
 #define FN_8DF00_SCAN    1600         /* callsite at offset +0x5e6 (0x8e4e6) */
+#define BMA_RVA          0xb153e0ULL  /* &DAT_140b153e0 — battle-mode array object passed to FUN_14028a4d0 */
 
 typedef void (*AiInitFn)(int64_t);
-static AiInitFn g_ai_init_orig = NULL;
+static AiInitFn  g_ai_init_orig      = NULL;
+static int64_t   g_bma_obj           = 0;  /* &DAT_140b153e0 — battle-mode array object */
 
+/* Snapshot and restore the battle-mode array field *(lVar2+0x20) that Lua AI
+ * callbacks zero during prewarm.  FUN_14028a4d0 crashes if it reads a null
+ * there; restoring the value lets the game loop's first ga4d0 call succeed.
+ * Uses the same array layout that FUN_14028a4d0 iterates:
+ *   array_base = *(bma_obj+0x48),  count = *(bma_obj+0x50)
+ *   for each i: lVar2 = array_base[i]; guard: lVar2!=0 && *(lVar2+0x18)!=0
+ *   protected field: *(lVar2+0x20) */
 static void prewarm_from_ai_manager(int64_t ai_manager)
 {
     if (!ai_manager || !g_pumpe_orig) return;
 
-    /* Guard: skip on initial startup (menu load).  During DLL init the main menu
-     * battle calls the same loader; entity structs are partially initialised and
-     * entity+0x2d8 may contain heap garbage that passes the lua_state != 0 check
-     * and crashes g_pumpe_orig.  Once g_pumpe_count > 0, the game loop has run at
-     * least one service pass and all entity fields are properly set up. */
-    if (!g_pumpe_count) {
-        log_write("[eaw-mt] PREWARM: skipped (game not yet live)\n");
-        return;
+    /* Snapshot battle-mode array *(lVar2+0x20) before running Lua */
+    int64_t bma_arr  = g_bma_obj ? *(int64_t *)(g_bma_obj + 0x48) : 0;
+    int32_t bma_cnt  = g_bma_obj ? *(int32_t *)(g_bma_obj + 0x50) : 0;
+    if (bma_cnt < 0 || bma_cnt > 256) bma_cnt = 0;
+    int64_t bma_saved[256];
+    int8_t  bma_has[256];
+    memset(bma_has, 0, sizeof(bma_has));
+    for (int i = 0; i < bma_cnt; i++) {
+        int64_t lv2 = bma_arr ? *(int64_t *)(bma_arr + i*8) : 0;
+        if (!lv2 || !*(int64_t *)(lv2 + 0x18)) continue;
+        bma_saved[i] = *(int64_t *)(lv2 + 0x20);
+        bma_has[i]   = 1;
     }
 
     int64_t sentinel = ai_manager + 0x40;
@@ -1850,28 +1892,116 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
         int64_t ref = *(int64_t *)(node + 0x18);
         if (ref) {
             int64_t entity    = ref - 0x18;
-            int64_t lua_state = *(int64_t *)(entity + 0x2d8); /* entity[0x5b] */
-            if (lua_state) {
-                g_pumpe_orig(lua_state);
-                pumped++;
+            int64_t lua_state = *(int64_t *)(entity + 0x2d8);
+            /* Mirror FUN_1403a6b80's Pump_Threads guard:
+             *   (entity[0x5b] != 0) && !(entity[0x74] & 2)
+             * entity[0x74] in longlong* terms = byte at entity+0x3a0.
+             * Bit 1 set = entity service is disabled/dead; skip pumping. */
+            uint8_t eflags = *(uint8_t *)(entity + 0x3a0);
+            if (lua_state && !(eflags & 2)) {
+                /* Save the service message buffer state before prewarm.
+                 *
+                 * lua_state+0x58 → buf  — outer pointer to the message buffer object.
+                 * buf+0x10       → wr   — linear write pointer into the payload area.
+                 * buf+0x20       → hm   — pointer to the string-interning hash map.
+                 * hm+0x00        → arr  — pointer to the hash map's bucket array.
+                 * hm+0x08        → cnt  — element count.
+                 * hm+0x0c        → cap  — bucket capacity (int32).
+                 *
+                 * Pump_Threads drives the Lua AI which calls FUN_140246fb0 (property
+                 * lookup) → FUN_1407b9540 (append string to buffer) → FUN_1407bf8f0
+                 * (intern string in hash map).  After the query executes, some cleanup
+                 * writes 0xffffffffffffffef (a freed-slot sentinel) into the `next`
+                 * fields of hash map entries while leaving the bucket array pointers
+                 * intact.  The game loop's first ServiceRate lookup then traverses the
+                 * stale chain and crashes (AV at 0xffffffffffffffff).
+                 *
+                 * Fix: restore ALL hash map structural fields and zero the bucket array
+                 * so the game loop sees a clean empty table and re-interns from scratch.
+                 */
+                int64_t buf = *(int64_t *)(lua_state + 0x58);
+                int64_t wr  = buf ? *(int64_t *)(buf + 0x10) : 0;
+                int64_t hm  = buf ? *(int64_t *)(buf + 0x20) : 0;
+                int64_t arr = hm  ? *(int64_t *)(hm  + 0x00) : 0;
+                int64_t cnt = hm  ? *(int64_t *)(hm  + 0x08) : 0;
+                int32_t cap = hm  ? *(int32_t *)(hm  + 0x0c) : 0;
+                (void)cnt;
+
+                char _pm[128];
+                sprintf(_pm, "[eaw-mt] PREWARM: pumping entity %d  lua=0x%llx buf=0x%llx hm=0x%llx arr=0x%llx cap=%d\n",
+                        count, (unsigned long long)lua_state,
+                        (unsigned long long)buf, (unsigned long long)hm,
+                        (unsigned long long)arr, (int)cap);
+                log_write(_pm);
+
+                int pumped_ok = 0;
+                InterlockedExchange(&g_in_prewarm_pumpe, 1);
+                InterlockedExchange(&g_prewarm_jmp_valid, 1);
+                if (setjmp(g_prewarm_jmp) == 0) {
+                    g_pumpe_orig(lua_state);
+                    pumped_ok = 1;
+                } else {
+                    /* recovered via longjmp from VEH handler */
+                    char _fe[128];
+                    sprintf(_fe, "[eaw-mt] PREWARM: entity %d faulted in pumpe, skipping\n", count);
+                    log_write(_fe);
+                }
+                InterlockedExchange(&g_prewarm_jmp_valid, 0);
+                InterlockedExchange(&g_in_prewarm_pumpe, 0);
+
+                if (pumped_ok)
+                    log_write("[eaw-mt] PREWARM: pumpe returned ok\n");
+
+                /* Restore outer buffer pointer + write pointer — always, even after fault */
+                *(int64_t *)(lua_state + 0x58) = buf;
+                if (buf) {
+                    *(int64_t *)(buf + 0x10) = wr;
+                    *(int64_t *)(buf + 0x20) = hm;
+                }
+                /* Restore hash map structure and zero bucket slots */
+                if (hm) {
+                    *(int64_t *)(hm + 0x00) = arr;
+                    *(int64_t *)(hm + 0x08) = 0;  /* element count = 0 */
+                    *(int32_t *)(hm + 0x0c) = cap;
+                    if (arr && cap > 0 && cap <= 0x10000)
+                        memset((void *)arr, 0, (size_t)cap * 8);
+                }
+                if (pumped_ok) pumped++;
             }
         }
         node = *(int64_t *)(node + 8);
         count++;
     }
 
+    /* Restore *(lVar2+0x20) for every battle-mode entry that was snapshotted */
+    int restored = 0;
+    for (int i = 0; i < bma_cnt; i++) {
+        if (!bma_has[i]) continue;
+        int64_t lv2 = bma_arr ? *(int64_t *)(bma_arr + i*8) : 0;
+        if (!lv2) continue;
+        *(int64_t *)(lv2 + 0x20) = bma_saved[i];
+        restored++;
+    }
+
     QueryPerformanceCounter(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
-    char s[128];
-    sprintf(s, "[eaw-mt] PREWARM: ai_mgr=0x%llx  %d walked  %d pumped  %.0fms\n",
-            (unsigned long long)ai_manager, count, pumped, ms);
+    char s[192];
+    sprintf(s, "[eaw-mt] PREWARM: ai_mgr=0x%llx  %d walked  %d pumped  %d bma-restored  %.0fms\n",
+            (unsigned long long)ai_manager, count, pumped, restored, ms);
     log_write(s);
 }
 
 static void ai_init_prewarm_hook(int64_t ai_manager)
 {
     g_ai_init_orig(ai_manager);
-    prewarm_from_ai_manager(ai_manager);
+    /* Save ai_manager for deferred prewarm.  Do NOT call g_pumpe_orig here:
+     * Lua AI scripts need an active battle context (DAT_140b15418) which isn't
+     * set until loading completes.  The prewarm fires from pumpe_hook instead,
+     * once the game loop is running and the battle state is guaranteed ready. */
+    g_deferred_ai_mgr = ai_manager;
+    char s[64];
+    sprintf(s, "[eaw-mt] PREWARM: deferred ai_mgr=0x%llx\n", (unsigned long long)ai_manager);
+    log_write(s);
 }
 
 static BOOL install_prewarm_hook(void)
@@ -1881,6 +2011,7 @@ static BOOL install_prewarm_hook(void)
 
     BYTE *fn_ai_init = (BYTE *)exe + AI_INIT_RVA;
     g_ai_init_orig   = (AiInitFn)fn_ai_init;
+    g_bma_obj        = (int64_t)((BYTE *)exe + BMA_RVA);
 
     /* Single stub near fn_ai_init — within ±2GB of all three caller functions. */
     BYTE *stub = alloc_near(fn_ai_init, 14);
@@ -1923,6 +2054,81 @@ static BOOL install_prewarm_hook(void)
         total += n;
     }
     return total > 0;
+}
+
+/* =========================================================================
+ * FUN_140056480 callsite wrapper (Phase 5 Step 29j)
+ *
+ * Loading-phase prewarm fails at every sub-callsite because Lua AI callbacks
+ * have C-level side effects on game state (entity lists, battle-mode arrays)
+ * that subsequent loading code depends on being pristine.  Running prewarm
+ * DURING fn56480 corrupts that state.
+ *
+ * Solution: scan the entire exe image for CALL fn56480 sites and redirect
+ * them to fn56480_wrapper.  The wrapper calls the FULL original fn56480
+ * (all loading code runs cleanly), then runs prewarm after it returns.
+ * At that point the loading is complete, entities are fully initialized,
+ * and Lua callbacks are safe — exactly as in the normal game-loop first call.
+ * The loading screen remains visible for the extra ~14s; the battle starts
+ * warm with no in-battle freeze.
+ *
+ * Signature from Ghidra: undefined8 FUN_140056480(undefined8*, int, undefined4,
+ *                                                   undefined4, char)
+ * ========================================================================= */
+typedef int64_t (*Fn56480_t)(int64_t *, int32_t, int32_t, int32_t, char);
+static Fn56480_t g_fn56480_orig = NULL;
+
+static int64_t fn56480_wrapper(int64_t *p1, int32_t p2, int32_t p3, int32_t p4, char p5)
+{
+    int64_t ret = g_fn56480_orig(p1, p2, p3, p4, p5);
+    if (g_deferred_ai_mgr) {
+        int64_t mgr = g_deferred_ai_mgr;
+        g_deferred_ai_mgr = 0;
+        log_write("[eaw-mt] PREWARM: post-load prewarm (after fn56480)\n");
+        prewarm_from_ai_manager(mgr);
+    }
+    return ret;
+}
+
+static BOOL install_fn56480_wrapper(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *base = (BYTE *)exe;
+
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)base;
+    PIMAGE_NT_HEADERS nt  = (PIMAGE_NT_HEADERS)(base + dos->e_lfanew);
+    DWORD img_size = nt->OptionalHeader.SizeOfImage;
+
+    BYTE *fn56480 = base + FN_56480_RVA;
+    g_fn56480_orig = (Fn56480_t)fn56480;
+
+    BYTE *stub = alloc_near(fn56480, 14);
+    if (!stub) { log_write("[eaw-mt] WARN: alloc_near failed for fn56480 stub\n"); return FALSE; }
+    write_abs_jmp(stub, (uint64_t)fn56480_wrapper);
+
+    int n = 0;
+    for (DWORD i = 0; i + 4 < img_size; i++) {
+        if (base[i] != 0xE8) continue;
+        int32_t rel;
+        memcpy(&rel, base + i + 1, 4);
+        BYTE *target = base + i + 5 + (ptrdiff_t)rel;
+        if (target != fn56480) continue;
+        int32_t new_rel = (int32_t)(stub - (base + i + 5));
+        DWORD old;
+        if (!VirtualProtect(base + i + 1, 4, PAGE_EXECUTE_READWRITE, &old)) continue;
+        memcpy(base + i + 1, &new_rel, 4);
+        VirtualProtect(base + i + 1, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), base + i, 5);
+        char m[96];
+        sprintf(m, "[eaw-mt] fn56480-wrap: rva=0x%x\n", i);
+        log_write(m);
+        n++;
+    }
+    char m[64];
+    sprintf(m, "[eaw-mt] fn56480 wrapper: %d callsite(s) patched\n", n);
+    log_write(m);
+    return n > 0;
 }
 
 /* =========================================================================
@@ -3676,6 +3882,65 @@ static BOOL install_ga4d0_hook(void)
 }
 
 /* =========================================================================
+ * FUN_1402a7190 null-argument guard (Phase 5 Step 29k)
+ *
+ * FUN_14028a4d0 calls FUN_1402a7190(*(lVar2+0x20)) for each battle-mode array
+ * entry.  After prewarm, Lua AI callbacks leave some *(lVar2+0x20) = 0; the
+ * first game-loop ga4d0 call then passes null to FUN_1402a7190, which crashes
+ * at its first instruction (MOV RCX,[RCX+0x20]) with RCX=0.
+ *
+ * Fix: scan FUN_14028a4d0's body for CALL FUN_1402a7190 and redirect each to
+ * a7190_guard, which skips the call when arg=0.  In normal game operation
+ * (no prewarm), FUN_1402a7190 is never called with null, so the guard never
+ * fires and behavior is unchanged.
+ * ========================================================================= */
+typedef void (*A7190Fn)(int64_t);
+static A7190Fn g_a7190_orig = NULL;
+
+static void a7190_guard(int64_t arg)
+{
+    if (!arg) return;
+    g_a7190_orig(arg);
+}
+
+static BOOL install_a7190_guard(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *fn_ga4d0 = (BYTE *)exe + GA4D0_RVA;
+    BYTE *fn_a7190 = (BYTE *)exe + A7190_RVA;
+    g_a7190_orig   = (A7190Fn)fn_a7190;
+
+    BYTE *stub = alloc_near(fn_ga4d0, 14);
+    if (!stub) { log_write("[eaw-mt] WARN: alloc_near failed for a7190 guard stub\n"); return FALSE; }
+    write_abs_jmp(stub, (uint64_t)a7190_guard);
+
+    int n = 0;
+    for (int i = 0; i <= GA4D0_SIZE - 5; i++) {
+        if (fn_ga4d0[i] != 0xE8) continue;
+        int32_t rel;
+        memcpy(&rel, fn_ga4d0 + i + 1, 4);
+        BYTE *target = fn_ga4d0 + i + 5 + (ptrdiff_t)rel;
+        if (target != fn_a7190) continue;
+        int32_t new_rel = (int32_t)(stub - (fn_ga4d0 + i + 5));
+        DWORD old;
+        VirtualProtect(fn_ga4d0 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+        memcpy(fn_ga4d0 + i + 1, &new_rel, 4);
+        VirtualProtect(fn_ga4d0 + i + 1, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), fn_ga4d0 + i, 5);
+        char m[64];
+        sprintf(m, "[eaw-mt] a7190-guard: patched ga4d0+0x%x\n", i);
+        log_write(m);
+        n++;
+    }
+    char m[64];
+    sprintf(m, "[eaw-mt] a7190 guard: %d callsite(s) patched in FUN_14028a4d0\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
  * Slot-22 tail call hooks (Phase 5 Step 5)
  *
  * Both SpaceModeClass and LandModeClass vtable slot 22 end with an
@@ -4531,9 +4796,6 @@ static BOOL install_render_hook(void) {
  * Vectored Exception Handler — crash diagnostics
  * ========================================================================= */
 
-static volatile LONG g_veh_entered = 0;
-static volatile LONG g_wake_suppressed = 0; /* count of suppressed Wine wake_addr faults */
-
 static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
 {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
@@ -4580,6 +4842,15 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
         }
     }
 
+    /* Prewarm pumpe faults are recovered via setjmp/longjmp in prewarm_from_ai_manager.
+     * If the jmp_buf is valid, jump back to skip this entity; otherwise fall through
+     * to the normal crash logger so the fault doesn't silently disappear. */
+    if (g_in_prewarm_pumpe &&
+        InterlockedCompareExchange(&g_prewarm_jmp_valid, 0, 1) == 1) {
+        longjmp(g_prewarm_jmp, 1);
+        /* NOT REACHED */
+    }
+
     if (code == EXCEPTION_ACCESS_VIOLATION ||
         code == EXCEPTION_ILLEGAL_INSTRUCTION ||
         code == EXCEPTION_STACK_OVERFLOW ||
@@ -4597,14 +4868,19 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
             av_type = ep->ExceptionRecord->ExceptionInformation[0];
             av_addr = ep->ExceptionRecord->ExceptionInformation[1];
         }
-        char s[256];
+        uint64_t img_base = (uint64_t)GetModuleHandleA(NULL);
+        uint64_t rip_abs  = (uint64_t)ep->ContextRecord->Rip;
+        char s[320];
         snprintf(s, sizeof(s),
             "[eaw-mt] CRASH code=%08lx insn=%p tid=%lu(%s)\n"
-            "[eaw-mt] CRASH av_%s @%p rip=%p rsp=%p\n",
+            "[eaw-mt] CRASH av_%s @%p rip=%p rsp=%p\n"
+            "[eaw-mt] CRASH img_base=%016llx rip_rva=0x%llx\n",
             (unsigned long)code, fault_insn, (unsigned long)tid, who,
             av_type == 1 ? "write" : "read", (void *)av_addr,
             (void *)ep->ContextRecord->Rip,
-            (void *)ep->ContextRecord->Rsp);
+            (void *)ep->ContextRecord->Rsp,
+            (unsigned long long)img_base,
+            (unsigned long long)(rip_abs - img_base));
         if (g_log_fp) fputs(s, g_log_fp);
         /* Full register dump — identifies which register holds the bad address */
         char r[512];
@@ -4629,13 +4905,21 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
             (unsigned long long)ep->ContextRecord->R15,
             (unsigned long long)ep->ContextRecord->Rbp);
         if (g_log_fp) { fputs(r, g_log_fp); fflush(g_log_fp); }
-        /* Stack dump — 64 slots to find game code return address above the JIT frames */
+        /* Stack dump — 64 slots; annotate slots that look like EXE return addresses */
         ULONG_PTR rsp = (ULONG_PTR)ep->ContextRecord->Rsp;
+        PIMAGE_DOS_HEADER dos2 = (PIMAGE_DOS_HEADER)(uintptr_t)img_base;
+        PIMAGE_NT_HEADERS nt2  = (PIMAGE_NT_HEADERS)(img_base + dos2->e_lfanew);
+        uint64_t img_size = nt2->OptionalHeader.SizeOfImage;
         for (int i = 0; i < 64; i++) {
             ULONG_PTR val = ((volatile ULONG_PTR *)rsp)[i];
-            char stk[64];
-            snprintf(stk, sizeof(stk), "[eaw-mt] STK [%03x]=%016llx\n",
-                i * 8, (unsigned long long)val);
+            uint64_t rva_v = (uint64_t)val - img_base;
+            char stk[96];
+            if (rva_v < img_size)
+                snprintf(stk, sizeof(stk), "[eaw-mt] STK [%03x]=%016llx  rva=0x%llx\n",
+                    i * 8, (unsigned long long)val, (unsigned long long)rva_v);
+            else
+                snprintf(stk, sizeof(stk), "[eaw-mt] STK [%03x]=%016llx\n",
+                    i * 8, (unsigned long long)val);
             if (g_log_fp) fputs(stk, g_log_fp);
         }
         /* Dump 32 bytes of crash instruction bytes */
@@ -4714,6 +4998,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_2be640_body_hooks();
         install_pumpe_hook();
         install_prewarm_hook();
+        install_fn56480_wrapper();
+        install_a7190_guard();
         install_a6b80_stall2_hooks();
         install_b87010_hook();
         install_d12d520_hook();
