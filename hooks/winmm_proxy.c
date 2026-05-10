@@ -1738,6 +1738,7 @@ static void pumpe_hook(int64_t a)
     if (g_deferred_ai_mgr && g_pumpe_count > 0) {
         int64_t mgr = g_deferred_ai_mgr;
         g_deferred_ai_mgr = 0;
+        log_write("[eaw-mt] PREWARM: firing in pumpe_hook (game-loop context)\n");
         prewarm_from_ai_manager(mgr);
         return;
     }
@@ -1863,6 +1864,7 @@ static int64_t   g_bma_obj           = 0;  /* &DAT_140b153e0 — battle-mode arr
  *   array_base = *(bma_obj+0x48),  count = *(bma_obj+0x50)
  *   for each i: lVar2 = array_base[i]; guard: lVar2!=0 && *(lVar2+0x18)!=0
  *   protected field: *(lVar2+0x20) */
+
 static void prewarm_from_ai_manager(int64_t ai_manager)
 {
     if (!ai_manager || !g_pumpe_orig) return;
@@ -1922,51 +1924,89 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                 int64_t buf = *(int64_t *)(lua_state + 0x58);
                 int64_t wr  = buf ? *(int64_t *)(buf + 0x10) : 0;
                 int64_t hm  = buf ? *(int64_t *)(buf + 0x20) : 0;
-                int64_t arr = hm  ? *(int64_t *)(hm  + 0x00) : 0;
-                int64_t cnt = hm  ? *(int64_t *)(hm  + 0x08) : 0;
                 int32_t cap = hm  ? *(int32_t *)(hm  + 0x0c) : 0;
-                (void)cnt;
 
-                char _pm[128];
-                sprintf(_pm, "[eaw-mt] PREWARM: pumping entity %d  lua=0x%llx buf=0x%llx hm=0x%llx arr=0x%llx cap=%d\n",
-                        count, (unsigned long long)lua_state,
-                        (unsigned long long)buf, (unsigned long long)hm,
-                        (unsigned long long)arr, (int)cap);
-                log_write(_pm);
-
-                int pumped_ok = 0;
-                InterlockedExchange(&g_in_prewarm_pumpe, 1);
-                InterlockedExchange(&g_prewarm_jmp_valid, 1);
-                if (setjmp(g_prewarm_jmp) == 0) {
-                    g_pumpe_orig(lua_state);
-                    pumped_ok = 1;
+                /* Only prewarm entities with a large hash map.  cap=1024 entities
+                 * crash inside the allocator during prewarm (NULL+8 write at RVA
+                 * 0x642160d).  longjmp from inside an in-progress allocation leaves
+                 * the allocator heap mutex locked, deadlocking all subsequent allocs
+                 * (save-load freeze, etc.).  The stall bottleneck has cap=4096 and
+                 * pumps safely; cap=1024 entities are not the bottleneck. */
+                if (cap < 4096) {
+                    char _sk[96];
+                    sprintf(_sk, "[eaw-mt] PREWARM: skip entity %d cap=%d\n", count, cap);
+                    log_write(_sk);
                 } else {
-                    /* recovered via longjmp from VEH handler */
-                    char _fe[128];
-                    sprintf(_fe, "[eaw-mt] PREWARM: entity %d faulted in pumpe, skipping\n", count);
-                    log_write(_fe);
-                }
-                InterlockedExchange(&g_prewarm_jmp_valid, 0);
-                InterlockedExchange(&g_in_prewarm_pumpe, 0);
+                    char _pm[128];
+                    sprintf(_pm, "[eaw-mt] PREWARM: pumping entity %d  lua=0x%llx buf=0x%llx hm=0x%llx cap=%d\n",
+                            count, (unsigned long long)lua_state,
+                            (unsigned long long)buf, (unsigned long long)hm, (int)cap);
+                    log_write(_pm);
 
-                if (pumped_ok)
-                    log_write("[eaw-mt] PREWARM: pumpe returned ok\n");
+                    /* Snapshot hm structural fields before pump for later restore. */
+                    int64_t hm08_pre = hm ? *(int64_t *)(hm + 0x08) : 0; /* count + cap */
 
-                /* Restore outer buffer pointer + write pointer — always, even after fault */
-                *(int64_t *)(lua_state + 0x58) = buf;
-                if (buf) {
-                    *(int64_t *)(buf + 0x10) = wr;
-                    *(int64_t *)(buf + 0x20) = hm;
+                    int pumped_ok = 0;
+                    InterlockedExchange(&g_in_prewarm_pumpe, 1);
+                    InterlockedExchange(&g_prewarm_jmp_valid, 1);
+                    if (setjmp(g_prewarm_jmp) == 0) {
+                        g_pumpe_orig(lua_state);
+                        pumped_ok = 1;
+                    } else {
+                        char _fe[128];
+                        sprintf(_fe, "[eaw-mt] PREWARM: entity %d faulted in pumpe, skipping\n", count);
+                        log_write(_fe);
+                    }
+                    InterlockedExchange(&g_prewarm_jmp_valid, 0);
+                    InterlockedExchange(&g_in_prewarm_pumpe, 0);
+
+                    if (pumped_ok)
+                        log_write("[eaw-mt] PREWARM: pumpe returned ok\n");
+
+                    /* Restore lua_state+0x58 (zeroed by Pump_Threads cleanup) and
+                     * the write cursor. */
+                    *(int64_t *)(lua_state + 0x58) = buf;
+                    if (buf) {
+                        *(int64_t *)(buf + 0x10) = wr;
+                        if (pumped_ok) {
+                            int64_t cur_hm  = *(int64_t *)(buf + 0x20);
+                            int64_t cur_arr = cur_hm ? *(int64_t *)(cur_hm + 0x00) : 0;
+                            int32_t cur_cap = cur_hm ? *(int32_t *)(cur_hm + 0x0c) : 0;
+                            /* Scan arr in-place: zero any slot whose value is not a
+                             * plausible heap pointer.  Lua GC writes DEADKEY (0x15)
+                             * into arr slots; the game's hash lookup then reads the
+                             * slot as a node pointer and crashes at [0x15+0x10].
+                             * Values below 0x10000 are never valid heap pointers.
+                             *
+                             * We do NOT do a full backup/restore: if the pump freed
+                             * arr as part of a GC cycle, the allocator wrote free-list
+                             * chain pointers into arr[0..8]; overwriting those with
+                             * backup data (which typically starts with 0) corrupts the
+                             * free list and crashes the allocator later. The scan
+                             * preserves all large-address values (free-list ptrs) while
+                             * clearing only the small Lua/game sentinels. */
+                            int cleared = 0;
+                            if (cur_arr && cur_cap > 0 && cur_cap <= 0x10000) {
+                                int64_t *slots = (int64_t *)cur_arr;
+                                for (int32_t i = 0; i < cur_cap; i++) {
+                                    uint64_t v = (uint64_t)slots[i];
+                                    if (v != 0 && v < 0x10000) {
+                                        slots[i] = 0;
+                                        cleared++;
+                                    }
+                                }
+                            }
+                            /* Restore count+cap so game sees an empty-or-original map */
+                            if (cur_hm == hm && hm && hm08_pre)
+                                *(int64_t *)(cur_hm + 0x08) = hm08_pre;
+                            char _rs[192];
+                            sprintf(_rs, "[eaw-mt] PREWARM: restore entity %d  arr=%llx  cleared=%d\n",
+                                    count, (unsigned long long)cur_arr, cleared);
+                            log_write(_rs);
+                        }
+                    }
+                    if (pumped_ok) pumped++;
                 }
-                /* Restore hash map structure and zero bucket slots */
-                if (hm) {
-                    *(int64_t *)(hm + 0x00) = arr;
-                    *(int64_t *)(hm + 0x08) = 0;  /* element count = 0 */
-                    *(int32_t *)(hm + 0x0c) = cap;
-                    if (arr && cap > 0 && cap <= 0x10000)
-                        memset((void *)arr, 0, (size_t)cap * 8);
-                }
-                if (pumped_ok) pumped++;
             }
         }
         node = *(int64_t *)(node + 8);
@@ -2082,10 +2122,17 @@ static int64_t fn56480_wrapper(int64_t *p1, int32_t p2, int32_t p3, int32_t p4, 
 {
     int64_t ret = g_fn56480_orig(p1, p2, p3, p4, p5);
     if (g_deferred_ai_mgr) {
-        int64_t mgr = g_deferred_ai_mgr;
-        g_deferred_ai_mgr = 0;
-        log_write("[eaw-mt] PREWARM: post-load prewarm (after fn56480)\n");
-        prewarm_from_ai_manager(mgr);
+        if (g_pumpe_count > 0) {
+            /* Leave g_deferred_ai_mgr set — pumpe_hook will fire prewarm on the
+             * first game-loop pump call, where all services are initialised and
+             * the allocator is in a clean state.  Running prewarm here (loading
+             * context) calls the allocator while game services are partially
+             * set up, which corrupts the free list → crash. */
+            log_write("[eaw-mt] PREWARM: deferring to pumpe_hook (loading context unsafe)\n");
+        } else {
+            g_deferred_ai_mgr = 0;
+            log_write("[eaw-mt] PREWARM: skip — first load (pumpe_count=0)\n");
+        }
     }
     return ret;
 }
