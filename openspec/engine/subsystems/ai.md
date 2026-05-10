@@ -1,7 +1,7 @@
 # AI Subsystem (Lua Coroutine Engine)
 
-**Status:** Phase 5 Step 1 — call-site timing hook installed; deadline enforcement not yet implemented.
-**Last verified:** 2026-04-20
+**Status:** Phase 5 Step 29f — second-battle Lua stall eliminated via prewarm; deadline enforcement not yet implemented.
+**Last verified:** 2026-05-10
 
 ---
 
@@ -93,6 +93,108 @@ Pump_Threads must also complete before flush#1 if flush#1 reads entity state sub
 The first three instructions are **RSP-relative home-space saves**. If copied into a CALL-based trampoline, CALL pushes a return address (shifting RSP by 8), making all three offsets wrong by 8. This would corrupt the caller's saved registers.
 
 **Solution:** patch the `CALL rel32` (E8) inside `FUN_140488660` (call-site at runtime-scanned offset) to redirect through a near stub → `pump_threads_hook`. The near stub is a 14-byte `FF 25` absolute JMP allocated within 2 GB of the call site via `alloc_near`.
+
+---
+
+---
+
+## Phase 5 Prewarm — Second-Battle Lua Stall (CONFIRMED FIXED)
+
+### Root Cause
+
+On the **second** battle of a session, Pump_Threads stalls for ~14–21 seconds while resuming Lua AI coroutines for the first time. The first battle uses a distinct loading path that skips the AI scoring manager's `System_Initialize`; on scene re-entry the coroutines are freshly created and must run their initialization Lua code (property table construction, AI state machine setup) from scratch.
+
+This is **not** JIT compilation latency — EaW uses Lua 5.1 interpreted bytecode. The cost is purely first-run Lua execution: iterating game object property tables, allocating hash map entries, building AI state.
+
+### AI Manager and Entity Structures
+
+The AI manager initializer runs from `FUN_14056480` (RVA `0x56480`, `FUN_140056480`). This function is called by three known loading paths:
+
+| Caller RVA | Loading path |
+|------------|-------------|
+| `0x55b60` | Galactic map load |
+| `0x52d10` | Save-game load |
+| `0x2a8730` callsite | Skirmish / space battle load |
+
+Inside `FUN_14056480`, it calls the AI initializer (`FUN_1402a8730`, RVA `0x2a8730`). We hook this callsite across all three loading paths to intercept `ai_manager`.
+
+**AI manager linked list** (at `ai_manager + 0x40`):
+
+```
+ai_manager + 0x40  ← sentinel node (list tail == sentinel means empty)
+ai_manager + 0x48  ← first real node pointer
+
+node layout:
+  node + 0x00  fwd pointer (next node)
+  node + 0x08  bwd pointer (prev node)
+  node + 0x18  ref pointer (non-null means entity is live)
+
+entity = ref - 0x18
+  entity + 0x2d8  ← lua_state pointer (Lua coroutine for this unit's AI)
+  entity + 0x3a0  ← flag byte; bit 1 set = entity disabled/dead (skip pump)
+```
+
+### Service Message Buffer Layout
+
+Each entity's `lua_state` has a service message buffer attached at `lua_state + 0x58`. This buffer is used by AI property lookups (`FUN_140246fb0`) to intern string keys for `ServiceRate` / `LastService` Lua variables. The pump modifies this buffer's hash map in flight.
+
+```
+lua_state + 0x58  → buf   (pointer to message buffer object)
+buf       + 0x10  → wr    (linear write pointer into payload area)
+buf       + 0x20  → hm    (pointer to string-interning hash map)
+hm        + 0x00  → arr   (pointer to bucket array, int64_t[cap])
+hm        + 0x08  → cnt   (int64 — element count in low 32 bits)
+hm        + 0x0c  → cap   (int32 — bucket capacity; overlaps hm+0x08 high bytes)
+```
+
+`arr` is an open-addressing bucket array. Each 8-byte slot holds either:
+- `0` — empty bucket
+- a valid node pointer — live entry
+- `0x15` — Lua GC DEADKEY sentinel written by `sweeptable` after pump
+- `0xffffffffffffffef` — game-side freed-slot sentinel written by hash map cleanup
+
+**Critical layout note:** `hm + 0x08` is an `int64_t` that packs both count (low 32) and cap (high 32), but `cap` is also independently accessible as `*(int32_t *)(hm + 0x0c)`. Writing 8 bytes to `hm + 0x08` will clobber cap. Restoring count must use a full 8-byte write of the pre-pump value.
+
+`Pump_Threads` zeroes `lua_state + 0x58` (buf pointer) as part of its own cleanup after each coroutine resumes. We restore it unconditionally after prewarm.
+
+### Prewarm Mechanism (confirmed working)
+
+Prewarm fires from `pumpe_hook` (our hook on `Pump_Threads` / `FUN_140247a90`) on the **first game-loop call after loading**:
+
+1. `FUN_14056480` wrapper captures `ai_manager` into `g_deferred_ai_mgr`.
+2. Guard: only when `g_pumpe_count > 0` (skips first-ever load where entity heap data is garbage).
+3. On next `pumpe_hook` call: fire `prewarm_from_ai_manager(ai_manager)` and return (skip the normal pump for that one tick).
+
+**Per-entity loop:**
+- Walk the AI manager linked list (sentinel check at `ai_manager + 0x40`).
+- Skip entities with `entity + 0x3a0` bit 1 set (disabled).
+- Skip entities with `cap < 4096` — these crash the allocator during pump (see below).
+- Call `g_pumpe_orig(lua_state)` — runs the AI coroutine one step, warming all Lua state.
+- Restore `lua_state + 0x58 = buf`, `buf + 0x10 = wr`.
+- Scan `arr[0..cap-1]` in-place: zero any slot whose value is non-zero and `< 0x10000`. This clears DEADKEY sentinels left by Lua GC without touching allocator chain pointers.
+- Restore `hm + 0x08 = hm08_pre` (pre-pump count+cap) so the game sees an empty-or-clean map.
+
+**Battle-mode array (BMA) snapshot:** `DAT_140b153e0` (RVA `0xb153e0`) holds a battle-mode array. Prewarm snapshots `*(lv2 + 0x20)` for each live entry before pumping and restores all of them after, preventing the pump from corrupting battle-mode state that `FUN_14028a4d0` reads on the first real game tick.
+
+**Fault recovery:** `setjmp`/`longjmp` + a VEH handler (`g_prewarm_veh`) catch any access violation inside the pump. The VEH triggers `longjmp` to skip the current entity. This prevents a faulting entity from killing the whole prewarm session.
+
+### Crash Archaeology (resolved)
+
+Several crashes were encountered and fixed during prewarm development:
+
+| Crash site | Root cause | Fix |
+|---|---|---|
+| Main menu camera broken + save-load freeze | `fn56480_wrapper` fired prewarm on main-menu entities (first load, uninitialized heap) and during save loads (allocator deadlock via longjmp) | Guard: prewarm only when `g_pumpe_count > 0` |
+| RVA `0x7bf960` — `[rbx+0x10]` where rbx=0x15 | After pump, arr[bucket]=0x15 (Lua DEADKEY from GC sweep). Game reads arr slot as a node pointer and dereferences 0x15. | In-place sentinel scan: zero slots < 0x10000 |
+| RVA `0x642160d` — `av_write @0x8` | memset of arr clobbered allocator boundary tag adjacent to arr block (memset of `cap*8` bytes exceeded the actual allocation). | Replaced memset with targeted scan |
+| RVA `0x642160d` — `av_write @0x8` (second form) | Full backup/restore (`memcpy` arr from `g_arr_backup`) wrote `backup[0]=0` (original Lua NIL empty-bucket) into arr_pre's first slot. When arr_pre was later freed as the sole block in the free list, the allocator set next=null and prev=null, then crashed at `[null+8]` during removal. | Remove backup/restore entirely; use in-place sentinel scan. Free-list chain pointers are large heap addresses (>0x10000) and are preserved. |
+| cap=1024 entities crash inside the allocator during pump | These entities' Lua coroutines trigger an allocation path that crashes mid-allocation; longjmp from inside a locked heap mutex deadlocks all subsequent allocs. | Skip any entity with `cap < 4096`. The stall bottleneck has `cap=4096`; cap=1024 entities are not responsible for the 21s hitch. |
+
+### Result
+
+- `Pump_Threads` (RVA `0x387010`) now runs at `avg=0.00 max=1.00 ms` across tens of thousands of calls across multiple sessions.
+- The 14–21 second second-battle Lua AI stall is **eliminated**.
+- Prewarm fires correctly for galactic, skirmish, and save-load entry paths.
 
 ---
 
