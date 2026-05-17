@@ -100,8 +100,8 @@ Steam game files and the Wine prefix for EaW are separate locations:
 
 ```
 # Binaries (what we analyze and patch):
-~/.steam/steam/steamapps/common/Star Wars Empire at War/corruption/StarWarsG.exe  # PRIMARY
-~/.steam/steam/steamapps/common/Star Wars Empire at War/corruption/swfoc.exe      # launcher
+~/.steam/steam/steamapps/common/sweaw/corruption/StarWarsG.exe  # PRIMARY
+~/.steam/steam/steamapps/common/sweaw/corruption/swfoc.exe      # launcher
 
 # Proton prefix (Wine C: drive, config, etc.):
 ~/.steam/steam/steamapps/compatdata/32470/pfx/
@@ -353,7 +353,7 @@ x86_64-w64-mingw32-gcc -shared -o patches/experimental/winmm.dll \
 **Deploy:**
 ```bash
 cp patches/experimental/winmm.dll \
-  ~/gam/steam/steamapps/common/"Star Wars Empire at War"/corruption/
+  ~/gam/steam/steamapps/common/sweaw/corruption/
 ```
 
 **Steam launch options:**
@@ -363,7 +363,7 @@ WINEDLLOVERRIDES="winmm=n,b" PROTON_USE_NTSYNC=1 %command% STEAMMOD=1125571106
 
 **Verify load** (Wine debug output — add `WINEDEBUG=+debugstr` to launch options):
 ```
-0184:warn:debugstr:OutputDebugStringA "[eaw-mt] winmm proxy loaded ..." 
+0184:warn:debugstr:OutputDebugStringA "[eaw-mt] winmm proxy loaded ..."
 ```
 
 Or check `/proc/$(pgrep StarWarsG.exe)/maps` for two winmm entries (proxy + real).
@@ -424,7 +424,7 @@ At the start of every session, before any work:
 ### Completed (Phase 1.1 – 1.3) ✅
 
 1. ✅ Dev environment (`nix develop`) verified. `flake.lock` committed.
-2. ✅ Binaries located at `~/gam/steam/steamapps/common/Star Wars Empire at War/corruption/`. Primary target is `StarWarsG.exe` (12MB), not `swfoc.exe` (launcher stub).
+2. ✅ Binaries located at `~/gam/steam/steamapps/common/sweaw/corruption/`. Primary target is `StarWarsG.exe` (12MB), not `swfoc.exe` (launcher stub).
 3. ✅ Repository structure created.
 4. ✅ All binaries copied to `binaries/original/` with SHA-256s in `CHECKSUMS.txt`. Directory set read-only.
 5. ✅ Initial commit made. Phase 1.2/1.3 committed as `b8f62e9`.

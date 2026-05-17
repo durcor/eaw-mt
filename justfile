@@ -1,9 +1,15 @@
-wine    := "/nix/store/9rcmpchnqdivam5i2fpzjh27mlq8m4px-proton-ge-bin-GE-Proton10-34-steamcompattool/files/bin/wine64"
-proton  := "/nix/store/9rcmpchnqdivam5i2fpzjh27mlq8m4px-proton-ge-bin-GE-Proton10-34-steamcompattool/proton"
-game-dir  := env('HOME') + "/gam/steam/steamapps/common/'Star Wars Empire at War'/corruption"
-game-base := env('HOME') + "/gam/steam/steamapps/common/'Star Wars Empire at War'"
+wine         := "/nix/store/9rcmpchnqdivam5i2fpzjh27mlq8m4px-proton-ge-bin-GE-Proton10-34-steamcompattool/files/bin/wine64"
+proton       := "/nix/store/9rcmpchnqdivam5i2fpzjh27mlq8m4px-proton-ge-bin-GE-Proton10-34-steamcompattool/proton"
+steam-client := env('HOME') + "/.local/share/Steam"
+
+# NOTE: claude doesn't like escaped whitespace in paths
+# game-base := env('HOME') + "/gam/steam/steamapps/common/'Star Wars Empire at War'"
+game-base := env('HOME') + "/gam/steam/steamapps/common/sweaw"
+
+game-dir  := env('HOME') + "/gam/steam/steamapps/common/sweaw/corruption"
 compat-data := env('HOME') + "/gam/steam/steamapps/compatdata/32470"
-log-file  := env('HOME') + "/gam/steam/steamapps/common/'Star Wars Empire at War'/corruption/eaw-mt.log"
+log-file  := env('HOME') + "/gam/steam/steamapps/common/sweaw/corruption/eaw-mt.log"
+save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
 
@@ -38,11 +44,11 @@ remove-hook:
     "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows" \
     /v AppInit_DLLs /f
 
-# Launch via Steam URI — launches the EaW base game, NOT Forces of Corruption
-# and NOT the mod configured in launch options. Use the Steam UI Play button
-# with the correct launch option selected instead.
-run-game:
-  steam "steam://rungameid/32470"
+# NOTE: CLI launch of FoC+mod is not feasible. steam -applaunch uses the store's first
+# launch option (base EaW) regardless of DefaultLaunchOption; the FoC working directory
+# and pressure-vessel setup require Steam's internal IPC (triggered by the Play button).
+# Workflow: `just cycle` then click Play in Steam.
+cycle: kill-game build-winmm
 
 # Wait for StarWarsG.exe to appear (up to 60s), then print its PID.
 wait-game:
@@ -51,3 +57,7 @@ wait-game:
 # Kill a running game instance.
 kill-game:
   pkill -x StarWarsG.exe || true
+
+# List save files sorted by modification time (newest first).
+show-saves:
+  ls -lt "{{save-dir}}" | grep -v settings.sav
