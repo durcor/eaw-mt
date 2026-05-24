@@ -1252,6 +1252,7 @@ static BOOL install_space_unit_svc_hook(void)
 #define T20ED70_RVA       0x20ed70ULL  /* FUN_14020ed70 — preamble loop call */
 #define A6B80_BODY_SIZE   2862         /* FUN_1403a6b80 body size for inner E8 scan */
 #define PUMPE_RVA         0x247a90ULL  /* FUN_140247a90 — Pump_Threads (entity-level call site) */
+#define LUAC_STEP_RVA     0x7bc850ULL  /* FUN_1407bc850 — luaC_step (GC runner, called by luaC_checkGC) */
 #define A76B0_RVA         0x3a76b0ULL  /* FUN_1403a76b0 — movement system (line 361 of 3a6b80) */
 #define A9E30_RVA         0x3a9e30ULL  /* FUN_1403a9e30 — command dispatch (line 99 of 3a6b80) */
 #define E369E0_RVA        0x5369e0ULL  /* FUN_1405369e0 — preamble call (line 79 of 3a6b80) */
@@ -1730,22 +1731,6 @@ static void pumpe_hook(int64_t a)
     if (InterlockedCompareExchange(&g_pumpe_once, 1, 0) == 0)
         log_write("[eaw-mt] DBG: pumpe_hook first call\n");
 
-    /* Deferred prewarm (Step 29e): ai_init_prewarm_hook saves the ai_manager
-     * during loading; we fire here once g_pumpe_count > 0, which guarantees
-     * the battle game loop is running and Lua AI scripts can access battle state.
-     * pumpe_count=0 case = menu/first load: skip to avoid prewarming menu entities.
-     * Return immediately after prewarm — the triggering entity `a` was already
-     * pumped by prewarm (its coroutine slot is zeroed).  Calling g_pumpe_orig(a)
-     * again with an empty slot reads stale LuaThreadTable state → crash. */
-    if (g_deferred_ai_mgr && g_pumpe_count > 0) {
-        int64_t mgr = g_deferred_ai_mgr;
-        g_deferred_ai_mgr = 0;
-        log_write("[eaw-mt] PREWARM: firing in pumpe_hook (game-loop context)\n");
-        prewarm_from_ai_manager(mgr);
-        InterlockedExchange(&g_post_prewarm_log, 10); /* log next 10 calls */
-        return;
-    }
-
     /* Post-prewarm trace: log first N calls so we know the game loop resumed. */
     LONG rem = InterlockedCompareExchange(&g_post_prewarm_log, 0, 0);
     if (rem > 0) {
@@ -1866,6 +1851,17 @@ static BOOL install_pumpe_hook(void)
 #define FN_8DF00_SCAN    1600         /* callsite at offset +0x5e6 (0x8e4e6) */
 #define BMA_RVA          0xb153e0ULL  /* &DAT_140b153e0 — battle-mode array object passed to FUN_14028a4d0 */
 
+/* FUN_1407bfd90 (luaH_get, Table lookup by TValue key):
+ *   0x7bfdf0  CMP dword [RDX], 4   ← crashes when node->next is a garbage non-canonical ptr
+ *   0x7bfe04  LEA RAX, [not_found_sentinel]  ← "not found" return path
+ *
+ * The prewarm pump leaves garbage node->next pointers in live Lua Tables because
+ * the major GC resizes tables and our restore only patches the custom EaW string-intern
+ * map, not every Lua Table.  VEH handler detects a fault at the loop head and redirects
+ * RIP to the "not found" return so the caller re-inserts with fresh pointers. */
+#define LUAH_GET_LOOP_RVA    0x7bfdf0ULL  /* loop head — CMP dword [RDX],4 */
+#define LUAH_GET_NOTFND_RVA  0x7bfe04ULL  /* "not found" return target */
+
 typedef void (*AiInitFn)(int64_t);
 static AiInitFn  g_ai_init_orig      = NULL;
 static int64_t   g_bma_obj           = 0;  /* &DAT_140b153e0 — battle-mode array object */
@@ -1899,6 +1895,8 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
     int64_t sentinel = ai_manager + 0x40;
     int64_t node     = *(int64_t *)(ai_manager + 0x48);
     int count = 0, pumped = 0;
+    int major_gc_happened = 0;
+    int64_t pumped_hm = 0;  /* hm of the entity we calloc'd in first pass */
 
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
@@ -1934,12 +1932,13 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                  * Fix: restore ALL hash map structural fields and zero the bucket array
                  * so the game loop sees a clean empty table and re-interns from scratch.
                  */
-                int64_t buf     = *(int64_t *)(lua_state + 0x58);
-                int64_t wr      = buf ? *(int64_t *)(buf + 0x10) : 0;
-                int64_t hm      = buf ? *(int64_t *)(buf + 0x20) : 0;
-                int32_t cap     = hm  ? *(int32_t *)(hm  + 0x0c) : 0;
-                int64_t arr_pre = hm  ? *(int64_t *)(hm  + 0x00) : 0;
-                int64_t hm08_pre = hm ? *(int64_t *)(hm  + 0x08) : 0;
+                int64_t buf      = *(int64_t *)(lua_state + 0x58);
+                int64_t hm       = buf ? *(int64_t *)(buf + 0x20) : 0;
+                int32_t cap      = hm  ? *(int32_t *)(hm  + 0x0c) : 0;
+                int64_t arr_pre  = hm  ? *(int64_t *)(hm  + 0x00) : 0;
+                int64_t hm08_pre = hm  ? *(int64_t *)(hm  + 0x08) : 0;
+                int32_t hm70_pre = hm  ? *(int32_t *)(hm  + 0x70) : 0;
+                int32_t hm74_pre = hm  ? *(int32_t *)(hm  + 0x74) : 0;
 
                 /* Only prewarm entities with a large hash map.  cap=1024 entities
                  * crash inside the allocator during prewarm (NULL+8 write at RVA
@@ -1952,11 +1951,38 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                     sprintf(_sk, "[eaw-mt] PREWARM: skip entity %d cap=%d\n", count, cap);
                     log_write(_sk);
                 } else {
-                    char _pm[128];
-                    sprintf(_pm, "[eaw-mt] PREWARM: pumping entity %d  lua=0x%llx buf=0x%llx hm=0x%llx cap=%d\n",
+                    char _pm[256];
+                    sprintf(_pm, "[eaw-mt] PREWARM: pumping entity %d  lua=0x%llx buf=0x%llx hm=0x%llx"
+                            "  cap=%d hm70=%d hm74=%d\n",
                             count, (unsigned long long)lua_state,
-                            (unsigned long long)buf, (unsigned long long)hm, (int)cap);
+                            (unsigned long long)buf, (unsigned long long)hm,
+                            (int)cap, (int)hm70_pre, (int)hm74_pre);
                     log_write(_pm);
+
+                    /* RET-patch luaC_step (FUN_1407bc850, RVA 0x7bc850) for the duration
+                     * of pumpe.  Lua AI scripts call collectgarbage("collect") which would
+                     * trigger a full GC sweep, freeing TString objects referenced by live
+                     * tables and corrupting hash chains.  Writing 0xC3 (RET) makes every
+                     * luaC_checkGC call a no-op; the original byte is restored after pumpe
+                     * regardless of whether pumpe succeeded or faulted. */
+                    HMODULE _exe_pw = GetModuleHandleA(NULL);
+                    BYTE *_luac_step = _exe_pw ? (BYTE*)_exe_pw + LUAC_STEP_RVA : NULL;
+                    BYTE  _luac_saved = 0;
+                    int   _luac_patched = 0;
+                    if (_luac_step) {
+                        DWORD _old_prot;
+                        if (VirtualProtect(_luac_step, 1, PAGE_EXECUTE_READWRITE, &_old_prot)) {
+                            _luac_saved   = *_luac_step;
+                            *_luac_step   = 0xC3;
+                            VirtualProtect(_luac_step, 1, _old_prot, &_old_prot);
+                            FlushInstructionCache(GetCurrentProcess(), _luac_step, 1);
+                            _luac_patched = 1;
+                            char _lp[64];
+                            sprintf(_lp, "[eaw-mt] PREWARM: luaC_step RET-patched (saved=0x%02x)\n",
+                                    (unsigned)_luac_saved);
+                            log_write(_lp);
+                        }
+                    }
 
                     int pumped_ok = 0;
                     InterlockedExchange(&g_in_prewarm_pumpe, 1);
@@ -1972,18 +1998,33 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                     InterlockedExchange(&g_prewarm_jmp_valid, 0);
                     InterlockedExchange(&g_in_prewarm_pumpe, 0);
 
+                    /* Restore luaC_step — must happen unconditionally (pumped_ok or fault). */
+                    if (_luac_patched && _luac_step) {
+                        DWORD _old_prot;
+                        VirtualProtect(_luac_step, 1, PAGE_EXECUTE_READWRITE, &_old_prot);
+                        *_luac_step = _luac_saved;
+                        VirtualProtect(_luac_step, 1, _old_prot, &_old_prot);
+                        FlushInstructionCache(GetCurrentProcess(), _luac_step, 1);
+                    }
+
                     if (pumped_ok)
                         log_write("[eaw-mt] PREWARM: pumpe returned ok\n");
 
-                    /* Do NOT restore lua_state+0x58.  Pump_Threads zeroed it as
-                     * cleanup; leaving it at 0 causes the battle-loop pumpe call
-                     * for this entity to allocate a fresh buffer rather than
-                     * reusing the stale one.  Reusing the old buf caused Pump_Threads
-                     * to re-process init messages against the memset'd arr, writing
-                     * 0x01 into arr[bucket] → [rbx+0x10] AV at RVA 0x7bf960.
+                    /* Restore lua_state+0x58 and wr: FUN_140246fb0 (ServiceRate
+                     * lookup, called from the battle loop) reads lua_state+0x58
+                     * unconditionally and passes it to FUN_1407b9540.  If we leave
+                     * it at 0 (as Pump_Threads set it), that null propagates as
+                     * param_1 → [0+0x20] AV at RVA 0x7b9589.
                      *
-                     * Defensive: still clean up the orphaned buf/hm/arr in case
-                     * something else holds a reference to hm. */
+                     * Also restore wr (buf+0x10): Pump_Threads advances wr during
+                     * the pump; if we leave the post-pump cursor, subsequent writes
+                     * by FUN_1407b9540 go to arbitrary buffer positions. */
+                    /* Read post-pump state for diagnostics. */
+                    int64_t post_hm08 = hm  ? *(int64_t *)(hm  + 0x08) : 0;
+                    int32_t post_hm70 = hm  ? *(int32_t *)(hm  + 0x70) : 0;
+                    int32_t post_hm74 = hm  ? *(int32_t *)(hm  + 0x74) : 0;
+
+                    *(int64_t *)(lua_state + 0x58) = buf;
                     if (buf) {
                         if (pumped_ok) {
                             int64_t cur_hm  = buf ? *(int64_t *)(buf + 0x20) : 0;
@@ -1991,31 +2032,63 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                             /* Check whether arr was reallocated during the pump.
                              *
                              * If cur_arr == arr_pre: arr was NOT moved by GC — it still
-                             * holds a mix of live entries, DEADKEY (0x15) sentinels, and
-                             * stale node pointers to freed heap blocks.  The sentinel scan
-                             * only clears values < 0x10000 and misses stale heap pointers
-                             * (e.g. 0x00000be918e98348), causing [rbx+0x10] AV at RVA
-                             * 0x7bf960 when the game walks arr after battle start.
-                             * memset is safe here: arr_pre is still our allocation at
-                             * exactly cap*8 bytes.
+                             * holds stale node pointers and DEADKEY (0x15) sentinels.
+                             * memset is safe: arr_pre is still our allocation at cap*8. */
+                            /* Clean arr: must remove DEADKEY (0x15) sentinels and stale node
+                             * pointers that cause [ptr+0x10] AV at RVA 0x7bf960.
                              *
-                             * If cur_arr != arr_pre: Lua GC rehashed the table into a new
-                             * arr containing only live entries.  arr_pre was freed (the
-                             * allocator wrote chain pointers there — do not touch it).
-                             * The new cur_arr is already clean; leave it alone. */
+                             * When hm74 drops by >99% during the pump, the GC triggered a
+                             * major sweep and FREED arr_pre (returned to the allocator's
+                             * free list).  arr_pre[0] is now the free-list "next" pointer;
+                             * touching arr_pre at all risks the av_write at [null+8] if the
+                             * allocator follows a broken chain.
+                             *
+                             * Fix: leave arr_pre untouched in the allocator's free list.
+                             * Allocate a fresh zeroed replacement (calloc), point hm+0x00
+                             * there.  The game loop sees a clean empty table and re-interns
+                             * from scratch.  The 32 KB calloc is a one-time leak per session.
+                             *
+                             * For non-major-GC entities, arr is still the live allocation
+                             * and a full memset is safe and required. */
                             int memset_ok = 0;
                             if (cur_arr == arr_pre && arr_pre && cap > 0 && cap <= 0x10000) {
-                                memset((void *)arr_pre, 0, (size_t)cap * 8);
-                                memset_ok = 1;
+                                int major_gc = (hm74_pre > 1000 &&
+                                                post_hm74 >= 0 &&
+                                                post_hm74 < hm74_pre / 100);
+                                if (major_gc) {
+                                    void *fresh = calloc((size_t)cap, 8);
+                                    if (fresh && cur_hm == hm && hm) {
+                                        *(int64_t *)(cur_hm + 0x00) = (int64_t)fresh;
+                                    }
+                                    memset_ok = 3;  /* fresh calloc, arr_pre left intact */
+                                    major_gc_happened = 1;
+                                    pumped_hm = (cur_hm ? cur_hm : hm);
+                                } else {
+                                    memset((void *)arr_pre, 0, (size_t)cap * 8);
+                                    memset_ok = 1;  /* full memset */
+                                }
                             }
-                            /* Restore count+cap so the game sees an empty map and
-                             * re-interns all keys from scratch on first lookup. */
-                            if (cur_hm == hm && hm && hm08_pre)
-                                *(int64_t *)(cur_hm + 0x08) = hm08_pre;
-                            char _rs[192];
-                            sprintf(_rs, "[eaw-mt] PREWARM: restore entity %d  arr=%llx  arr_moved=%d  memset=%d\n",
+                            /* Restore cap, and load-factor thresholds (hm+0x70/0x74).
+                             * Restoring only cap (not count) keeps the map empty while
+                             * allowing hash % cap without dividing by zero.
+                             * Restoring hm+0x70 and hm+0x74 prevents the 0<=0 load-factor
+                             * check in FUN_1407b9540 from triggering FUN_1407bc850 on
+                             * every call when both were zeroed by the pump cleanup. */
+                            if (cur_hm == hm && hm && cap > 0) {
+                                *(int32_t *)(cur_hm + 0x0c) = cap;
+                                *(int32_t *)(cur_hm + 0x70) = hm70_pre;
+                                *(int32_t *)(cur_hm + 0x74) = hm74_pre;
+                            }
+                            char _rs[512];
+                            sprintf(_rs, "[eaw-mt] PREWARM: restore entity %d  arr=%llx  arr_moved=%d  memset=%d"
+                                    "  hm08_pre=0x%llx  cap=%d"
+                                    "  hm08_post=0x%llx  hm70=%d->%d  hm74=%d->%d\n",
                                     count, (unsigned long long)cur_arr,
-                                    (cur_arr != arr_pre) ? 1 : 0, memset_ok);
+                                    (cur_arr != arr_pre) ? 1 : 0, memset_ok,
+                                    (unsigned long long)hm08_pre, (int)cap,
+                                    (unsigned long long)post_hm08,
+                                    (int)hm70_pre, (int)post_hm70,
+                                    (int)hm74_pre, (int)post_hm74);
                             log_write(_rs);
                         }
                     }
@@ -2025,6 +2098,41 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
         }
         node = *(int64_t *)(node + 8);
         count++;
+    }
+
+    /* Second pass: major GC during entity 14's pump collects TString objects
+     * from ALL entities' hash tables (shared global_State).  Every entity's arr
+     * now contains pointers to freed TString objects — following those chains
+     * causes av_read @ffffffffffffffff (non-canonical next ptr, e.g. at RVA
+     * 0x7bfdf0).  For non-pumped entities, arr itself is still a live allocation
+     * (GC frees GC objects, not raw allocations), so memset to zeros is safe. */
+    if (major_gc_happened) {
+        int64_t node2   = *(int64_t *)(ai_manager + 0x48);
+        int count2 = 0, reset2 = 0;
+        while (node2 != sentinel && count2 < 2048) {
+            int64_t ref2 = *(int64_t *)(node2 + 0x18);
+            if (ref2) {
+                int64_t entity2    = ref2 - 0x18;
+                int64_t lua_state2 = *(int64_t *)(entity2 + 0x2d8);
+                uint8_t eflags2    = *(uint8_t *)(entity2 + 0x3a0);
+                if (lua_state2 && !(eflags2 & 2)) {
+                    int64_t buf2 = *(int64_t *)(lua_state2 + 0x58);
+                    int64_t hm2  = buf2 ? *(int64_t *)(buf2 + 0x20) : 0;
+                    int32_t cap2 = hm2  ? *(int32_t *)(hm2  + 0x0c) : 0;
+                    int64_t arr2 = hm2  ? *(int64_t *)(hm2  + 0x00) : 0;
+                    /* Skip the entity we already calloc'd in the first pass. */
+                    if (hm2 && hm2 != pumped_hm && cap2 > 0 && cap2 <= 0x10000 && arr2) {
+                        memset((void *)arr2, 0, (size_t)cap2 * 8);
+                        reset2++;
+                    }
+                }
+            }
+            node2 = *(int64_t *)(node2 + 8);
+            count2++;
+        }
+        char _r2[96];
+        sprintf(_r2, "[eaw-mt] PREWARM: gc-sweep reset %d other entities\n", reset2);
+        log_write(_r2);
     }
 
     /* Restore *(lVar2+0x20) for every battle-mode entry that was snapshotted */
@@ -2048,11 +2156,18 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
 static void ai_init_prewarm_hook(int64_t ai_manager)
 {
     g_ai_init_orig(ai_manager);
-    /* Save ai_manager for deferred prewarm.  Do NOT call g_pumpe_orig here:
-     * Lua AI scripts need an active battle context (DAT_140b15418) which isn't
-     * set until loading completes.  The prewarm fires from pumpe_hook instead,
-     * once the game loop is running and the battle state is guaranteed ready. */
-    g_deferred_ai_mgr = ai_manager;
+    /* Fire prewarm immediately here, after AI entities are fully initialised
+     * but while the C engine command processor is still inactive (loading screen).
+     * Any Lua AI commands issued during the prewarm are never flushed to the live
+     * game state, eliminating the pathfinder-kill and deployment-zone-block bugs
+     * that occurred when prewarm ran from pumpe_hook (game-loop context).
+     * Skip on first load (pumpe_count=0) — no prior battle to warm from. */
+    g_deferred_ai_mgr = 0;
+    if (g_pumpe_count > 0) {
+        log_write("[eaw-mt] PREWARM: firing in ai_init_hook (loading, post-ai-init)\n");
+        prewarm_from_ai_manager(ai_manager);
+        InterlockedExchange(&g_post_prewarm_log, 10);
+    }
 }
 
 static BOOL install_prewarm_hook(void)
@@ -4889,6 +5004,7 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
             if (ip[0] == 0xc6 && ip[1] == 0x00 && ip[2] == 0x00 &&
                 ip[3] == 0x48 && ip[4] == 0x8b && ip[5] == 0x89) {
                 ep->ContextRecord->Rip += 10; /* skip both instructions */
+                ep->ContextRecord->Rax = 0;   /* clear garbage wake_addr from RAX */
                 LONG n = InterlockedIncrement(&g_wake_suppressed);
                 char s[80];
                 snprintf(s, sizeof(s),
@@ -4897,6 +5013,28 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
                 if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
+        }
+    }
+
+    /* luaH_get (FUN_1407bfd90) stale-next recovery.
+     *
+     * After prewarm the major GC leaves garbage node->next pointers in live Lua
+     * Tables.  The loop at 0x7bfdf0 follows those pointers and faults with a
+     * non-canonical address.  Rather than crash, redirect RIP to the "not found"
+     * return path (0x7bfe04) so the caller inserts a fresh node on the next write. */
+    if (code == EXCEPTION_ACCESS_VIOLATION) {
+        uint64_t img_base_veh = (uint64_t)GetModuleHandleA(NULL);
+        uint64_t rip_veh      = (uint64_t)ep->ContextRecord->Rip;
+        if (img_base_veh && rip_veh == img_base_veh + LUAH_GET_LOOP_RVA) {
+            ep->ContextRecord->Rip = img_base_veh + LUAH_GET_NOTFND_RVA;
+            static volatile LONG g_luah_suppressed = 0;
+            LONG n = InterlockedIncrement(&g_luah_suppressed);
+            char s[96];
+            snprintf(s, sizeof(s),
+                "[eaw-mt] LUAH_NOKEY #%ld rdx=%016llx -> not_found\n",
+                (long)n, (unsigned long long)ep->ContextRecord->Rdx);
+            if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
+            return EXCEPTION_CONTINUE_EXECUTION;
         }
     }
 
