@@ -56,7 +56,7 @@ launch-foc:
       /nix/store/jckwa9yy4aj2yq6r3c9x4rk0g95cvwm9-source/files/lib/wine/x86_64-unix/ntdll.so && \
     capsh --inh='' -- -c ' \
       WINEPREFIX={{compat-data}}/pfx \
-      WINEDLLOVERRIDES=winmm=n,b;d3d9=n,b \
+      WINEDLLOVERRIDES=winmm=n,b \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \

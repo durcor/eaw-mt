@@ -1671,8 +1671,18 @@ static double  g_pumpe_bg_sum_ms = 0, g_pumpe_bg_max_ms = 0;
 /* Per-gsvc-call Lua AI time budget.  Prevents stall accumulation when multiple
  * entities run slow Lua coroutines in the same service dispatch.
  * Reset by game_service_hook at the start of each gsvc call. */
-#define PUMPE_BUDGET_MS 33.0
+#define PUMPE_BUDGET_MS   33.0
 static double g_pumpe_frame_used_ms = 0.0;
+
+/* Per-call deadline (Step 2): abort Pump_Threads mid-iteration if a single
+ * call exceeds this budget.  The abort flag at *(param1+0x121) causes
+ * Pump_Threads to exit after the current coroutine finishes; skipped
+ * coroutines resume next frame via normal yield-resume semantics. */
+#define PUMP_DEADLINE_MS  4
+static volatile LONG  g_wd_armed    = 0;   /* 1 = watchdog active */
+static volatile DWORD g_wd_deadline = 0;   /* timeGetTime() fire time */
+static volatile LONG  g_wd_fired    = 0;   /* diagnostic: total aborts triggered */
+static volatile INT_PTR g_wd_param1 = 0;   /* current Pump_Threads param_1 */
 
 /* Deferred prewarm (Step 29e): ai_manager saved during loading, fired from
  * pumpe_hook once g_pumpe_count > 0 (battle game loop running, Lua AI safe). */
@@ -1728,11 +1738,40 @@ static DWORD WINAPI pumpe_bg_worker(LPVOID arg)
 
 static volatile LONG g_post_prewarm_log = 0; /* arms after prewarm fires */
 
+/* Watchdog thread for per-call deadline enforcement (Step 2).
+ * Polls every 1ms; if a Pump_Threads call has run past g_wd_deadline,
+ * sets the abort flag byte at param1+0x121 so the loop exits after the
+ * current coroutine yields.  Safe: the flag is designed to be written
+ * externally; this thread never calls into Lua or game code. */
+static DWORD WINAPI pump_watchdog_thread(LPVOID unused)
+{
+    (void)unused;
+    for (;;) {
+        Sleep(1);
+        if (!g_wd_armed) continue;
+        DWORD now = real_timeGetTime();
+        /* unsigned subtraction wraps correctly across DWORD rollover */
+        if ((DWORD)(now - g_wd_deadline) < 0x80000000UL) {
+            INT_PTR p1 = g_wd_param1;
+            if (p1) {
+                *(volatile BYTE *)(p1 + 0x121) = 1;
+                InterlockedIncrement(&g_wd_fired);
+            }
+        }
+    }
+}
+
 static void pumpe_hook(int64_t a)
 {
     static LONG g_pumpe_once = 0;
-    if (InterlockedCompareExchange(&g_pumpe_once, 1, 0) == 0)
+    if (InterlockedCompareExchange(&g_pumpe_once, 1, 0) == 0) {
         log_write("[eaw-mt] DBG: pumpe_hook first call\n");
+        /* Create watchdog thread here, not in DllMain: CreateThread inside
+         * DllMain holds the loader lock and can deadlock Wine's DLL loader. */
+        HANDLE wdh = CreateThread(NULL, 0, pump_watchdog_thread, NULL, 0, NULL);
+        if (wdh) { CloseHandle(wdh); log_write("[eaw-mt] pumpe watchdog thread started (deadline=4ms)\n"); }
+        else      { log_write("[eaw-mt] WARN: failed to start pumpe watchdog thread\n"); }
+    }
 
     /* Post-prewarm trace: log first N calls so we know the game loop resumed. */
     LONG rem = InterlockedCompareExchange(&g_post_prewarm_log, 0, 0);
@@ -1756,9 +1795,25 @@ static void pumpe_hook(int64_t a)
         return;
     }
 
+    /* Reset abort flag before the call (clears any stale watchdog write). */
+    *(volatile BYTE *)(a + 0x121) = 0;
+
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
+
+    /* Arm watchdog: if this call runs past PUMP_DEADLINE_MS the watchdog
+     * sets *(a+0x121)=1 to abort Pump_Threads mid-iteration. */
+    g_wd_param1   = (INT_PTR)a;
+    g_wd_deadline = real_timeGetTime() + PUMP_DEADLINE_MS;
+    InterlockedExchange(&g_wd_armed, 1);
+
     g_pumpe_orig(a);
+
+    /* Disarm watchdog, then clear abort flag (may have been set by watchdog). */
+    InterlockedExchange(&g_wd_armed, 0);
+    g_wd_param1 = 0;
+    *(volatile BYTE *)(a + 0x121) = 0;
+
     tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
     g_pumpe_frame_used_ms += ms;
@@ -1811,6 +1866,7 @@ static BOOL install_pumpe_hook(void)
     char m[80];
     sprintf(m, "[eaw-mt] pumpe (Pump_Threads in 3a6b80): %d call site(s) patched\n", n);
     log_write(m);
+
     return n > 0;
 }
 
@@ -4715,7 +4771,7 @@ static void profile_report_and_reset(void) {
             "  tail22i(3639d0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld bg=%ld bg_max=%.0fms)\n"
+            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld bg=%ld bg_max=%.0fms wd=%ld)\n"
             "  a76b0(3a76b0):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b87010(387010):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  d12d520(12d520): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -4773,7 +4829,7 @@ static void profile_report_and_reset(void) {
             g_t2be640_sum_ms / t2bn, g_t2be640_max_ms, (long)g_t2be640_count,
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
             g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count, (long)g_pumpe_skip,
-            (long)g_pumpe_bg_dispatched, g_pumpe_bg_max_ms,
+            (long)g_pumpe_bg_dispatched, g_pumpe_bg_max_ms, (long)g_wd_fired,
             g_a76b0_sum_ms   / a76n, g_a76b0_max_ms,   (long)g_a76b0_count,
             g_b87010_sum_ms  / b87n,  g_b87010_max_ms,  (long)g_b87010_count,
             g_d12d520_sum_ms / d52n,  g_d12d520_max_ms,  (long)g_d12d520_count,
@@ -4865,6 +4921,7 @@ static void profile_report_and_reset(void) {
     g_t20ed70_count = 0; g_t20ed70_sum_ms = 0; g_t20ed70_max_ms = 0;
     g_pumpe_count   = 0; g_pumpe_sum_ms   = 0; g_pumpe_max_ms   = 0; g_pumpe_skip = 0;
     g_pumpe_bg_dispatched = 0; g_pumpe_bg_sum_ms = 0; g_pumpe_bg_max_ms = 0;
+    InterlockedExchange(&g_wd_fired, 0);
     g_a76b0_count   = 0; g_a76b0_sum_ms   = 0; g_a76b0_max_ms   = 0;
     g_a9e30_count   = 0; g_a9e30_sum_ms   = 0; g_a9e30_max_ms   = 0;
     g_e369e0_count  = 0; g_e369e0_sum_ms  = 0; g_e369e0_max_ms  = 0;
