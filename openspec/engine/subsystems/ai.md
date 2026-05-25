@@ -1,7 +1,7 @@
 # AI Subsystem (Lua Coroutine Engine)
 
-**Status:** Phase 5 Step 29g — prewarm confirmed stable; no crash, no stall across multiple space battles.
-**Last verified:** 2026-05-17
+**Status:** Phase 5 Step 29i — hm+0x48 restore added; prewarm stable across 15+ battle profiles; stall reduced to ~1s for first entity encounter.
+**Last verified:** 2026-05-24
 
 ---
 
@@ -194,12 +194,18 @@ Several crashes were encountered and fixed during prewarm development:
 | RVA `0x642160d` — `av_write @0x8` (second form) | Full backup/restore (`memcpy` arr from `g_arr_backup`) wrote `backup[0]=0` (original Lua NIL empty-bucket) into arr_pre's first slot. When arr_pre was later freed as the sole block in the free list, the allocator set next=null and prev=null, then crashed at `[null+8]` during removal. | Remove backup/restore entirely; use in-place sentinel scan. Free-list chain pointers are large heap addresses (>0x10000) and are preserved. |
 | cap=1024 entities crash inside the allocator during pump | These entities' Lua coroutines trigger an allocation path that crashes mid-allocation; longjmp from inside a locked heap mutex deadlocks all subsequent allocs. | Skip any entity with `cap < 4096`. The stall bottleneck has `cap=4096`; cap=1024 entities are not responsible for the 21s hitch. |
 | RVA `0x7bf960` — `[rbx+0x10]` where rbx=0x00000001 **(Step 29g)** | Restoring `lua_state+0x58=buf` after prewarm caused the battle-loop pumpe to reuse the old buffer. Pump_Threads re-processed init messages against the memset'd arr (all zeros), writing `0x01` into `arr[bucket]` as an intermediate state. On the next hash table lookup, `[0x01+0x10]` AV. | Do not restore `lua_state+0x58`. Leave it at 0; next pumpe allocates a fresh buffer. |
+| RVA `0x7ba12c` — `av_write @near-zero` **(Step 29h)** | Pump_Threads zeroes `hm+0x38` (a pointer field inside the global Lua state struct) during its C-level cleanup. Post-pump, `[hm+0x38]` = null; the game reads it as a base pointer and crashes. | Save `hm38_pre = *(hm+0x38)` before pump; restore after. |
+| RVA `0x7bf960` — stale TString chain after major GC **(Step 29h)** | Despite luaC_step + luaC_fullgc RET-patches, hm74 drops >99% for some pumps — a partial GC still runs. The GC frees TString objects; their freed-block link values (non-canonical pointers) appear in arr bucket chains. Game traverses them → AV. | Detect major GC via `hm74_pre > 1000 && post_hm74 < hm74_pre/100`. On major GC: `calloc(cap, 8)` a fresh zeroed arr; install at `hm+0x00`; leave old arr_pre untouched in allocator free list (`memset_ok = 3`). Also zero other entities' arrs via second-pass gc-sweep. |
+| RVA `0x7bfdf0` — `luaH_get` corrupted node `next` **(Step 29h)** | Same major GC scenario: other entities' arrs still contain freed TString pointers. `luaH_get` traverses these as Lua Table node chains (both structures are 8-byte pointer lists); the non-canonical `next` value causes #GP reported as `av_read @ffffffffffffffff`. | gc-sweep second pass: after major GC, iterate all entities and `memset(arr2, 0, cap2*8)` for any entity other than the one we calloc'd. |
+| RVA `0x7ba0df` — `av_write @0x1e0` **(Step 29i)** | Pump_Threads zeroes `hm+0x48` (Lua `global_State->weak` array pointer, or equivalent GC bookkeeping pointer) during its cleanup. Post-pump the GC weak-table sweep code (`FUN_1407ba0c0`) reads this field and writes through it; with it null the write lands at `0x1e0`. Crash surfaced during `lua_close` → `luaC_fullgc` → GC sweep → `FUN_1407bd730` (sweep list) → `FUN_1407ba0c0` (Table with flags≠0). | Save `hm48_pre = *(hm+0x48)` before pump; restore after. Pattern identical to hm+0x38. |
 
-### Result
+### Result (Step 29i)
 
-- `Pump_Threads` (RVA `0x387010`) now runs at `avg=0.00 max=1.00 ms` across tens of thousands of calls across multiple sessions.
-- The 14–21 second second-battle Lua AI stall is **eliminated**.
-- Prewarm fires correctly for galactic, skirmish, and save-load entry paths.
+- Prewarm correctly warms the cap=4096 entity before each second battle.
+- Second-battle Lua AI load time: **~1 second** (down from 33 seconds) for the pre-warmed entity type.
+- Additional entity types (cap=1024) hit a one-time ~33-second cold-start on first encounter; after that first load, OS page cache retains scripts and all subsequent battles for that entity type load in under 2 seconds.
+- No crashes from prewarm across 15+ battle profiles (4500+ frames) in session 2026-05-24.
+- Remaining open issue: `wined3d.dll` crash at mod_rva=0x9fe50 after extended play — unrelated to prewarm, pre-existing wine/D3D issue.
 
 ---
 

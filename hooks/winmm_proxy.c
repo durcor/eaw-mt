@@ -29,6 +29,7 @@
  */
 
 #include <windows.h>
+#include <psapi.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <setjmp.h>
@@ -1253,6 +1254,7 @@ static BOOL install_space_unit_svc_hook(void)
 #define A6B80_BODY_SIZE   2862         /* FUN_1403a6b80 body size for inner E8 scan */
 #define PUMPE_RVA         0x247a90ULL  /* FUN_140247a90 — Pump_Threads (entity-level call site) */
 #define LUAC_STEP_RVA     0x7bc850ULL  /* FUN_1407bc850 — luaC_step (GC runner, called by luaC_checkGC) */
+#define LUAC_FULLGC_RVA   0x7bcb20ULL  /* FUN_1407bcb20 — luaC_fullgc (full sweep; collectgarbage path) */
 #define A76B0_RVA         0x3a76b0ULL  /* FUN_1403a76b0 — movement system (line 361 of 3a6b80) */
 #define A9E30_RVA         0x3a9e30ULL  /* FUN_1403a9e30 — command dispatch (line 99 of 3a6b80) */
 #define E369E0_RVA        0x5369e0ULL  /* FUN_1405369e0 — preamble call (line 79 of 3a6b80) */
@@ -1675,6 +1677,7 @@ static double g_pumpe_frame_used_ms = 0.0;
 /* Deferred prewarm (Step 29e): ai_manager saved during loading, fired from
  * pumpe_hook once g_pumpe_count > 0 (battle game loop running, Lua AI safe). */
 static volatile int64_t g_deferred_ai_mgr = 0;
+static volatile int64_t g_prewarm_lua_state = 0; /* lua_state of last prewarm'd entity */
 static void prewarm_from_ai_manager(int64_t); /* forward decl — defined below */
 
 /* VEH / prewarm SEH-recovery globals — declared here so prewarm_from_ai_manager
@@ -1763,8 +1766,10 @@ static void pumpe_hook(int64_t a)
     if (ms > g_pumpe_max_ms) g_pumpe_max_ms = ms;
     g_pumpe_count++;
     if (ms >= 100.0) {
-        char s[64];
-        sprintf(s, "[eaw-mt] PUMPE %.1fms (entity Lua AI, synchronous)\n", ms);
+        int64_t pw = g_prewarm_lua_state;
+        char s[96];
+        sprintf(s, "[eaw-mt] PUMPE %.1fms (entity Lua AI, synchronous) lua=%llx prewarm=%d\n",
+                ms, (unsigned long long)a, (pw && a == pw) ? 1 : 0);
         log_write(s);
     }
 }
@@ -1939,6 +1944,10 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                 int64_t hm08_pre = hm  ? *(int64_t *)(hm  + 0x08) : 0;
                 int32_t hm70_pre = hm  ? *(int32_t *)(hm  + 0x70) : 0;
                 int32_t hm74_pre = hm  ? *(int32_t *)(hm  + 0x74) : 0;
+                int64_t hm38_pre = hm  ? *(int64_t *)(hm  + 0x38) : 0;
+                int64_t hm48_pre = hm  ? *(int64_t *)(hm  + 0x48) : 0;
+                int64_t hm10_pre = hm  ? *(int64_t *)(hm  + 0x10) : 0; /* frealloc fn */
+                int64_t hm18_pre = hm  ? *(int64_t *)(hm  + 0x18) : 0; /* alloc ud */
 
                 /* Only prewarm entities with a large hash map.  cap=1024 entities
                  * crash inside the allocator during prewarm (NULL+8 write at RVA
@@ -1959,16 +1968,19 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                             (int)cap, (int)hm70_pre, (int)hm74_pre);
                     log_write(_pm);
 
-                    /* RET-patch luaC_step (FUN_1407bc850, RVA 0x7bc850) for the duration
-                     * of pumpe.  Lua AI scripts call collectgarbage("collect") which would
-                     * trigger a full GC sweep, freeing TString objects referenced by live
-                     * tables and corrupting hash chains.  Writing 0xC3 (RET) makes every
-                     * luaC_checkGC call a no-op; the original byte is restored after pumpe
-                     * regardless of whether pumpe succeeded or faulted. */
+                    /* RET-patch luaC_step (FUN_1407bc850) and luaC_fullgc (FUN_1407bcb20)
+                     * for the duration of pumpe.
+                     *
+                     * luaC_step is called by every luaC_checkGC site (incremental GC).
+                     * luaC_fullgc is called by collectgarbage("collect") via lua_gc —
+                     * it bypasses the threshold check entirely and sweeps everything.
+                     * Both must be silenced or the full GC frees TString objects that
+                     * live tables still reference, corrupting hash chains (LUAH_NOKEY). */
                     HMODULE _exe_pw = GetModuleHandleA(NULL);
-                    BYTE *_luac_step = _exe_pw ? (BYTE*)_exe_pw + LUAC_STEP_RVA : NULL;
-                    BYTE  _luac_saved = 0;
-                    int   _luac_patched = 0;
+                    BYTE *_luac_step   = _exe_pw ? (BYTE*)_exe_pw + LUAC_STEP_RVA   : NULL;
+                    BYTE *_luac_fullgc = _exe_pw ? (BYTE*)_exe_pw + LUAC_FULLGC_RVA : NULL;
+                    BYTE  _luac_saved = 0,  _fullgc_saved = 0;
+                    int   _luac_patched = 0, _fullgc_patched = 0;
                     if (_luac_step) {
                         DWORD _old_prot;
                         if (VirtualProtect(_luac_step, 1, PAGE_EXECUTE_READWRITE, &_old_prot)) {
@@ -1977,9 +1989,23 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                             VirtualProtect(_luac_step, 1, _old_prot, &_old_prot);
                             FlushInstructionCache(GetCurrentProcess(), _luac_step, 1);
                             _luac_patched = 1;
-                            char _lp[64];
+                            char _lp[80];
                             sprintf(_lp, "[eaw-mt] PREWARM: luaC_step RET-patched (saved=0x%02x)\n",
                                     (unsigned)_luac_saved);
+                            log_write(_lp);
+                        }
+                    }
+                    if (_luac_fullgc) {
+                        DWORD _old_prot;
+                        if (VirtualProtect(_luac_fullgc, 1, PAGE_EXECUTE_READWRITE, &_old_prot)) {
+                            _fullgc_saved   = *_luac_fullgc;
+                            *_luac_fullgc   = 0xC3;
+                            VirtualProtect(_luac_fullgc, 1, _old_prot, &_old_prot);
+                            FlushInstructionCache(GetCurrentProcess(), _luac_fullgc, 1);
+                            _fullgc_patched = 1;
+                            char _lp[80];
+                            sprintf(_lp, "[eaw-mt] PREWARM: luaC_fullgc RET-patched (saved=0x%02x)\n",
+                                    (unsigned)_fullgc_saved);
                             log_write(_lp);
                         }
                     }
@@ -1998,13 +2024,20 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                     InterlockedExchange(&g_prewarm_jmp_valid, 0);
                     InterlockedExchange(&g_in_prewarm_pumpe, 0);
 
-                    /* Restore luaC_step — must happen unconditionally (pumped_ok or fault). */
+                    /* Restore luaC_step and luaC_fullgc — unconditional (pumped_ok or fault). */
                     if (_luac_patched && _luac_step) {
                         DWORD _old_prot;
                         VirtualProtect(_luac_step, 1, PAGE_EXECUTE_READWRITE, &_old_prot);
                         *_luac_step = _luac_saved;
                         VirtualProtect(_luac_step, 1, _old_prot, &_old_prot);
                         FlushInstructionCache(GetCurrentProcess(), _luac_step, 1);
+                    }
+                    if (_fullgc_patched && _luac_fullgc) {
+                        DWORD _old_prot;
+                        VirtualProtect(_luac_fullgc, 1, PAGE_EXECUTE_READWRITE, &_old_prot);
+                        *_luac_fullgc = _fullgc_saved;
+                        VirtualProtect(_luac_fullgc, 1, _old_prot, &_old_prot);
+                        FlushInstructionCache(GetCurrentProcess(), _luac_fullgc, 1);
                     }
 
                     if (pumped_ok)
@@ -2032,40 +2065,49 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                             /* Check whether arr was reallocated during the pump.
                              *
                              * If cur_arr == arr_pre: arr was NOT moved by GC — it still
-                             * holds stale node pointers and DEADKEY (0x15) sentinels.
-                             * memset is safe: arr_pre is still our allocation at cap*8. */
-                            /* Clean arr: must remove DEADKEY (0x15) sentinels and stale node
-                             * pointers that cause [ptr+0x10] AV at RVA 0x7bf960.
+                             * holds stale TString chain pointers and game-side freed-slot
+                             * sentinels (0xffffffffffffffef) that cause [ptr+0x10] AV at
+                             * RVA 0x7bf960 when luaS_newlstr traverses a chain.
                              *
-                             * When hm74 drops by >99% during the pump, the GC triggered a
-                             * major sweep and FREED arr_pre (returned to the allocator's
-                             * free list).  arr_pre[0] is now the free-list "next" pointer;
-                             * touching arr_pre at all risks the av_write at [null+8] if the
-                             * allocator follows a broken chain.
-                             *
-                             * Fix: leave arr_pre untouched in the allocator's free list.
-                             * Allocate a fresh zeroed replacement (calloc), point hm+0x00
-                             * there.  The game loop sees a clean empty table and re-interns
-                             * from scratch.  The 32 KB calloc is a one-time leak per session.
-                             *
-                             * For non-major-GC entities, arr is still the live allocation
-                             * and a full memset is safe and required. */
+                             * Both GC functions are RET-patched (luaC_step + luaC_fullgc)
+                             * so arr_pre is GUARANTEED not freed during pumpe.
+                             * memset(arr_pre, 0, cap*8) clears all stale pointers; safe. */
                             int memset_ok = 0;
                             if (cur_arr == arr_pre && arr_pre && cap > 0 && cap <= 0x10000) {
                                 int major_gc = (hm74_pre > 1000 &&
                                                 post_hm74 >= 0 &&
                                                 post_hm74 < hm74_pre / 100);
                                 if (major_gc) {
+                                    /* Unexpected: both GC functions were patched.
+                                     * If hm74 still dropped >99%, something freed arr_pre.
+                                     * Fall back to calloc to avoid touching a freed block. */
                                     void *fresh = calloc((size_t)cap, 8);
                                     if (fresh && cur_hm == hm && hm) {
                                         *(int64_t *)(cur_hm + 0x00) = (int64_t)fresh;
                                     }
-                                    memset_ok = 3;  /* fresh calloc, arr_pre left intact */
+                                    memset_ok = 3;
                                     major_gc_happened = 1;
                                     pumped_hm = (cur_hm ? cur_hm : hm);
                                 } else {
-                                    memset((void *)arr_pre, 0, (size_t)cap * 8);
-                                    memset_ok = 1;  /* full memset */
+                                    /* arr_pre is freed by Pump_Threads' C-level cleanup (not GC).
+                                     * DO NOT memset: arr_pre[0] is the heap Flink of a free block.
+                                     * Zeroing it corrupts the free list → av_write @0x8 in ntdll.
+                                     * Allocate a fresh empty bucket array via Lua's own allocator
+                                     * (hm+0x10=frealloc, hm+0x18=ud) so luaM_free can reclaim it
+                                     * without allocator-mismatch heap corruption. */
+                                    typedef void *(*lua_Alloc_t)(void *, void *, size_t, size_t);
+                                    lua_Alloc_t fn_alloc = (lua_Alloc_t)(uintptr_t)hm10_pre;
+                                    void *fresh_arr = fn_alloc
+                                        ? fn_alloc((void *)(uintptr_t)hm18_pre, NULL, 0, (size_t)cap * 8)
+                                        : NULL;
+                                    if (fresh_arr) {
+                                        memset(fresh_arr, 0, (size_t)cap * 8);
+                                        if (cur_hm == hm && hm) {
+                                            *(int64_t *)(cur_hm + 0x00) = (int64_t)(uintptr_t)fresh_arr;
+                                            *(int32_t *)(cur_hm + 0x08) = 0;  /* nuse=0 */
+                                        }
+                                    }
+                                    memset_ok = 1;
                                 }
                             }
                             /* Restore cap, and load-factor thresholds (hm+0x70/0x74).
@@ -2078,21 +2120,32 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                                 *(int32_t *)(cur_hm + 0x0c) = cap;
                                 *(int32_t *)(cur_hm + 0x70) = hm70_pre;
                                 *(int32_t *)(cur_hm + 0x74) = hm74_pre;
+                                /* Pump_Threads zeros hm+0x38 during its C-level cleanup.
+                                 * Without restore, second-battle pumpe crashes at RVA 0x7ba12c:
+                                 * MOV R8,[RAX+0x38] → R8=null → MOV [R8+R9*8-8],0 → av_write. */
+                                *(int64_t *)(cur_hm + 0x38) = hm38_pre;
+                                *(int64_t *)(cur_hm + 0x48) = hm48_pre;
                             }
                             char _rs[512];
                             sprintf(_rs, "[eaw-mt] PREWARM: restore entity %d  arr=%llx  arr_moved=%d  memset=%d"
                                     "  hm08_pre=0x%llx  cap=%d"
-                                    "  hm08_post=0x%llx  hm70=%d->%d  hm74=%d->%d\n",
+                                    "  hm08_post=0x%llx  hm70=%d->%d  hm74=%d->%d"
+                                    "  hm38=0x%llx  hm48=0x%llx\n",
                                     count, (unsigned long long)cur_arr,
                                     (cur_arr != arr_pre) ? 1 : 0, memset_ok,
                                     (unsigned long long)hm08_pre, (int)cap,
                                     (unsigned long long)post_hm08,
                                     (int)hm70_pre, (int)post_hm70,
-                                    (int)hm74_pre, (int)post_hm74);
+                                    (int)hm74_pre, (int)post_hm74,
+                                    (unsigned long long)hm38_pre,
+                                    (unsigned long long)hm48_pre);
                             log_write(_rs);
                         }
                     }
-                    if (pumped_ok) pumped++;
+                    if (pumped_ok) {
+                        pumped++;
+                        g_prewarm_lua_state = lua_state;
+                    }
                 }
             }
         }
@@ -5066,17 +5119,48 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
         }
         uint64_t img_base = (uint64_t)GetModuleHandleA(NULL);
         uint64_t rip_abs  = (uint64_t)ep->ContextRecord->Rip;
-        char s[320];
+
+        /* Find which loaded module contains the crash address. */
+        char rip_mod_name[MAX_PATH] = "<unknown>";
+        uint64_t rip_mod_base = 0;
+        {
+            HMODULE mods[512]; DWORD needed;
+            if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) {
+                DWORD nmod = needed / sizeof(HMODULE);
+                for (DWORD mi = 0; mi < nmod; mi++) {
+                    MODULEINFO mi2;
+                    if (GetModuleInformation(GetCurrentProcess(), mods[mi], &mi2, sizeof(mi2))) {
+                        uint64_t base = (uint64_t)mi2.lpBaseOfDll;
+                        uint64_t sz   = (uint64_t)mi2.SizeOfImage;
+                        if (rip_abs >= base && rip_abs < base + sz) {
+                            rip_mod_base = base;
+                            GetModuleFileNameExA(GetCurrentProcess(), mods[mi],
+                                                 rip_mod_name, MAX_PATH);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        /* Strip path — keep only filename. */
+        char *rip_fn = rip_mod_name;
+        for (char *p = rip_mod_name; *p; p++)
+            if (*p == '\\' || *p == '/') rip_fn = p + 1;
+
+        char s[512];
         snprintf(s, sizeof(s),
             "[eaw-mt] CRASH code=%08lx insn=%p tid=%lu(%s)\n"
             "[eaw-mt] CRASH av_%s @%p rip=%p rsp=%p\n"
-            "[eaw-mt] CRASH img_base=%016llx rip_rva=0x%llx\n",
+            "[eaw-mt] CRASH img_base=%016llx rip_rva=0x%llx\n"
+            "[eaw-mt] CRASH rip_mod=%s base=%016llx mod_rva=0x%llx\n",
             (unsigned long)code, fault_insn, (unsigned long)tid, who,
             av_type == 1 ? "write" : "read", (void *)av_addr,
             (void *)ep->ContextRecord->Rip,
             (void *)ep->ContextRecord->Rsp,
             (unsigned long long)img_base,
-            (unsigned long long)(rip_abs - img_base));
+            (unsigned long long)(rip_abs - img_base),
+            rip_fn, (unsigned long long)rip_mod_base,
+            rip_mod_base ? (unsigned long long)(rip_abs - rip_mod_base) : 0ULL);
         if (g_log_fp) fputs(s, g_log_fp);
         /* Full register dump — identifies which register holds the bad address */
         char r[512];
