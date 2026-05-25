@@ -48,13 +48,15 @@ remove-hook:
 # Requires patched ntdll.so (fixes wine-staging 10.0 server_get_name_info NULL memcpy crash).
 # unshare --mount shadows the Nix store ntdll.so with our patched copy before bwrap's --bind /nix.
 # SteamAppId/SteamGameId/STEAM_COMPAT_CLIENT_INSTALL_PATH required for lsteamclient.dll IPC handshake.
+# d3d9=n,b loads the DXVK d3d9.dll from the Wine prefix (drive_c/windows/system32/d3d9.dll) instead
+# of wined3d's built-in software renderer, which is unstable and crashes during D3D resource teardown.
 launch-foc:
   unshare --mount --map-root-user bash -c " \
     mount --bind {{justfile_directory()}}/patches/wine/ntdll.so \
       /nix/store/jckwa9yy4aj2yq6r3c9x4rk0g95cvwm9-source/files/lib/wine/x86_64-unix/ntdll.so && \
     capsh --inh='' -- -c ' \
       WINEPREFIX={{compat-data}}/pfx \
-      WINEDLLOVERRIDES=winmm=n,b \
+      WINEDLLOVERRIDES=winmm=n,b;d3d9=n,b \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \
