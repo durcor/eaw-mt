@@ -1674,15 +1674,16 @@ static double  g_pumpe_bg_sum_ms = 0, g_pumpe_bg_max_ms = 0;
 #define PUMPE_BUDGET_MS   33.0
 static double g_pumpe_frame_used_ms = 0.0;
 
-/* Per-call deadline (Step 2): abort Pump_Threads mid-iteration if a single
- * call exceeds this budget.  The abort flag at *(param1+0x121) causes
- * Pump_Threads to exit after the current coroutine finishes; skipped
- * coroutines resume next frame via normal yield-resume semantics. */
+/* Per-call deadline (Step 2): measure how often Pump_Threads calls exceed
+ * PUMP_DEADLINE_MS.  Watchdog is measure-only — writing the abort flag at
+ * *(param1+0x121) triggers Pump_Threads' abort-cleanup path, which writes
+ * to a corrupted wake_addr (0x6fff00000000) and cascades into an ntdll
+ * null-ptr crash (av_write@8 in ntdll list-insertion code).
+ * The per-gsvc budget (PUMPE_BUDGET_MS) is the actual stall guard. */
 #define PUMP_DEADLINE_MS  4
-static volatile LONG  g_wd_armed    = 0;   /* 1 = watchdog active */
-static volatile DWORD g_wd_deadline = 0;   /* timeGetTime() fire time */
-static volatile LONG  g_wd_fired    = 0;   /* diagnostic: total aborts triggered */
-static volatile INT_PTR g_wd_param1 = 0;   /* current Pump_Threads param_1 */
+static volatile LONG  g_wd_armed    = 0;   /* 1 = watchdog timing window active */
+static volatile DWORD g_wd_deadline = 0;   /* timeGetTime() deadline */
+static volatile LONG  g_wd_fired    = 0;   /* diagnostic: calls that exceeded deadline */
 
 /* Deferred prewarm (Step 29e): ai_manager saved during loading, fired from
  * pumpe_hook once g_pumpe_count > 0 (battle game loop running, Lua AI safe). */
@@ -1738,11 +1739,9 @@ static DWORD WINAPI pumpe_bg_worker(LPVOID arg)
 
 static volatile LONG g_post_prewarm_log = 0; /* arms after prewarm fires */
 
-/* Watchdog thread for per-call deadline enforcement (Step 2).
- * Polls every 1ms; if a Pump_Threads call has run past g_wd_deadline,
- * sets the abort flag byte at param1+0x121 so the loop exits after the
- * current coroutine yields.  Safe: the flag is designed to be written
- * externally; this thread never calls into Lua or game code. */
+/* Watchdog thread for per-call deadline measurement (Step 2).
+ * Polls every 1ms; counts calls that run past g_wd_deadline.
+ * Does NOT write the abort flag — see PUMP_DEADLINE_MS comment above. */
 static DWORD WINAPI pump_watchdog_thread(LPVOID unused)
 {
     (void)unused;
@@ -1751,13 +1750,8 @@ static DWORD WINAPI pump_watchdog_thread(LPVOID unused)
         if (!g_wd_armed) continue;
         DWORD now = real_timeGetTime();
         /* unsigned subtraction wraps correctly across DWORD rollover */
-        if ((DWORD)(now - g_wd_deadline) < 0x80000000UL) {
-            INT_PTR p1 = g_wd_param1;
-            if (p1) {
-                *(volatile BYTE *)(p1 + 0x121) = 1;
-                InterlockedIncrement(&g_wd_fired);
-            }
-        }
+        if ((DWORD)(now - g_wd_deadline) < 0x80000000UL)
+            InterlockedIncrement(&g_wd_fired);
     }
 }
 
@@ -1795,24 +1789,18 @@ static void pumpe_hook(int64_t a)
         return;
     }
 
-    /* Reset abort flag before the call (clears any stale watchdog write). */
-    *(volatile BYTE *)(a + 0x121) = 0;
-
+    /* Watchdog: arm for timing measurement only (no abort flag write).
+     * Writing *(a+0x121)=1 causes Pump_Threads to take an abort-cleanup
+     * path that writes to corrupted wake_addr → ntdll null-ptr crash. */
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
 
-    /* Arm watchdog: if this call runs past PUMP_DEADLINE_MS the watchdog
-     * sets *(a+0x121)=1 to abort Pump_Threads mid-iteration. */
-    g_wd_param1   = (INT_PTR)a;
     g_wd_deadline = real_timeGetTime() + PUMP_DEADLINE_MS;
     InterlockedExchange(&g_wd_armed, 1);
 
     g_pumpe_orig(a);
 
-    /* Disarm watchdog, then clear abort flag (may have been set by watchdog). */
     InterlockedExchange(&g_wd_armed, 0);
-    g_wd_param1 = 0;
-    *(volatile BYTE *)(a + 0x121) = 0;
 
     tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
@@ -5192,17 +5180,54 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
         if ((bad & 0xFFFFFFFFULL) == 0 && bad >= 0x6f0000000000ULL) {
             volatile unsigned char *ip =
                 (volatile unsigned char *)ep->ContextRecord->Rip;
-            /* MOV BYTE PTR [rax],0  = c6 00 00  (3 bytes)
-             * MOV rcx,[rcx+disp32] = 48 8b 89 ?? ?? ?? ??  (7 bytes) */
+            int skip_len = 0;
+
+            /* Wine JIT thunk (most common):
+             *   MOV BYTE PTR [rax],0  = c6 00 00  (3 bytes)
+             *   MOV rcx,[rcx+disp32] = 48 8b 89 ?? ?? ?? ??  (7 bytes)
+             * Skip both so rcx retains the valid kernel-object pointer. */
             if (ip[0] == 0xc6 && ip[1] == 0x00 && ip[2] == 0x00 &&
                 ip[3] == 0x48 && ip[4] == 0x8b && ip[5] == 0x89) {
-                ep->ContextRecord->Rip += 10; /* skip both instructions */
-                ep->ContextRecord->Rax = 0;   /* clear garbage wake_addr from RAX */
+                ep->ContextRecord->Rax = 0; /* clear garbage wake_addr from RAX */
+                skip_len = 10;
+
+            /* Generic c6 /0 imm8 — MOV r/m8, imm8 (other game-code sites).
+             * Covers both "c6 00 00" and "c6 00 01" variants that don't have the
+             * following MOV-rcx sequence of the Wine JIT thunk. */
+            } else if (ip[0] == 0xc6) {
+                unsigned char modrm = ip[1];
+                int mod = (modrm >> 6) & 3, rm = modrm & 7;
+                if (mod == 0 && rm != 4 && rm != 5) skip_len = 3; /* [reg], imm8 */
+                else if (mod == 1 && rm != 4)        skip_len = 4; /* [reg+disp8], imm8 */
+                else if (mod == 2 && rm != 4)        skip_len = 7; /* [reg+disp32], imm8 */
+
+            /* REX + MOV r/m8, r8  (opcode 88, e.g. "44 88 38" = MOV [RAX], R14B). */
+            } else if ((ip[0] & 0xf0) == 0x40 && ip[1] == 0x88) {
+                unsigned char modrm = ip[2];
+                int mod = (modrm >> 6) & 3, rm = modrm & 7;
+                if (mod == 0 && rm != 4 && rm != 5) skip_len = 3;
+                else if (mod == 1 && rm != 4)        skip_len = 4;
+                else if (mod == 2 && rm != 4)        skip_len = 7;
+
+            /* Plain MOV r/m8, r8  (opcode 88, no REX) */
+            } else if (ip[0] == 0x88) {
+                unsigned char modrm = ip[1];
+                int mod = (modrm >> 6) & 3, rm = modrm & 7;
+                if (mod == 0 && rm != 4 && rm != 5) skip_len = 2;
+                else if (mod == 1 && rm != 4)        skip_len = 3;
+                else if (mod == 2 && rm != 4)        skip_len = 6;
+            }
+
+            if (skip_len > 0) {
+                ep->ContextRecord->Rip += skip_len;
                 LONG n = InterlockedIncrement(&g_wake_suppressed);
-                char s[80];
+                char s[96];
                 snprintf(s, sizeof(s),
-                    "[eaw-mt] WAKE_SUPPR #%ld addr=%016llx\n",
-                    (long)n, (unsigned long long)bad);
+                    "[eaw-mt] WAKE_SUPPR #%ld addr=%016llx rva=0x%llx skip=%d\n",
+                    (long)n, (unsigned long long)bad,
+                    (unsigned long long)(ep->ContextRecord->Rip - skip_len -
+                        (ULONG_PTR)GetModuleHandleA(NULL)),
+                    skip_len);
                 if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
                 return EXCEPTION_CONTINUE_EXECUTION;
             }

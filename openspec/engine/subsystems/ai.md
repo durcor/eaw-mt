@@ -1,6 +1,6 @@
 # AI Subsystem (Lua Coroutine Engine)
 
-**Status:** Phase 5 Step 29j — calloc fix for cap=4096 restore path; cap=1024 entities confirmed non-pumpable (Lua AI side effects); prewarm stable.
+**Status:** Phase 5 Step 30 — per-call deadline watchdog (measure-only); extended WAKE_SUPPR; prewarm stable across 4+ battles.
 **Last verified:** 2026-05-25
 
 ---
@@ -205,7 +205,49 @@ Several crashes were encountered and fixed during prewarm development:
 - Second-battle Lua AI load time: **~1 second** (down from 33 seconds) for the pre-warmed entity type.
 - Additional entity types (cap=1024) hit a one-time ~33-second cold-start on first encounter; after that first load, OS page cache retains scripts and all subsequent battles for that entity type load in under 2 seconds.
 - No crashes from prewarm across 15+ battle profiles (4500+ frames) in session 2026-05-24.
-- Remaining open issue: `wined3d.dll` crash at mod_rva=0x9fe50 after extended play — unrelated to prewarm, pre-existing wine/D3D issue.
+- Remaining open issue: `wined3d.dll` crash at mod_rva=0x9fe50 after extended play — replaced by DXVK (`d3d9=native,builtin` Wine registry override).
+
+---
+
+## Step 30 — Per-Call Deadline Watchdog (MEASURE-ONLY)
+
+### Goal
+
+Enforce a per-call deadline on `Pump_Threads` so that a single slow coroutine cannot block the frame for more than `PUMP_DEADLINE_MS` (4ms). This complements the per-gsvc cumulative budget (`PUMPE_BUDGET_MS=33ms`).
+
+### Abort Flag at `*(param_1+0x121)`
+
+`FUN_140247a90` checks `*(param_1+0x121)` after each coroutine step. If non-zero, it breaks the DVC loop and calls `FUN_1402488e0` (Lua cleanup / `LuaThreadTable` teardown). This is the natural hook for external deadline enforcement.
+
+### Why the Abort Flag is Unsafe to Set Externally
+
+**Confirmed by experiment (2026-05-25):** Writing `*(param_1+0x121) = 1` from the watchdog thread triggers `FUN_1402488e0`, which then executes a sync-object notification sequence in the battle loop (`FUN_1403a6b80`, RVA `0x3a6b80`). This notification writes to a Wine sync object whose `wake_addr` field has been corrupted to `0x6fff00000000` (pre-existing Wine race condition). The write faults. Our WAKE_SUPPR handler skips it, but the subsequent sync state is broken, eventually causing an ntdll null-ptr crash (`av_write @0x8` in ntdll list insertion at `mod_rva=0x5160d`).
+
+**The abort flag is NOT safe to write from outside `FUN_140247a90`.**
+
+### Current Implementation
+
+- Watchdog thread polls every 1ms and increments `g_wd_fired` when a call exceeds `PUMP_DEADLINE_MS`.
+- Does NOT write `*(param_1+0x121)`.
+- `wd=N` in the per-gsvc stats reports how many 1ms ticks exceeded the deadline for that stats period.
+- The per-gsvc budget (`PUMPE_BUDGET_MS=33ms`) remains the primary stall guard.
+
+### Wine WAKE_SUPPR Extension (same session)
+
+Three crash sites in game code all write to the corrupted wake_addr:
+
+| RVA | Instruction | skip |
+|---|---|---|
+| `0x3a9e7d` | `c6 00 00 48 8b 89 ...` (Wine JIT thunk + chain advance) | 10 bytes |
+| `0x3aa62e` | `44 88 38` — `MOV [RAX], R15B` | 3 bytes |
+| `0x3aab43` | `c6 00 01` — `MOV [RAX], 1` | 3 bytes |
+
+The WAKE_SUPPR VEH handler was extended to decode generic `c6 /0 imm8` and `REX 88 /r` write patterns (not just the original Wine JIT thunk byte sequence). All three sites are now recovered.
+
+### Open Issues
+
+- `mod_rva=0x20a8c6` — `av_read @0x8` (`MOV RAX, [RCX+8]` with RCX=0) in galactic mode after 4+ battles — appears to be a pre-existing game null-ptr bug, not related to prewarm or watchdog. First observed 2026-05-25.
+- Hapan ship lighting/texture corruption — likely a DXVK rendering issue, unrelated to AI hook.
 
 ### Step 29j — calloc fix for cap=4096 restore path; cap=1024 arena approach attempted and reverted (2026-05-25)
 
