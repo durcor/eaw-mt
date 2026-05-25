@@ -1879,6 +1879,69 @@ static int64_t   g_bma_obj           = 0;  /* &DAT_140b153e0 — battle-mode arr
  *   for each i: lVar2 = array_base[i]; guard: lVar2!=0 && *(lVar2+0x18)!=0
  *   protected field: *(lVar2+0x20) */
 
+/* --- Arena-backed allocator for cap<4096 prewarm (Step 29j) -------------------
+ *
+ * cap=1024 entities crash the game's custom Lua allocator mid-allocation
+ * (NULL+8 write in its internal bookkeeping).  The allocator holds a heap
+ * critical section at the crash site; longjmp bypasses the release and
+ * deadlocks all subsequent allocs (save-load freeze, etc.).
+ *
+ * Fix: replace the entity's Lua allocator (global_State->frealloc, hm+0x10)
+ * with a bump-pointer arena backed by VirtualAlloc for the pump duration.
+ * No heap CS is held, so longjmp is safe.  On success, install a hybrid
+ * allocator that routes new allocs to the original fn and no-ops frees/
+ * reallocs of arena-backed pointers (arena stays alive to back Lua objects
+ * created during the pump).  On crash, restore the original allocator and
+ * VirtualFree the arena. */
+
+typedef void *(*lua_Alloc_t)(void *, void *, size_t, size_t);
+
+typedef struct {
+    void       *arena_base;
+    size_t      arena_size;
+    lua_Alloc_t orig_fn;
+    void       *orig_ud;
+} HybridAllocCtx;
+
+static HybridAllocCtx g_hybrid_ctx;
+static LPVOID         g_prewarm_arena      = NULL;
+static size_t         g_prewarm_arena_used = 0;
+static size_t         g_prewarm_arena_size = 0;
+
+/* Pure bump-pointer allocator used ONLY during the arena-pump window. */
+static void *arena_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
+{
+    (void)ud; (void)osize;
+    if (nsize == 0) return NULL;
+    size_t offset = (g_prewarm_arena_used + 7u) & ~(size_t)7u;
+    if (!g_prewarm_arena || offset + nsize > g_prewarm_arena_size) return NULL;
+    void *p = (char *)g_prewarm_arena + offset;
+    if (ptr && osize > 0)
+        memcpy(p, ptr, osize < nsize ? osize : nsize);
+    g_prewarm_arena_used = offset + nsize;
+    return p;
+}
+
+/* Hybrid allocator installed permanently after a successful arena pump.
+ * Arena-range pointers: free → no-op, realloc → copy to original heap.
+ * All other operations pass through to the original fn. */
+static void *hybrid_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
+{
+    HybridAllocCtx *ctx = (HybridAllocCtx *)ud;
+    if (ptr) {
+        uintptr_t p    = (uintptr_t)ptr;
+        uintptr_t base = (uintptr_t)ctx->arena_base;
+        if (p >= base && p < base + ctx->arena_size) {
+            if (nsize == 0) return NULL;
+            void *np = ctx->orig_fn(ctx->orig_ud, NULL, 0, nsize);
+            if (np && osize > 0) memcpy(np, ptr, osize < nsize ? osize : nsize);
+            return np;
+        }
+    }
+    return ctx->orig_fn(ctx->orig_ud, ptr, osize, nsize);
+}
+/* ------------------------------------------------------------------------------ */
+
 static void prewarm_from_ai_manager(int64_t ai_manager)
 {
     if (!ai_manager || !g_pumpe_orig) return;
@@ -1949,15 +2012,21 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                 int64_t hm10_pre = hm  ? *(int64_t *)(hm  + 0x10) : 0; /* frealloc fn */
                 int64_t hm18_pre = hm  ? *(int64_t *)(hm  + 0x18) : 0; /* alloc ud */
 
-                /* Only prewarm entities with a large hash map.  cap=1024 entities
-                 * crash inside the allocator during prewarm (NULL+8 write at RVA
-                 * 0x642160d).  longjmp from inside an in-progress allocation leaves
-                 * the allocator heap mutex locked, deadlocking all subsequent allocs
-                 * (save-load freeze, etc.).  The stall bottleneck has cap=4096 and
-                 * pumps safely; cap=1024 entities are not the bottleneck. */
-                if (cap < 4096) {
-                    char _sk[96];
-                    sprintf(_sk, "[eaw-mt] PREWARM: skip entity %d cap=%d\n", count, cap);
+                if (cap <= 0) {
+                    /* no valid string-intern hash map — skip silently */
+                } else if (cap < 4096) {
+                    /* cap=1024 (and similar) entities are skipped.  Their Lua AI
+                     * issues side-effecting C callbacks (fog-of-war writes, entity
+                     * spawn, etc.) that modify game state outside the Lua VM; there
+                     * is no way to undo those modifications after the pump without
+                     * a full game-state snapshot.  The one-time 33s first-encounter
+                     * stall is acceptable; OS page cache makes subsequent encounters
+                     * fast.  The arena infrastructure (HybridAllocCtx, arena_lua_alloc,
+                     * hybrid_lua_alloc) remains compiled in for future investigation. */
+                    char _sk[128];
+                    sprintf(_sk, "[eaw-mt] PREWARM: skip entity %d cap=%d"
+                            " hm70=%d hm74=%d (side-effects unsafe)\n",
+                            count, cap, hm70_pre, hm74_pre);
                     log_write(_sk);
                 } else {
                     char _pm[256];
@@ -2095,11 +2164,25 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                                      * Allocate a fresh empty bucket array via Lua's own allocator
                                      * (hm+0x10=frealloc, hm+0x18=ud) so luaM_free can reclaim it
                                      * without allocator-mismatch heap corruption. */
-                                    typedef void *(*lua_Alloc_t)(void *, void *, size_t, size_t);
-                                    lua_Alloc_t fn_alloc = (lua_Alloc_t)(uintptr_t)hm10_pre;
-                                    void *fresh_arr = fn_alloc
-                                        ? fn_alloc((void *)(uintptr_t)hm18_pre, NULL, 0, (size_t)cap * 8)
-                                        : NULL;
+                                    {
+                                        char _dbg_fa[160];
+                                        sprintf(_dbg_fa,
+                                                "[eaw-mt] PREWARM-DBG: hm10_pre=0x%llx"
+                                                " hm10_cur=0x%llx hm18_pre=0x%llx"
+                                                " winmm_base=0x%llx\n",
+                                                (unsigned long long)hm10_pre,
+                                                (unsigned long long)(hm ? *(int64_t *)(hm + 0x10) : 0),
+                                                (unsigned long long)hm18_pre,
+                                                (unsigned long long)(uintptr_t)
+                                                    GetModuleHandleA("winmm.dll"));
+                                        log_write(_dbg_fa);
+                                    }
+                                    /* Use calloc (CRT heap) rather than fn_alloc: the game's
+                                     * Lua allocator can be a non-game-binary function whose
+                                     * address is non-executable in some sessions, crashing the
+                                     * CALL.  EaW's Lua uses the CRT heap (realloc/free), which
+                                     * is compatible with calloc, so there is no mismatch risk. */
+                                    void *fresh_arr = calloc((size_t)cap, 8);
                                     if (fresh_arr) {
                                         memset(fresh_arr, 0, (size_t)cap * 8);
                                         if (cur_hm == hm && hm) {

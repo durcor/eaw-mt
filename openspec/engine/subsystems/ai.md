@@ -1,7 +1,7 @@
 # AI Subsystem (Lua Coroutine Engine)
 
-**Status:** Phase 5 Step 29i — hm+0x48 restore added; prewarm stable across 15+ battle profiles; stall reduced to ~1s for first entity encounter.
-**Last verified:** 2026-05-24
+**Status:** Phase 5 Step 29j — calloc fix for cap=4096 restore path; cap=1024 entities confirmed non-pumpable (Lua AI side effects); prewarm stable.
+**Last verified:** 2026-05-25
 
 ---
 
@@ -206,6 +206,28 @@ Several crashes were encountered and fixed during prewarm development:
 - Additional entity types (cap=1024) hit a one-time ~33-second cold-start on first encounter; after that first load, OS page cache retains scripts and all subsequent battles for that entity type load in under 2 seconds.
 - No crashes from prewarm across 15+ battle profiles (4500+ frames) in session 2026-05-24.
 - Remaining open issue: `wined3d.dll` crash at mod_rva=0x9fe50 after extended play — unrelated to prewarm, pre-existing wine/D3D issue.
+
+### Step 29j — calloc fix for cap=4096 restore path; cap=1024 arena approach attempted and reverted (2026-05-25)
+
+#### Fix A: calloc in cap=4096 restore path (confirmed)
+
+**Problem:** After a successful prewarm pump, the cap=4096 restore code called `fn_alloc(hm18_pre, NULL, 0, cap*8)` to allocate a fresh string-intern bucket array. In the Step 29i session this path was never reached (`hm10_pre` was 0). In Step 29j it was reached; `hm10_pre=0x56c7b090` — a CRT DLL function address that is non-executable in this Wine/session configuration → instruction-fetch AV (RIP=0x54ba97a0).
+
+**Fix:** Replaced `fn_alloc(...)` with `calloc((size_t)cap, 8)`. EaW's Lua allocator uses the CRT heap (`realloc`/`free`), so `calloc`-allocated blocks are compatible. The function pointer is no longer called in the restore path.
+
+**Confirmed:** `PREWARM-DBG: hm10_pre=0x56c7b090` visible in log on 2026-05-25; cap=4096 entity pumps and restores without crash.
+
+#### Fix B: cap=1024 entity pump — arena approach attempted, reverted
+
+**Initial hypothesis:** The original skip of cap=1024 entities was motivated by a heap-mutex deadlock risk: the game's custom Lua allocator holds a critical section at the crash site; VEH→longjmp recovery skips the CS release → deadlock.
+
+**Arena approach (attempted 2026-05-25):** Replace the entity's Lua allocator (`hm+0x10` = `frealloc`, `hm+0x18` = `ud`) with a bump-pointer arena backed by `VirtualAlloc` (64 MB) during the pump — no heap CS held by our arena, so VEH→longjmp would be safe. On success: install a hybrid allocator at `hm+0x10` that routes new allocs to the original heap fn and treats arena-range pointer frees as no-ops.
+
+**Result: approach reverted.** The arena successfully bypassed the allocator crash. However, the second battle (after a loading screen that fired the prewarm) showed fog-of-war over the entire map and no models loaded. Entity 27 (cap=1024) is **not a pure-compute AI entity**. Its Lua coroutine issues side-effecting C game-world callbacks during execution — fog-of-war writes, entity spawn, or equivalent — that modify game state **outside the Lua VM**. These modifications persist into the battle and are not undoable by restoring hm fields alone. A full game-state snapshot would be required to reverse them.
+
+**Current status:** cap=1024 entities are unconditionally skipped (`cap < 4096` guard). The arena infrastructure (`HybridAllocCtx`, `arena_lua_alloc`, `hybrid_lua_alloc`, VirtualAlloc globals) remains compiled in `winmm_proxy.c` for future investigation but is not called.
+
+**Fundamental constraint:** Prewarming any entity whose Lua AI issues C game-state callbacks during the loading screen is unsafe without a snapshot-restore mechanism for affected game-world state. The cap=1024 one-time 33s stall is accepted; OS page cache makes subsequent encounters fast.
 
 ---
 
