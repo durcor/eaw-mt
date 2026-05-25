@@ -1,5 +1,5 @@
-wine         := "/nix/store/9rcmpchnqdivam5i2fpzjh27mlq8m4px-proton-ge-bin-GE-Proton10-34-steamcompattool/files/bin/wine64"
-proton       := "/nix/store/9rcmpchnqdivam5i2fpzjh27mlq8m4px-proton-ge-bin-GE-Proton10-34-steamcompattool/proton"
+wine         := "/nix/store/dp1hc4npi0520afxz7ama2h048ssi2y3-proton-ge-bin-GE-Proton10-34-steamcompattool/files/bin/wine64"
+proton       := "/nix/store/dp1hc4npi0520afxz7ama2h048ssi2y3-proton-ge-bin-GE-Proton10-34-steamcompattool/proton"
 steam-client := env('HOME') + "/.local/share/Steam"
 
 # NOTE: claude doesn't like escaped whitespace in paths
@@ -44,11 +44,27 @@ remove-hook:
     "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows" \
     /v AppInit_DLLs /f
 
-# NOTE: CLI launch of FoC+mod is not feasible. steam -applaunch uses the store's first
-# launch option (base EaW) regardless of DefaultLaunchOption; the FoC working directory
-# and pressure-vessel setup require Steam's internal IPC (triggered by the Play button).
-# Workflow: `just cycle` then click Play in Steam.
-cycle: kill-game build-winmm
+# Launch FoC+TR directly via wine64 inside steam-run's FHS env.
+# Requires patched ntdll.so (fixes wine-staging 10.0 server_get_name_info NULL memcpy crash).
+# unshare --mount shadows the Nix store ntdll.so with our patched copy before bwrap's --bind /nix.
+# SteamAppId/SteamGameId/STEAM_COMPAT_CLIENT_INSTALL_PATH required for lsteamclient.dll IPC handshake.
+launch-foc:
+  unshare --mount --map-root-user bash -c " \
+    mount --bind {{justfile_directory()}}/patches/wine/ntdll.so \
+      /nix/store/jckwa9yy4aj2yq6r3c9x4rk0g95cvwm9-source/files/lib/wine/x86_64-unix/ntdll.so && \
+    capsh --inh='' -- -c ' \
+      WINEPREFIX={{compat-data}}/pfx \
+      WINEDLLOVERRIDES=winmm=n,b \
+      SteamAppId=32470 \
+      SteamGameId=32470 \
+      STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \
+      steam-run {{wine}} \
+      {{game-dir}}/StarWarsG.exe MODPATH=Mods/Imperial_Civil_War \
+    ' \
+  "
+
+# Kill game, rebuild hook, then launch FoC.
+cycle: kill-game build-winmm launch-foc
 
 # Wait for StarWarsG.exe to appear (up to 60s), then print its PID.
 wait-game:
