@@ -244,9 +244,45 @@ Three crash sites in game code all write to the corrupted wake_addr:
 
 The WAKE_SUPPR VEH handler was extended to decode generic `c6 /0 imm8` and `REX 88 /r` write patterns (not just the original Wine JIT thunk byte sequence). All three sites are now recovered.
 
+### Step 31 — GALTEAR_NULL read-AV guard (2026-05-25)
+
+`FUN_14020a8c0` (RVA 0x20a8c0, 142 bytes) is a galactic-mode linked-list bulk-removal
+function.  Its first real instruction after the prologue reads `[RCX+8]` (param_1+8 = list
+head pointer).  When called with `param_1=NULL` — a pre-existing game bug observed after 4+
+battles — `RCX=0` and the read faults: `av_read @0x8`.
+
+**Node structure** (0x28 bytes, freed with `thunk_FUN_1407864b8`):
+
+| offset | field | role |
+|---|---|---|
+| +0x00 | `node[0]` | back-link in a sibling doubly-linked list |
+| +0x08 | `node[1]` | forward back-pointer |
+| +0x10 | `node[2]` | next in singly-linked list |
+| +0x20 | `node[4]` | owner object pointer |
+
+For each node: unlinks it from the sibling list, frees it, decrements `owner+0x30`
+(refcount), writes `0xfffffc19` (-999) to `owner+0x38` (destroyed sentinel).
+
+**Assembly context at crash site:**
+```
+0x20a8c0  push rdi
+0x20a8c2  sub rsp, 0x20
+0x20a8c6  mov rax, [rcx+8]   ← CRASH: RCX=param_1=0, reads [0+8]
+0x20a8ca  mov rdi, rcx
+0x20a8cd  test rax, rax
+0x20a8d0  je  0x20a948        ← epilogue (add rsp,0x20 / pop rdi / ret)
+```
+
+**Recovery**: `GALTEAR_NULL` VEH handler — detect read-AV at fault_addr ≤ 0x10 and
+RIP == base+0x20a8c6, set RAX=0, advance RIP by 4.  The existing `test rax,rax / je`
+at +0xd takes the empty-list return path cleanly.
+
+**Verified pre-existing**: none of our hooks call into or near 0x20a8c0.  All hook entry
+points are in the battle loop (0x247a90, 0x385190, 0x387400, 0x3a6b80) or init
+(0x6c8710) or MEG cache (0x141f70).
+
 ### Open Issues
 
-- `mod_rva=0x20a8c6` — `av_read @0x8` (`MOV RAX, [RCX+8]` with RCX=0) in galactic mode after 4+ battles — appears to be a pre-existing game null-ptr bug, not related to prewarm or watchdog. First observed 2026-05-25.
 - Hapan ship lighting/texture corruption — likely a DXVK rendering issue, unrelated to AI hook.
 
 ### Step 29j — calloc fix for cap=4096 restore path; cap=1024 arena approach attempted and reverted (2026-05-25)

@@ -1911,6 +1911,13 @@ static BOOL install_pumpe_hook(void)
 #define LUAH_GET_LOOP_RVA    0x7bfdf0ULL  /* loop head — CMP dword [RDX],4 */
 #define LUAH_GET_NOTFND_RVA  0x7bfe04ULL  /* "not found" return target */
 
+/* FUN_14020a8c0 (RVA 0x20a8c0) — galactic-mode entity-relationship teardown.
+ * First real instruction after prologue reads [RCX+8] (= param_1+8, the list
+ * head pointer).  If param_1 is null (pre-existing game bug, observed after
+ * 4+ battles), RCX=0 and the read faults.  Recovery: set RAX=0 and skip 4
+ * bytes so the existing "test rax,rax / je epilogue" path returns cleanly. */
+#define GALTEAR_NULL_RVA     0x20a8c6ULL  /* MOV RAX,[RCX+8] — param_1 null guard */
+
 typedef void (*AiInitFn)(int64_t);
 static AiInitFn  g_ai_init_orig      = NULL;
 static int64_t   g_bma_obj           = 0;  /* &DAT_140b153e0 — battle-mode array object */
@@ -5251,6 +5258,31 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
             snprintf(s, sizeof(s),
                 "[eaw-mt] LUAH_NOKEY #%ld rdx=%016llx -> not_found\n",
                 (long)n, (unsigned long long)ep->ContextRecord->Rdx);
+            if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+
+    /* FUN_14020a8c0 null-param_1 guard (galactic teardown).
+     * param_1==0 → MOV RAX,[RCX+8] faults as read-AV @0x8.
+     * Set RAX=0 and skip the 4-byte instruction; the next test+je takes the
+     * empty-list return path cleanly. */
+    if (code == EXCEPTION_ACCESS_VIOLATION &&
+        ep->ExceptionRecord->NumberParameters >= 2 &&
+        ep->ExceptionRecord->ExceptionInformation[0] == 0 /* read */ ) {
+        ULONG_PTR fault_addr = ep->ExceptionRecord->ExceptionInformation[1];
+        uint64_t img_base_gt = (uint64_t)GetModuleHandleA(NULL);
+        uint64_t rip_gt      = (uint64_t)ep->ContextRecord->Rip;
+        if (img_base_gt && fault_addr <= 0x10 &&
+            rip_gt == img_base_gt + GALTEAR_NULL_RVA) {
+            ep->ContextRecord->Rax  = 0;
+            ep->ContextRecord->Rip += 4;
+            static volatile LONG g_galtear_suppressed = 0;
+            LONG n = InterlockedIncrement(&g_galtear_suppressed);
+            char s[96];
+            snprintf(s, sizeof(s),
+                "[eaw-mt] GALTEAR_NULL #%ld rcx=%016llx -> empty-list return\n",
+                (long)n, (unsigned long long)ep->ContextRecord->Rcx);
             if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
             return EXCEPTION_CONTINUE_EXECUTION;
         }
