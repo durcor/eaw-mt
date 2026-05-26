@@ -261,6 +261,13 @@ static void write_abs_jmp(BYTE *dst, uint64_t target);
 /* lua_resume call site inside Pump_Threads — per-resume timing shim (Step 2/32) */
 #define PUMPE_RESUME_CALL_RVA  0x247b56ULL  /* E8 CALL thunk_FUN_1407bc310 in Pump_Threads */
 #define PUMPE_RESUME_THUNK_RVA 0x7b9310ULL  /* thunk: jmp lua_resume@0x7bc310 */
+/* Lua 5.1 debug API (Step 34 — per-coroutine deadline enforcement) */
+#define LUA_SETHOOK_RVA        0x7bb640ULL  /* lua_sethook(L, fn, mask, count) */
+#define LUA_THROW_RVA          0x7bc470ULL  /* luaD_throw(L, errcode) */
+#define LUA_MASKCOUNT          0x08         /* fire hook every N instructions */
+#define LUA_ERRRUN             2
+#define RESUME_HOOK_COUNT      5000         /* opcode interval between deadline checks */
+#define RESUME_HOOK_DEADLINE_MS 200         /* abort any single resume > 200ms */
 
 typedef void (__fastcall *PumpThreadsFn)(void *);
 static PumpThreadsFn g_pump_threads_orig = NULL;
@@ -1692,6 +1699,14 @@ static volatile LONG  g_wd_fired    = 0;   /* diagnostic: pump-calls that exceed
 static volatile LONG  g_resume_n    = 0;   /* total lua_resume calls */
 static volatile LONG  g_resume_slow = 0;   /* resumes exceeding PUMP_DEADLINE_MS */
 static volatile LONG  g_resume_max_ms = 0; /* max single resume duration (ms) */
+static volatile LONG  g_resume_abort = 0;  /* coroutines killed by deadline hook */
+
+/* Lua 5.1 deadline enforcement (Step 34) */
+typedef void (*LuaSethookFn)(void *L, void *fn, int mask, int count);
+typedef void (*LuaThrowFn)(void *L, int errcode);
+static LuaSethookFn   g_lua_sethook     = NULL;
+static LuaThrowFn     g_lua_throw       = NULL;
+static volatile DWORD g_hook_deadline_ms = 0;
 
 /* Deferred prewarm (Step 29e): ai_manager saved during loading, fired from
  * pumpe_hook once g_pumpe_count > 0 (battle game loop running, Lua AI safe). */
@@ -1775,11 +1790,40 @@ static DWORD WINAPI pump_watchdog_thread(LPVOID unused)
 typedef int (*LuaResumeFn)(void *L, void *cont_flag, int nargs);
 static LuaResumeFn g_lua_resume_thunk_orig = NULL;
 
+/* Called every RESUME_HOOK_COUNT Lua opcodes from inside a resumed coroutine.
+ * If the deadline has passed, kill the coroutine via luaD_throw(LUA_ERRRUN).
+ * lua_resume will return LUA_ERRRUN and Pump_Threads will treat it as dead. */
+static void lua_deadline_hook(void *L, void *ar)
+{
+    (void)ar;
+    DWORD now = real_timeGetTime();
+    DWORD dl  = g_hook_deadline_ms;
+    if (dl && now >= dl) {
+        LONG n = InterlockedIncrement(&g_resume_abort);
+        char s[96];
+        snprintf(s, sizeof(s),
+            "[eaw-mt] RESUME_ABORT #%ld L=%p elapsed>%ums prewarm=%d\n",
+            (long)n, L, RESUME_HOOK_DEADLINE_MS, (int)g_in_prewarm_pumpe);
+        if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
+        g_hook_deadline_ms = 0;
+        g_lua_throw(L, LUA_ERRRUN);
+        /* NOT REACHED */
+    }
+}
+
 static int pumpe_lua_resume_shim(void *L, void *cont_flag, int nargs)
 {
+    if (g_lua_sethook) {
+        g_hook_deadline_ms = real_timeGetTime() + RESUME_HOOK_DEADLINE_MS;
+        g_lua_sethook(L, lua_deadline_hook, LUA_MASKCOUNT, RESUME_HOOK_COUNT);
+    }
     DWORD t0 = real_timeGetTime();
     int result = g_lua_resume_thunk_orig(L, cont_flag, nargs);
     DWORD elapsed = real_timeGetTime() - t0;
+    if (g_lua_sethook) {
+        g_lua_sethook(L, NULL, 0, 0);
+        g_hook_deadline_ms = 0;
+    }
 
     /* Update max (lock-free CAS loop). */
     LONG cur;
@@ -1830,7 +1874,17 @@ static BOOL install_pumpe_resume_shim(void)
     VirtualProtect(call_site + 1, 4, old, &old);
     FlushInstructionCache(GetCurrentProcess(), call_site, 5);
 
-    log_write("[eaw-mt] pumpe lua_resume shim installed (rva=0x247b56 -> thunk@7b9310)\n");
+    /* Wire deadline hook API functions (Step 34) */
+    g_lua_sethook = (LuaSethookFn)((BYTE *)exe + LUA_SETHOOK_RVA);
+    g_lua_throw   = (LuaThrowFn)((BYTE *)exe + LUA_THROW_RVA);
+
+    {
+        char s[96];
+        snprintf(s, sizeof(s),
+            "[eaw-mt] pumpe lua_resume shim installed (rva=0x247b56 -> thunk@7b9310) deadline=%dms\n",
+            RESUME_HOOK_DEADLINE_MS);
+        log_write(s);
+    }
     return TRUE;
 }
 
@@ -4855,7 +4909,7 @@ static void profile_report_and_reset(void) {
             "  tail22i(3639d0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld bg=%ld bg_max=%.0fms wd=%ld rv_n=%ld rv_max=%ldms rv_slow=%ld)\n"
+            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld bg=%ld bg_max=%.0fms wd=%ld rv_n=%ld rv_max=%ldms rv_slow=%ld rv_abort=%ld)\n"
             "  a76b0(3a76b0):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b87010(387010):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  d12d520(12d520): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -4914,7 +4968,7 @@ static void profile_report_and_reset(void) {
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
             g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count, (long)g_pumpe_skip,
             (long)g_pumpe_bg_dispatched, g_pumpe_bg_max_ms, (long)g_wd_fired,
-            (long)g_resume_n, (long)g_resume_max_ms, (long)g_resume_slow,
+            (long)g_resume_n, (long)g_resume_max_ms, (long)g_resume_slow, (long)g_resume_abort,
             g_a76b0_sum_ms   / a76n, g_a76b0_max_ms,   (long)g_a76b0_count,
             g_b87010_sum_ms  / b87n,  g_b87010_max_ms,  (long)g_b87010_count,
             g_d12d520_sum_ms / d52n,  g_d12d520_max_ms,  (long)g_d12d520_count,
@@ -5010,6 +5064,7 @@ static void profile_report_and_reset(void) {
     InterlockedExchange(&g_resume_n, 0);
     InterlockedExchange(&g_resume_slow, 0);
     InterlockedExchange(&g_resume_max_ms, 0);
+    InterlockedExchange(&g_resume_abort, 0);
     g_a76b0_count   = 0; g_a76b0_sum_ms   = 0; g_a76b0_max_ms   = 0;
     g_a9e30_count   = 0; g_a9e30_sum_ms   = 0; g_a9e30_max_ms   = 0;
     g_e369e0_count  = 0; g_e369e0_sum_ms  = 0; g_e369e0_max_ms  = 0;
