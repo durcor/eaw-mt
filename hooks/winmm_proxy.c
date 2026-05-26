@@ -258,6 +258,9 @@ static void write_abs_jmp(BYTE *dst, uint64_t target);
 #define SCORE_SERVICE_RVA   0x488660ULL  /* FUN_140488660, 555 bytes */
 #define SCORE_SERVICE_SIZE  555
 #define PUMP_THREADS_RVA    0x247a90ULL  /* FUN_140247a90 */
+/* lua_resume call site inside Pump_Threads — per-resume timing shim (Step 2/32) */
+#define PUMPE_RESUME_CALL_RVA  0x247b56ULL  /* E8 CALL thunk_FUN_1407bc310 in Pump_Threads */
+#define PUMPE_RESUME_THUNK_RVA 0x7b9310ULL  /* thunk: jmp lua_resume@0x7bc310 */
 
 typedef void (__fastcall *PumpThreadsFn)(void *);
 static PumpThreadsFn g_pump_threads_orig = NULL;
@@ -1683,7 +1686,12 @@ static double g_pumpe_frame_used_ms = 0.0;
 #define PUMP_DEADLINE_MS  4
 static volatile LONG  g_wd_armed    = 0;   /* 1 = watchdog timing window active */
 static volatile DWORD g_wd_deadline = 0;   /* timeGetTime() deadline */
-static volatile LONG  g_wd_fired    = 0;   /* diagnostic: calls that exceeded deadline */
+static volatile LONG  g_wd_fired    = 0;   /* diagnostic: pump-calls that exceeded deadline (watchdog) */
+
+/* Per-resume stats fed by pumpe_lua_resume_shim (reset each stats period) */
+static volatile LONG  g_resume_n    = 0;   /* total lua_resume calls */
+static volatile LONG  g_resume_slow = 0;   /* resumes exceeding PUMP_DEADLINE_MS */
+static volatile LONG  g_resume_max_ms = 0; /* max single resume duration (ms) */
 
 /* Deferred prewarm (Step 29e): ai_manager saved during loading, fired from
  * pumpe_hook once g_pumpe_count > 0 (battle game loop running, Lua AI safe). */
@@ -1753,6 +1761,77 @@ static DWORD WINAPI pump_watchdog_thread(LPVOID unused)
         if ((DWORD)(now - g_wd_deadline) < 0x80000000UL)
             InterlockedIncrement(&g_wd_fired);
     }
+}
+
+/* -------------------------------------------------------------------------
+ * lua_resume call-site shim (Phase 5 Step 2 / Step 32)
+ *
+ * Patches the single CALL at RVA 0x247b56 inside Pump_Threads that invokes
+ * the lua_resume thunk.  Measures exact per-coroutine resume latency — no
+ * 1ms poll latency — and feeds g_resume_slow / g_resume_max_ms for the
+ * stats log.  The watchdog thread (wd=) continues to cover the pump-call
+ * level; rv_* fields cover the per-resume level.
+ * ------------------------------------------------------------------------- */
+typedef int (*LuaResumeFn)(void *L, void *cont_flag, int nargs);
+static LuaResumeFn g_lua_resume_thunk_orig = NULL;
+
+static int pumpe_lua_resume_shim(void *L, void *cont_flag, int nargs)
+{
+    DWORD t0 = real_timeGetTime();
+    int result = g_lua_resume_thunk_orig(L, cont_flag, nargs);
+    DWORD elapsed = real_timeGetTime() - t0;
+
+    /* Update max (lock-free CAS loop). */
+    LONG cur;
+    do {
+        cur = g_resume_max_ms;
+        if ((LONG)elapsed <= cur) break;
+    } while (InterlockedCompareExchange(&g_resume_max_ms, (LONG)elapsed, cur) != cur);
+
+    InterlockedIncrement(&g_resume_n);
+    if (elapsed >= (DWORD)PUMP_DEADLINE_MS)
+        InterlockedIncrement(&g_resume_slow);
+
+    return result;
+}
+
+static BOOL install_pumpe_resume_shim(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+
+    BYTE *call_site = (BYTE *)exe + PUMPE_RESUME_CALL_RVA;
+
+    if (call_site[0] != 0xE8) {
+        log_write("[eaw-mt] WARN: pumpe resume shim: unexpected opcode at call site\n");
+        return FALSE;
+    }
+    int32_t existing_rel;
+    memcpy(&existing_rel, call_site + 1, 4);
+    BYTE *expected_thunk = (BYTE *)exe + PUMPE_RESUME_THUNK_RVA;
+    if (call_site + 5 + existing_rel != expected_thunk) {
+        log_write("[eaw-mt] WARN: pumpe resume shim: call target mismatch\n");
+        return FALSE;
+    }
+
+    g_lua_resume_thunk_orig = (LuaResumeFn)expected_thunk;
+
+    BYTE *stub = alloc_near(call_site, 14);
+    if (!stub) {
+        log_write("[eaw-mt] WARN: alloc_near failed for pumpe resume shim stub\n");
+        return FALSE;
+    }
+    write_abs_jmp(stub, (uint64_t)pumpe_lua_resume_shim);
+
+    int32_t new_rel = (int32_t)(stub - (call_site + 5));
+    DWORD old;
+    VirtualProtect(call_site + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+    memcpy(call_site + 1, &new_rel, 4);
+    VirtualProtect(call_site + 1, 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), call_site, 5);
+
+    log_write("[eaw-mt] pumpe lua_resume shim installed (rva=0x247b56 -> thunk@7b9310)\n");
+    return TRUE;
 }
 
 static void pumpe_hook(int64_t a)
@@ -1910,6 +1989,7 @@ static BOOL install_pumpe_hook(void)
  * RIP to the "not found" return so the caller re-inserts with fresh pointers. */
 #define LUAH_GET_LOOP_RVA    0x7bfdf0ULL  /* loop head — CMP dword [RDX],4 */
 #define LUAH_GET_NOTFND_RVA  0x7bfe04ULL  /* "not found" return target */
+
 
 /* FUN_14020a8c0 (RVA 0x20a8c0) — galactic-mode entity-relationship teardown.
  * First real instruction after prologue reads [RCX+8] (= param_1+8, the list
@@ -4766,7 +4846,7 @@ static void profile_report_and_reset(void) {
             "  tail22i(3639d0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  t2be640(2be640): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  ta6b80(3a6b80):  avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld bg=%ld bg_max=%.0fms wd=%ld)\n"
+            "  pumpe(247a90):   avg=%.2f max=%.2f ms (n=%ld skip=%ld bg=%ld bg_max=%.0fms wd=%ld rv_n=%ld rv_max=%ldms rv_slow=%ld)\n"
             "  a76b0(3a76b0):   avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b87010(387010):  avg=%.2f max=%.2f ms (n=%ld)\n"
             "  d12d520(12d520): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -4825,6 +4905,7 @@ static void profile_report_and_reset(void) {
             g_ta6b80_sum_ms  / a6n,  g_ta6b80_max_ms,  (long)g_ta6b80_count,
             g_pumpe_sum_ms   / pen,  g_pumpe_max_ms,   (long)g_pumpe_count, (long)g_pumpe_skip,
             (long)g_pumpe_bg_dispatched, g_pumpe_bg_max_ms, (long)g_wd_fired,
+            (long)g_resume_n, (long)g_resume_max_ms, (long)g_resume_slow,
             g_a76b0_sum_ms   / a76n, g_a76b0_max_ms,   (long)g_a76b0_count,
             g_b87010_sum_ms  / b87n,  g_b87010_max_ms,  (long)g_b87010_count,
             g_d12d520_sum_ms / d52n,  g_d12d520_max_ms,  (long)g_d12d520_count,
@@ -4917,6 +4998,9 @@ static void profile_report_and_reset(void) {
     g_pumpe_count   = 0; g_pumpe_sum_ms   = 0; g_pumpe_max_ms   = 0; g_pumpe_skip = 0;
     g_pumpe_bg_dispatched = 0; g_pumpe_bg_sum_ms = 0; g_pumpe_bg_max_ms = 0;
     InterlockedExchange(&g_wd_fired, 0);
+    InterlockedExchange(&g_resume_n, 0);
+    InterlockedExchange(&g_resume_slow, 0);
+    InterlockedExchange(&g_resume_max_ms, 0);
     g_a76b0_count   = 0; g_a76b0_sum_ms   = 0; g_a76b0_max_ms   = 0;
     g_a9e30_count   = 0; g_a9e30_sum_ms   = 0; g_a9e30_max_ms   = 0;
     g_e369e0_count  = 0; g_e369e0_sum_ms  = 0; g_e369e0_max_ms  = 0;
@@ -5474,6 +5558,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_tail22_body_hooks();
         install_2be640_body_hooks();
         install_pumpe_hook();
+        install_pumpe_resume_shim();
         install_prewarm_hook();
         install_fn56480_wrapper();
         install_a7190_guard();
