@@ -1,6 +1,6 @@
 # AI Subsystem (Lua Coroutine Engine)
 
-**Status:** Phase 5 Step 30 — per-call deadline watchdog (measure-only); extended WAKE_SUPPR; prewarm stable across 4+ battles.
+**Status:** Phase 5 Step 33 — ALMODEL_NULL_RP VEH guard; prewarm + live-pump safe.
 **Last verified:** 2026-05-25
 
 ---
@@ -280,6 +280,41 @@ at +0xd takes the empty-list return path cleanly.
 **Verified pre-existing**: none of our hooks call into or near 0x20a8c0.  All hook entry
 points are in the battle loop (0x247a90, 0x385190, 0x387400, 0x3a6b80) or init
 (0x6c8710) or MEG cache (0x141f70).
+
+### Step 33 — ALMODEL_NULL_RP VEH guard (2026-05-25)
+
+`FUN_14012b330` (RVA 0x12b330, 1051 bytes) is the `alHModel` 3D-model constructor.  It is
+called exclusively via a factory wrapper `FUN_14012bdf0` (RVA 0x12bdf0), which is referenced
+by two vtable entries (RVA 0x818db8, 0xb51d14).  No direct call sites exist — all callers
+use indirect dispatch.
+
+**Crash sequence at RVA 0x12b6bf:**
+
+The constructor copies render-pass objects from `param_2`'s container (`param_2+0xf0..+0xf8`)
+into the new model.  In the copy loop:
+
+```
+0x12b6b0  mov rax, [r13+0xf0]         ; param_2's render-pass array start
+0x12b6ba  mov rcx, [rax + rbx*8 + 8]  ; load element[i].+8 (type/vtable ptr)
+0x12b6bf  mov rax, [rcx]              ; CRASH: RCX=null → AV@0x0
+0x12b6c2  call qword ptr [rax+0x28]   ; vtable[5] would-be call (skipped too)
+0x12b6c5  mov rdi, rax                ; plVar5 = return value
+```
+
+Element `+8` is a type object pointer populated by the renderer subsystem.  During prewarm
+the renderer is not yet initialised, so the source container's elements have null `+8` fields.
+The crash fires **both** during prewarm (first lua_resume of the pumped entity) **and** on
+the first live `Pump_Threads` call for the same entity (longjmp recovers prewarm, but the
+entity re-runs its AI without protection in the live pump).
+
+**Recovery** (`ALMODEL_NULL_RP` VEH handler):
+- Detect: read-AV, fault_addr==0, RIP==base+0x12b6bf
+- Set RAX=0, advance RIP by 6 (skips both `MOV RAX,[RCX]` and `CALL [RAX+0x28]`)
+- Post-skip: RDI=0 (plVar5=null); dest slot is also null (fresh `calloc` allocation) so
+  `CMP RCX,RAX` passes the `JZ 0x12b6ef` immediately — render-pass slot stores NULL
+- Logs: `[eaw-mt] ALMODEL_NULL_RP #N prewarm=P -> null slot`
+
+**Confirmed guard position**: handler fires before the prewarm longjmp fallback.
 
 ### Open Issues
 

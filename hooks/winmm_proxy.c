@@ -1997,6 +1997,15 @@ static BOOL install_pumpe_hook(void)
  * 4+ battles), RCX=0 and the read faults.  Recovery: set RAX=0 and skip 4
  * bytes so the existing "test rax,rax / je epilogue" path returns cleanly. */
 #define GALTEAR_NULL_RVA     0x20a8c6ULL  /* MOV RAX,[RCX+8] — param_1 null guard */
+/* alHModel ctor (FUN_14012b330) null render-pass element guard.
+ * Source render-pass array (param_2+0xf0..+0xf8) may have elements whose +8
+ * field is null (not yet populated by renderer).  At rva=0x12b6bf the ctor
+ * does MOV RAX,[RCX] where RCX=null → AV.  The next instruction CALL [RAX+0x28]
+ * would also crash.  Recovery: set RAX=0, skip 6 bytes (both instructions).
+ * Post-skip: RDI=0 (plVar5=null), so the render-pass slot stores NULL — safe
+ * because an uninitialized dest slot (also 0) passes the CMP/JZ immediately. */
+#define ALMODEL_NULL_RP_RVA  0x12b6bfULL  /* MOV RAX,[RCX] — render-pass +8 null guard */
+#define ALMODEL_NULL_RP_SKIP 6            /* skip MOV(3) + CALL(3) */
 
 typedef void (*AiInitFn)(int64_t);
 static AiInitFn  g_ai_init_orig      = NULL;
@@ -5367,6 +5376,30 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
             snprintf(s, sizeof(s),
                 "[eaw-mt] GALTEAR_NULL #%ld rcx=%016llx -> empty-list return\n",
                 (long)n, (unsigned long long)ep->ContextRecord->Rcx);
+            if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+
+    /* alHModel ctor null render-pass element guard (FUN_14012b330 rva=0x12b6bf).
+     * Fires during prewarm AND on the first live pump of the same entity.
+     * Null element at [RCX+0] where RCX was loaded from param_2+0xf0 array +8 slot.
+     * Skip both faulting MOV and the following CALL; store NULL for that slot. */
+    if (code == EXCEPTION_ACCESS_VIOLATION &&
+        ep->ExceptionRecord->NumberParameters >= 2 &&
+        ep->ExceptionRecord->ExceptionInformation[0] == 0 /* read */ &&
+        ep->ExceptionRecord->ExceptionInformation[1] == 0 /* fault_addr == null */) {
+        uint64_t img_base_rp = (uint64_t)GetModuleHandleA(NULL);
+        uint64_t rip_rp      = (uint64_t)ep->ContextRecord->Rip;
+        if (img_base_rp && rip_rp == img_base_rp + ALMODEL_NULL_RP_RVA) {
+            ep->ContextRecord->Rax  = 0;
+            ep->ContextRecord->Rip += ALMODEL_NULL_RP_SKIP;
+            static volatile LONG g_almodel_rp_suppressed = 0;
+            LONG n = InterlockedIncrement(&g_almodel_rp_suppressed);
+            char s[96];
+            snprintf(s, sizeof(s),
+                "[eaw-mt] ALMODEL_NULL_RP #%ld prewarm=%d -> null slot\n",
+                (long)n, (int)g_in_prewarm_pumpe);
             if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
             return EXCEPTION_CONTINUE_EXECUTION;
         }
