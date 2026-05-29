@@ -105,3 +105,45 @@ The actual Lua coroutine scheduler tick (where scripts run) is not yet identifie
 - **Approach:** Wrap all `lua_State` access behind a mutex or lock-free queue; move the Lua coroutine scheduler to a dedicated worker thread. Main thread posts events; Lua thread processes and posts results back.
 - **Key risk:** Scripts that call back into game object state synchronously (same-frame reads/writes to shared data structures). Must audit Lua ↔ C++ binding functions before implementing.
 - **No longer blocked** by the "OS threads vs coroutines" question — next blocker is the Lua ↔ C++ shared-state audit (Phase 2).
+
+---
+
+## Phase 5 — Lua ↔ C++ binding audit (Model B prerequisite, kicked off 2026-05-29)
+
+Goal: enumerate the C closures reachable from `lua_resume` during a pump and classify each
+pure-compute vs. sim-write — the deferred-apply surface for threading Model B (B2). Driver:
+`tools/ghidra_scripts/Phase5LuaApiSurface.java` (scans `.rdata` for `luaL_Reg`-style
+`{name*, fn*}` tables). Output: `logs/Phase5LuaApiSurface.out`.
+
+### Result of the `luaL_Reg` scan — 6 tables, 88 entries
+- **Stock Lua 5.1 stdlib** (~50 fns): base (`pcall`, `pairs`, `type`, `tostring`, …),
+  `coroutine.*`, `table.*`, `string.*`. Table RVAs `0x8fe120/0x8fe2c0/0x8fe560/0x8fe8e0`.
+- **Custom crc lib** (`crc`, `crcstate`, `md5`, `dumpstrtable`) @ `0x8fe660`.
+- **D3D shader-constant table** @ `0xa13200` (`MODEL`, `WORLD`, `FOW_TEXTURE`, … fn_rva
+  `0x1adxxx`) — renderer shader-semantic setters, NOT Lua AI; matched the `{string,fn}`
+  pattern coincidentally. Ignore for this audit.
+
+### Classification of the stdlib (the part we found)
+- **Pure-VM / thread-local**: `table.*`, `string.*`, most of base — operate on the calling
+  coroutine's stack only.
+- **Touch the shared `global_State`** (not C++ game state, but the same shared structure
+  prewarm corrupted): `collectgarbage`/`gcinfo` (GC), `loadstring`/`loadfile`/`dofile`/
+  `require` (compile + string interning), `coroutine.create/resume`. Under Model B these are
+  the cross-coroutine hazard — one VM, one `global_State`, one allocator.
+- **None of these touch C++ sim state** (entities/fog/resources).
+
+### KEY FINDING — the sim-write surface is NOT in `luaL_Reg` tables
+The EaW *game* API (the functions that write fog-of-war, spawn units, change resources — the
+side-effects prewarm proved exist) is **absent** from the `luaL_Reg` scan. EaW exposes game
+objects via an **OO Lua binding** (RTTI classes `LuaCreateThread`, `ThreadValue`, game-object
+metatables), registered through `lua_pushcclosure` into metatables rather than flat
+`{name,fn}[]` tables. So the write-closure enumeration needs a different driver.
+
+### Next step (refined method)
+1. Locate `lua_pushcclosure` by decompiling the function that references the base-lib table
+   `0x8fe120` (that's `luaL_register`/`luaopen_base`; the per-entry call inside its loop is
+   `lua_pushcclosure`).
+2. Enumerate **all** `lua_pushcclosure` call sites across `.text` — the ones outside the
+   stdlib openers are the OO game-API methods (the sim-write candidates).
+3. Decompile + classify each game-API closure: reads-only vs. writes-C++-state (and which
+   state). That write set is the B2 deferred-apply surface.
