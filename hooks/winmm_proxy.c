@@ -467,6 +467,61 @@ static double g_io_win_max_ms = 0.0;
 static LONG   g_io_win_count  = 0;
 static LONG   g_io_win_bytes  = 0;
 
+/* Step 35 open-storm profiler (temporary — remove with the rest of the Step 35
+ * scaffolding). The first-encounter stall is the main thread blocked in
+ * NtCreateFile; this characterizes the open storm during a pump so we can pick
+ * the fix: count, fail-rate, unique-vs-repeat paths, timing, sampled paths.
+ * Active only while g_open_profile_active (set around g_pumpe_orig). All state is
+ * touched only on the main thread (opens during the pump + pumpe_hook), so no
+ * atomics needed. Unique/repeat uses a generation-stamped hash table — reset is
+ * an O(1) gen bump, no per-pump memset. */
+static volatile LONG g_open_profile_active = 0;
+#define OPEN_SLOTS    8192
+#define OPEN_SAMPLE_N 24
+static uint32_t g_open_slot_hash[OPEN_SLOTS];
+static uint32_t g_open_slot_gen [OPEN_SLOTS];
+static uint32_t g_open_gen      = 0;
+static long     g_open_n = 0, g_open_fail = 0, g_open_unique = 0, g_open_repeat = 0;
+static double   g_open_sum_ms = 0.0, g_open_max_ms = 0.0;
+static int      g_open_sample_n = 0;
+static char     g_open_sample[OPEN_SAMPLE_N][MAX_PATH];
+/* paths of REAL opens that FAILED but were NOT short-circuited (ms>0) — shows
+ * what the negative cache is still missing. */
+static int      g_open_fail_sample_n = 0;
+static char     g_open_fail_sample[OPEN_SAMPLE_N][MAX_PATH];
+
+static void open_profile_record(const char *path, int failed, double ms)
+{
+    if (!path) path = "";
+    g_open_n++;
+    g_open_sum_ms += ms;
+    if (ms > g_open_max_ms) g_open_max_ms = ms;
+    if (failed) g_open_fail++;
+    /* real (non-short-circuited) failed open → sample what we're still missing */
+    if (failed && ms > 0.0 && g_open_fail_sample_n < OPEN_SAMPLE_N) {
+        strncpy(g_open_fail_sample[g_open_fail_sample_n], path, MAX_PATH - 1);
+        g_open_fail_sample[g_open_fail_sample_n][MAX_PATH - 1] = '\0';
+        g_open_fail_sample_n++;
+    }
+    /* djb2 over the path */
+    uint32_t h = 5381;
+    for (const unsigned char *p = (const unsigned char *)path; *p; p++)
+        h = ((h << 5) + h) ^ *p;
+    uint32_t slot = h % OPEN_SLOTS;
+    if (g_open_slot_gen[slot] == g_open_gen && g_open_slot_hash[slot] == h) {
+        g_open_repeat++;                 /* same path already seen this pump */
+    } else {
+        g_open_slot_gen[slot]  = g_open_gen;
+        g_open_slot_hash[slot] = h;
+        g_open_unique++;
+        if (g_open_sample_n < OPEN_SAMPLE_N) {
+            strncpy(g_open_sample[g_open_sample_n], path, MAX_PATH - 1);
+            g_open_sample[g_open_sample_n][MAX_PATH - 1] = '\0';
+            g_open_sample_n++;
+        }
+    }
+}
+
 typedef HANDLE (WINAPI *CreateFileA_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 typedef HANDLE (WINAPI *CreateFileW_t)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 typedef BOOL   (WINAPI *ReadFile_t)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
@@ -475,12 +530,203 @@ static CreateFileA_t real_CreateFileA_fn = NULL;
 static CreateFileW_t real_CreateFileW_fn = NULL;
 static ReadFile_t    real_ReadFile_fn    = NULL;
 
+/* =========================================================================
+ * Step 35 FIX — filesystem negative directory index ("fscache")
+ *
+ * The first-encounter stall is ~5000 failed CreateFile opens (96% fail) per
+ * battle: the engine probes loose .ALO/.DDS asset files that don't exist on
+ * disk (they live in MEG archives), each costing ~2.5ms via Wine NtCreateFile.
+ *
+ * Fix: the first time we see a read-open of an asset file in a directory, we
+ * enumerate that directory ONCE (FindFirstFile sweep) and cache the set of
+ * filenames present. Subsequent opens of files NOT in that set return
+ * FILE_NOT_FOUND instantly — identical to what NtCreateFile would return,
+ * without the syscall. One readdir replaces thousands of opens.
+ *
+ * Correctness:
+ *  - A hash collision can only yield a false PRESENT (harmless fall-through to
+ *    a real open), never a false ABSENT.
+ *  - A directory that fails to enumerate, is empty, or is too large is marked
+ *    "unindexable" and never short-circuited (always fall through).
+ *  - Scoped to read-only OPEN_EXISTING of known asset extensions; saves/config
+ *    are never touched.
+ *  - Main-thread only (matches where the storm occurs) → no locks needed.
+ *
+ * Kill switch: EAW_NO_FSCACHE=1.
+ * ========================================================================= */
+#define FS_MAX_DIRS    96
+#define FS_SET_SLOTS   32768          /* per-dir filename hash table (power of 2) */
+#define FS_MAX_FILES   20000          /* >this in one dir → unindexable (fall through) */
+typedef struct {
+    char      dir[MAX_PATH];          /* normalized: lowercased, '\'-separated, no trailing sep */
+    int       status;                 /* 0=unused, 1=indexed, 2=unindexable */
+    uint32_t *set;                    /* FS_SET_SLOTS hashes, 0=empty slot */
+    int       nfiles;
+} fs_dir_t;
+static fs_dir_t      g_fs_dirs[FS_MAX_DIRS];
+static int           g_fs_ndirs        = 0;
+static int           g_fscache_enabled = -1;   /* -1=uninit, 0/1 resolved from env */
+static long          g_fscache_hits    = 0;    /* opens short-circuited as absent */
+
+/* lowercase + '/'→'\' into dst (bounded). */
+static void fs_norm(char *dst, size_t cap, const char *src)
+{
+    size_t i = 0;
+    for (; src[i] && i + 1 < cap; i++) {
+        char c = src[i];
+        if (c == '/') c = '\\';
+        else if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        dst[i] = c;
+    }
+    dst[i] = '\0';
+}
+static uint32_t fs_hash(const char *s)   /* djb2 over already-lowercased string */
+{
+    uint32_t h = 5381;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        h = ((h << 5) + h) ^ *p;
+    return h ? h : 1;                     /* reserve 0 for empty slot */
+}
+static int fs_has_asset_ext(const char *path)
+{
+    size_t n = strlen(path);
+    if (n < 4) return 0;
+    const char *e = path + n - 4;
+    /* case-insensitive compare of the 4-char extension */
+    char x[5]; fs_norm(x, sizeof(x), e);
+    return !strcmp(x, ".dds") || !strcmp(x, ".alo") || !strcmp(x, ".ala") ||
+           !strcmp(x, ".tga");
+}
+static int fs_is_read_open(DWORD dwAccess, DWORD dwCreate)
+{
+    /* only short-circuit pure reads of an existing file */
+    if (dwAccess & GENERIC_WRITE) return 0;
+    return dwCreate == OPEN_EXISTING;
+}
+/* Enumerate `orig_dir` (real case preserved for FS access) into a fresh set. */
+static void fs_index_dir(fs_dir_t *d, const char *orig_dir)
+{
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof(pattern), "%s\\*",
+             (orig_dir[0] ? orig_dir : "."));
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) { d->status = 2; return; }  /* unindexable */
+    uint32_t *set = (uint32_t *)calloc(FS_SET_SLOTS, sizeof(uint32_t));
+    if (!set) { FindClose(h); d->status = 2; return; }
+    int nfiles = 0, overflow = 0;
+    do {
+        if (fd.cFileName[0] == '.' &&
+            (fd.cFileName[1] == '\0' ||
+             (fd.cFileName[1] == '.' && fd.cFileName[2] == '\0')))
+            continue;                                 /* skip . and .. */
+        if (nfiles >= FS_MAX_FILES) { overflow = 1; break; }
+        char low[MAX_PATH];
+        fs_norm(low, sizeof(low), fd.cFileName);
+        uint32_t hsh = fs_hash(low);
+        uint32_t slot = hsh & (FS_SET_SLOTS - 1);
+        while (set[slot] && set[slot] != hsh) slot = (slot + 1) & (FS_SET_SLOTS - 1);
+        if (!set[slot]) { set[slot] = hsh; }
+        nfiles++;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    if (overflow) { free(set); d->status = 2; return; }  /* too big → don't trust */
+    d->set    = set;
+    d->nfiles = nfiles;
+    d->status = 1;
+}
+/* Decide whether a path is in scope for the negative cache. Scope = anything
+ * under an EaW "Data\" asset root (covers Models/Textures/Sounds/Scripts/...),
+ * plus bare filenames (CWD-relative) with a known asset extension. EaW never
+ * writes into Data\ during play and saves/config live elsewhere, so short-
+ * circuiting absent Data\ reads is safe. */
+static int fs_should_cache(const char *path)
+{
+    char low[MAX_PATH];
+    fs_norm(low, sizeof(low), path);
+    if (strstr(low, "\\data\\") || strncmp(low, "data\\", 5) == 0) return 1;
+    if (!strchr(low, '\\')) return fs_has_asset_ext(path);  /* bare → CWD */
+    return 0;
+}
+/* Returns 1 if `path` is a known-absent asset file (safe to short-circuit). */
+static int fs_absent(const char *path)
+{
+    char norm[MAX_PATH];
+    fs_norm(norm, sizeof(norm), path);
+    /* split at last separator */
+    char *sep = strrchr(norm, '\\');
+    char dirbuf[MAX_PATH], filebuf[MAX_PATH];
+    if (sep) {
+        size_t dl = (size_t)(sep - norm);
+        memcpy(dirbuf, norm, dl); dirbuf[dl] = '\0';
+        snprintf(filebuf, sizeof(filebuf), "%s", sep + 1);
+    } else {
+        dirbuf[0] = '\0';                  /* CWD */
+        snprintf(filebuf, sizeof(filebuf), "%s", norm);
+    }
+    /* find or create dir entry (dirbuf is normalized lowercase) */
+    fs_dir_t *d = NULL;
+    for (int i = 0; i < g_fs_ndirs; i++)
+        if (!strcmp(g_fs_dirs[i].dir, dirbuf)) { d = &g_fs_dirs[i]; break; }
+    if (!d) {
+        if (g_fs_ndirs >= FS_MAX_DIRS) return 0;   /* table full → fall through */
+        d = &g_fs_dirs[g_fs_ndirs++];
+        snprintf(d->dir, sizeof(d->dir), "%s", dirbuf);
+        d->status = 0; d->set = NULL; d->nfiles = 0;
+        /* enumerate using the original (real-case) dir slice of `path` */
+        char orig_dir[MAX_PATH];
+        size_t dl = sep ? (size_t)(sep - norm) : 0;
+        if (dl >= sizeof(orig_dir)) dl = sizeof(orig_dir) - 1;
+        memcpy(orig_dir, path, dl); orig_dir[dl] = '\0';
+        fs_index_dir(d, orig_dir);
+    }
+    if (d->status != 1) return 0;          /* unindexable → fall through */
+    uint32_t hsh = fs_hash(filebuf);
+    uint32_t slot = hsh & (FS_SET_SLOTS - 1);
+    while (d->set[slot]) {
+        if (d->set[slot] == hsh) return 0; /* present → fall through to real open */
+        slot = (slot + 1) & (FS_SET_SLOTS - 1);
+    }
+    return 1;                               /* hit empty slot → genuinely absent */
+}
+/* Resolve the kill switch once; returns 1 if fscache should run. */
+static int fscache_on(void)
+{
+    if (g_fscache_enabled < 0) {
+        const char *e = getenv("EAW_NO_FSCACHE");
+        g_fscache_enabled = (e && e[0] && e[0] != '0') ? 0 : 1;
+        log_write(g_fscache_enabled
+            ? "[eaw-mt] FSCACHE: enabled (negative dir index; set EAW_NO_FSCACHE=1 to disable)\n"
+            : "[eaw-mt] FSCACHE: DISABLED via EAW_NO_FSCACHE\n");
+    }
+    return g_fscache_enabled;
+}
+
 static HANDLE WINAPI createfileA_hook(LPCSTR lpFileName, DWORD dwAccess,
     DWORD dwShare, LPSECURITY_ATTRIBUTES lpSec, DWORD dwCreate,
     DWORD dwFlags, HANDLE hTemplate)
 {
-    if (GetCurrentThreadId() == g_main_thread_id && lpFileName)
+    int is_main = (GetCurrentThreadId() == g_main_thread_id);
+    if (is_main && lpFileName)
         strncpy(g_last_opened_file, lpFileName, MAX_PATH - 1);
+    if (is_main && lpFileName && fscache_on() &&
+        fs_is_read_open(dwAccess, dwCreate) && fs_should_cache(lpFileName) &&
+        fs_absent(lpFileName)) {
+        g_fscache_hits++;
+        if (g_open_profile_active) open_profile_record(lpFileName, 1, 0.0);
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    if (is_main && g_open_profile_active) {
+        LARGE_INTEGER a, b; tgt_fake_qpc(&a);
+        HANDLE h = real_CreateFileA_fn(lpFileName, dwAccess, dwShare, lpSec,
+                                       dwCreate, dwFlags, hTemplate);
+        tgt_fake_qpc(&b);
+        double ms = (double)(b.QuadPart - a.QuadPart) /
+                    ((double)g_qpc_freq.QuadPart / 1000.0);
+        open_profile_record(lpFileName, h == INVALID_HANDLE_VALUE, ms);
+        return h;
+    }
     return real_CreateFileA_fn(lpFileName, dwAccess, dwShare, lpSec,
                                dwCreate, dwFlags, hTemplate);
 }
@@ -489,9 +735,28 @@ static HANDLE WINAPI createfileW_hook(LPCWSTR lpFileName, DWORD dwAccess,
     DWORD dwShare, LPSECURITY_ATTRIBUTES lpSec, DWORD dwCreate,
     DWORD dwFlags, HANDLE hTemplate)
 {
-    if (GetCurrentThreadId() == g_main_thread_id && lpFileName)
+    int is_main = (GetCurrentThreadId() == g_main_thread_id);
+    if (is_main && lpFileName)
         WideCharToMultiByte(CP_UTF8, 0, lpFileName, -1,
                             g_last_opened_file, MAX_PATH, NULL, NULL);
+    if (is_main && lpFileName && fscache_on() &&
+        fs_is_read_open(dwAccess, dwCreate) &&
+        fs_should_cache(g_last_opened_file) && fs_absent(g_last_opened_file)) {
+        g_fscache_hits++;
+        if (g_open_profile_active) open_profile_record(g_last_opened_file, 1, 0.0);
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    if (is_main && g_open_profile_active) {
+        LARGE_INTEGER a, b; tgt_fake_qpc(&a);
+        HANDLE h = real_CreateFileW_fn(lpFileName, dwAccess, dwShare, lpSec,
+                                       dwCreate, dwFlags, hTemplate);
+        tgt_fake_qpc(&b);
+        double ms = (double)(b.QuadPart - a.QuadPart) /
+                    ((double)g_qpc_freq.QuadPart / 1000.0);
+        open_profile_record(g_last_opened_file, h == INVALID_HANDLE_VALUE, ms);
+        return h;
+    }
     return real_CreateFileW_fn(lpFileName, dwAccess, dwShare, lpSec,
                                dwCreate, dwFlags, hTemplate);
 }
@@ -1695,6 +1960,19 @@ static volatile LONG  g_wd_armed    = 0;   /* 1 = watchdog timing window active 
 static volatile DWORD g_wd_deadline = 0;   /* timeGetTime() deadline */
 static volatile LONG  g_wd_fired    = 0;   /* diagnostic: pump-calls that exceeded deadline (watchdog) */
 
+/* Step 35 option-2 investigation: sampling profiler for the 33s first-encounter
+ * stall. When a pump runs past STALL_SAMPLE_MS, the watchdog thread suspends the
+ * main thread, captures RIP + stack return addresses, resumes, then logs them.
+ * Over a long stall this yields a function-level breakdown of the C asset/model
+ * loading we want to trigger directly. Temporary — remove with the rest of the
+ * Step 35 scaffolding once the direction is locked. */
+#define STALL_SAMPLE_MS        1500   /* a pump running this long = a real stall */
+#define STALL_SAMPLE_PERIOD_MS 100    /* sample interval once in a stall */
+#define STALL_SAMPLE_STACKN    40     /* stack qwords scanned per sample */
+#define STALL_SAMPLE_MAX       256    /* cap samples per stall to bound log spam */
+static volatile DWORD g_wd_pump_start = 0;   /* timeGetTime() when current pump armed */
+static HANDLE         g_main_thread_h  = NULL;/* real handle to main thread (for sampling) */
+
 /* Per-resume stats fed by pumpe_lua_resume_shim (reset each stats period) */
 static volatile LONG  g_resume_n    = 0;   /* total lua_resume calls */
 static volatile LONG  g_resume_slow = 0;   /* resumes exceeding PUMP_DEADLINE_MS */
@@ -1780,13 +2058,66 @@ static volatile LONG g_post_prewarm_log = 0; /* arms after prewarm fires */
 static DWORD WINAPI pump_watchdog_thread(LPVOID unused)
 {
     (void)unused;
+    DWORD    last_sample = 0;
+    int      samples_this_stall = 0;
+    uint64_t img_base = (uint64_t)GetModuleHandleA(NULL);
     for (;;) {
         Sleep(1);
-        if (!g_wd_armed) continue;
+        if (!g_wd_armed) { samples_this_stall = 0; continue; }
         DWORD now = real_timeGetTime();
         /* unsigned subtraction wraps correctly across DWORD rollover */
         if ((DWORD)(now - g_wd_deadline) < 0x80000000UL)
             InterlockedIncrement(&g_wd_fired);
+
+        /* Stall sampler: only once a pump has run absurdly long. */
+        DWORD elapsed = now - g_wd_pump_start;
+        if (elapsed < STALL_SAMPLE_MS || !g_main_thread_h ||
+            samples_this_stall >= STALL_SAMPLE_MAX)
+            continue;
+        if ((DWORD)(now - last_sample) < STALL_SAMPLE_PERIOD_MS) continue;
+        last_sample = now;
+
+        /* Capture RIP + stack while the main thread is suspended; do NOT log
+         * here (the suspended main thread may hold the CRT FILE lock → deadlock).
+         * Copy raw values out, resume, then format and write. */
+        uint64_t rip = 0, stack[STALL_SAMPLE_STACKN];
+        int got = 0, nstk = 0;
+        if (SuspendThread(g_main_thread_h) != (DWORD)-1) {
+            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+            if (GetThreadContext(g_main_thread_h, &ctx)) {
+                rip = ctx.Rip;
+                uint64_t rsp = ctx.Rsp;
+                for (int k = 0; k < STALL_SAMPLE_STACKN; k++) {
+                    /* reading the main thread's (mapped) stack while suspended is safe */
+                    stack[k] = *(volatile uint64_t *)(rsp + (uint64_t)k * 8);
+                }
+                nstk = STALL_SAMPLE_STACKN;
+                got = 1;
+            }
+            ResumeThread(g_main_thread_h);
+        }
+        if (!got) continue;
+
+        /* Log RIP, then the stack qwords that look like in-module return addrs. */
+        char line[512];
+        int off = snprintf(line, sizeof(line),
+            "[eaw-mt] STALL-SAMPLE #%d elapsed=%ums rip_rva=0x%llx callers=",
+            samples_this_stall, (unsigned)elapsed,
+            (unsigned long long)(rip - img_base));
+        int shown = 0;
+        for (int k = 0; k < nstk && shown < 8 && off < (int)sizeof(line) - 16; k++) {
+            uint64_t v = stack[k];
+            if (v > img_base && v < img_base + 0x1000000ULL) {  /* ~16MB .text window */
+                off += snprintf(line + off, sizeof(line) - off, "%s0x%llx",
+                                shown ? "," : "",
+                                (unsigned long long)(v - img_base));
+                shown++;
+            }
+        }
+        off += snprintf(line + off, sizeof(line) - off, "\n");
+        log_write(line);
+        samples_this_stall++;
     }
 }
 
@@ -1905,6 +2236,12 @@ static void pumpe_hook(int64_t a)
     static LONG g_pumpe_once = 0;
     if (InterlockedCompareExchange(&g_pumpe_once, 1, 0) == 0) {
         log_write("[eaw-mt] DBG: pumpe_hook first call\n");
+        /* Open a real handle to this (the main/battle-loop) thread so the watchdog
+         * can suspend+sample it during a stall. pumpe_hook always runs on main. */
+        g_main_thread_h = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME,
+                                     FALSE, GetCurrentThreadId());
+        if (!g_main_thread_h)
+            log_write("[eaw-mt] WARN: OpenThread(main) failed — stall sampler disabled\n");
         /* Create watchdog thread here, not in DllMain: CreateThread inside
          * DllMain holds the loader lock and can deadlock Wine's DLL loader. */
         HANDLE wdh = CreateThread(NULL, 0, pump_watchdog_thread, NULL, 0, NULL);
@@ -1971,12 +2308,44 @@ static void pumpe_hook(int64_t a)
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
 
-    g_wd_deadline = real_timeGetTime() + PUMP_DEADLINE_MS;
+    g_wd_pump_start = real_timeGetTime();
+    g_wd_deadline   = g_wd_pump_start + PUMP_DEADLINE_MS;
     InterlockedExchange(&g_wd_armed, 1);
+
+    /* Step 35 open-storm profiler: reset (O(1) gen bump) and activate for this pump. */
+    g_open_gen++;
+    g_open_n = g_open_fail = g_open_unique = g_open_repeat = 0;
+    g_open_sum_ms = g_open_max_ms = 0.0;
+    g_open_sample_n = 0;
+    g_open_fail_sample_n = 0;
+    g_fscache_hits = 0;
+    g_open_profile_active = 1;
 
     g_pumpe_orig(a);
 
+    g_open_profile_active = 0;
     InterlockedExchange(&g_wd_armed, 0);
+
+    /* If this pump was a stall, dump the open-storm characterization. */
+    /* OPEN-STORM dump uses a lower threshold than the RIP sampler: it only reads
+     * counters (no thread suspend), so it can cheaply capture sub-stall pumps —
+     * e.g. the ~1s residual after the fscache fix. */
+    if ((real_timeGetTime() - g_wd_pump_start) >= 300 && g_open_n > 0) {
+        char hdr[256];
+        snprintf(hdr, sizeof(hdr),
+            "[eaw-mt] OPEN-STORM opens=%ld fail=%ld(%.0f%%) unique=%ld repeat=%ld"
+            " fscache_hits=%ld open_sum_ms=%.0f open_max_ms=%.1f\n",
+            g_open_n, g_open_fail,
+            g_open_n ? (100.0 * (double)g_open_fail / (double)g_open_n) : 0.0,
+            g_open_unique, g_open_repeat, g_fscache_hits, g_open_sum_ms, g_open_max_ms);
+        log_write(hdr);
+        for (int k = 0; k < g_open_fail_sample_n; k++) {
+            char ln[MAX_PATH + 48];
+            snprintf(ln, sizeof(ln), "[eaw-mt] OPEN-STORM miss[%d]=%s\n",
+                     k, g_open_fail_sample[k]);
+            log_write(ln);
+        }
+    }
 
     tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);

@@ -1,6 +1,6 @@
 # AI Subsystem (Lua Coroutine Engine)
 
-**Status:** Phase 5 Step 35 — prewarm DISABLED by default; confirmed cause of progressive battle-re-entry crashes.
+**Status:** Phase 5 Step 35 — prewarm disabled (crash fix); first-encounter stall = NtCreateFile, fixed with fscache negative dir cache (~13.7s→~1-2s).
 **Last verified:** 2026-05-29
 
 ---
@@ -406,3 +406,32 @@ triggered from Lua, not the Lua execution itself. Target: trigger those asset lo
 without resuming the coroutine through the shared `global_State`. Fallback: accept the stall
 (prewarm-off is the stable baseline). Remove `PREWARM-SURVEY`/`UAF-DETECT`/`EAW_PREWARM`
 scaffolding once the direction is locked.
+
+### Stall profiled — it is `NtCreateFile`, fixed with a negative directory cache
+
+A sampling profiler (`pump_watchdog_thread` suspends the main thread on pumps >1.5s and
+logs `STALL-SAMPLE rip_rva + stack`) showed **119/124 samples in Wine `ntdll.dll` at the
+`ret` after the `syscall` in `NtCreateFile`** (ntdll ImageBase `0x170000000`, `NtCreateFile`
+`0x17000e950`). So the first-encounter stall is **file-open syscalls**, not GPU/heap/Lua.
+
+An open-storm profiler (`OPEN-STORM` log, characterizes opens during a stalled pump) found:
+`opens=5193 fail=4960(96%) unique=4858 open_sum_ms=13099 open_max_ms=4.0`. The engine probes
+loose `.ALO`/`.DDS`/`.ALA` assets that live in MEG archives; each missing-file `CreateFile`
+costs ~2.5ms under Wine. 96% fail → ~13s of pure "file not found".
+
+**Fix (`fscache`, winmm_proxy.c):** lazy negative directory index in `createfileA/W_hook`.
+On a read-open of a path under a `Data\` root (or a bare asset-extension filename), enumerate
+the directory once (`FindFirstFile`) and cache the lowercased filename set; subsequent opens of
+files absent from the set return `FILE_NOT_FOUND` instantly, skipping `NtCreateFile`. Safe: hash
+collisions yield only false-*present* (harmless fall-through), never false-*absent*; dirs that
+fail to enumerate are never short-circuited; scoped to read-only `OPEN_EXISTING`. Kill switch
+`EAW_NO_FSCACHE=1`. Result: worst pump ~13.7s → ~1–2s (warm OS cache). Rendering verified
+unchanged (the Hapan-model corruption is the pre-existing DXVK issue, reproduced with fscache
+off).
+
+**Remaining (cold cache):** ~30–50% of probes still fall through — `.ALA` animations probed via
+a *relative* `Data\Art\Models\…` (resolves against a CWD where that dir doesn't exist) and an
+*absolute* `…GameData\\Data\…` form (doubled backslash). Their directory string doesn't
+enumerate → unindexable → fall through. On a truly cold cache these still cost ~2.5ms each.
+Planned enhancement: key the index by canonical `Data\…` suffix and enumerate the known real
+roots (mod dir + `GameData`), catching all path spellings.
