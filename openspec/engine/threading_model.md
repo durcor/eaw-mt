@@ -1,6 +1,6 @@
 # Threading Model
 
-**Status:** Phase 5 — Model A (render thread) shipped; Model B (Lua pump offload) scoped, NOT recommended as-is (see Phase 5 scoping section).
+**Status:** Phase 5 — Model A (render) shipped; Models B (AI) & C (movement) scoped & ruled out (pervasive shared state). Sim-side CPU parallelism beyond render not viable; multithreading-for-perf goal CLOSED.
 **Last verified:** 2026-05-29
 
 ---
@@ -162,6 +162,48 @@ the per-gsvc budget + fscache. The single dispatcher (`FUN_14024a8a0`) is noted 
 choke point should this ever be revisited, but the cost/benefit is firmly negative now.
 Recommend pursuing multithreading (if at all) in a subsystem with a cleaner conflict surface,
 or treating the AI-threading goal as closed.
+
+---
+
+## Phase 5 — Model C (Movement / per-component path-following) Scoping (2026-05-29)
+
+The fast-forward choppiness is the movement service tick: `gsvc(28d400)` avg ~21ms, dominated by
+`FUN_140387400` (path-following) called ~2,147×/tick (N entities × ~55 components). Per-call cost
+is now low (Source-B asset stall fixed), so it's pure *volume* — the one apparent
+parallelization candidate (a per-component fork-join, blueprint Model C).
+
+### Scoped (decompiled `FUN_140387400` + its work-path callees) — NOT cleanly viable
+`FUN_140387400`'s prologue is a long guard chain (component-local reads → early return), but the
+portion that **passes the guards and does work** is interleaved with cross-object and global
+writes, confirmed by decompile:
+- **`FUN_1403846c0` (release previous target)** writes the *target entity's* `+0x38`
+  listener/subscription list via `FUN_140220eb0(ctx, target+0x38, component, …)` — a
+  **cross-entity** write (one component mutates another entity's state).
+- **`FUN_1402d5290` (event dispatch)** → `FUN_1402d72c0(&DAT_140b27e60, …)` — a **global**
+  event/timer-queue write.
+- **`FUN_1403825b0`** deep path (the ~1.3%) creates movement orders — heavy shared writes
+  (alloc + target acquisition across entities).
+
+So component-level (and even entity-level) parallelism races on cross-entity target listener
+lists and global queues. The parallel-safe part (the guard/early-return bulk) cannot be isolated
+from the shared-write part because they are interleaved inside one game-binary function we cannot
+refactor. Locking the shared callees would serialize the work and add per-call overhead, negating
+the gain.
+
+**Verdict:** Model C is not cleanly viable either — same root obstacle as Model B: EaW's
+simulation has pervasive cross-object shared mutable state threaded through the per-entity /
+per-component logic.
+
+## Overall threading conclusion (2026-05-29)
+
+After scoping all candidates: **Model A (render thread) is the only viable split** — it works
+precisely because the renderer is a one-way consumer of a task list. Model B (AI) and Model C
+(movement) are both intractable: the simulation mutates shared cross-object state (global_State,
+entity target/listener lists, global event queues) pervasively and interleaved, with no clean
+compute/apply boundary we can exploit without engine source. **Sim-side CPU parallelism beyond
+the render thread is not viable here.** The realized performance wins on this title are the
+render-thread split plus I/O/algorithmic caching (fscache, MEG index, nf_cache, b25ec10 result
+cache) — not additional worker threads. Treat the multithreading-for-sim-perf goal as closed.
 
 ---
 
