@@ -1997,17 +1997,6 @@ static volatile DWORD g_hook_deadline_ms = 0;
 static volatile int64_t g_deferred_ai_mgr = 0;
 static volatile int64_t g_prewarm_lua_state = 0; /* lua_state of last prewarm'd entity */
 
-/* Step 35 INSTRUMENTATION (temporary — remove after diagnosis):
- * Snapshot of the real coroutine lua_State of the last prewarm'd entity, used to
- * confirm/timestamp the use-after-free (UAF) of the prewarmed coroutine.
- *   g_pw_realL    = *(ctx+0x58) — the real lua_State* passed to FUN_140246fb0.
- *   g_pw_realL_lG = L->l_G snapshot at end of prewarm (valid global_State*).
- * pumpe_hook polls L->l_G each call; if it diverges from the snapshot, the block
- * was overwritten/freed-and-reused → logs once per prewarm. */
-static volatile int64_t g_pw_realL      = 0;
-static volatile int64_t g_pw_realL_lG   = 0;
-static volatile LONG    g_pw_uaf_logged = 0;
-
 static void prewarm_from_ai_manager(int64_t); /* forward decl — defined below */
 
 /* VEH / prewarm SEH-recovery globals — declared here so prewarm_from_ai_manager
@@ -2263,37 +2252,6 @@ static void pumpe_hook(int64_t a)
         sprintf(_tr, "[eaw-mt] DBG: pumpe_hook post-prewarm rem=%ld a=0x%llx\n",
                 (long)rem, (unsigned long long)a);
         log_write(_tr);
-    }
-
-    /* Step 35 INSTRUMENTATION (temporary — remove after diagnosis):
-     * Poll the prewarmed coroutine's l_G slot. If it diverges from the snapshot
-     * taken at end of prewarm, the lua_State block was overwritten (UAF / freed
-     * and reused). Log once per prewarm with the coroutine header bytes so we can
-     * tell "still a live thread (tt=8)" from "reused as some other allocation". */
-    {
-        int64_t rl = g_pw_realL;
-        if (rl && InterlockedCompareExchange(&g_pw_uaf_logged, 0, 0) == 0) {
-            int64_t cur_lG = *(int64_t *)(rl + 0x20);
-            if (cur_lG != g_pw_realL_lG) {
-                if (InterlockedCompareExchange(&g_pw_uaf_logged, 1, 0) == 0) {
-                    uint8_t  tt     = *(uint8_t *)(rl + 0x08);
-                    uint8_t  marked = *(uint8_t *)(rl + 0x09);
-                    int64_t  hdr0   = *(int64_t *)(rl + 0x00);
-                    char _uaf[256];
-                    sprintf(_uaf,
-                        "[eaw-mt] UAF-DETECT realL=0x%llx l_G %llx->%llx"
-                        " tt=0x%02x(thread=%d) marked=0x%02x next=0x%llx"
-                        " pumpe_count=%ld a=0x%llx\n",
-                        (unsigned long long)rl,
-                        (unsigned long long)g_pw_realL_lG,
-                        (unsigned long long)cur_lG,
-                        (unsigned)tt, (tt == 8) ? 1 : 0, (unsigned)marked,
-                        (unsigned long long)hdr0,
-                        (long)g_pumpe_count, (unsigned long long)a);
-                    log_write(_uaf);
-                }
-            }
-        }
     }
 
     /* BG dispatch disabled (Step 30): EaW's Lua C closures access shared game
@@ -2753,63 +2711,6 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                             int64_t cur_hm  = buf ? *(int64_t *)(buf + 0x20) : 0;
                             int64_t cur_arr = cur_hm ? *(int64_t *)(cur_hm + 0x00) : 0;
 
-                            /* Step 35 INSTRUMENTATION (temporary — remove after diagnosis):
-                             * Survey the post-pump string-table buckets to quantify the
-                             * 0xffffffffffffffef poison.  This decides whether an in-place
-                             * repair (unlink only sentinel-terminated nodes, keep valid
-                             * TStrings) is tractable vs. the current empty-table reset.
-                             * Conservative: validate each ptr is canonical heap-range before
-                             * deref; bound chain depth.  next is at TString+0x00 (GCObject). */
-                            if (cur_arr && cap > 0 && cap <= 0x10000) {
-                                const uint64_t SENT = 0xffffffffffffffefULL;
-                                #define PW_PLAUS(p) ((uint64_t)(p) > 0x10000ULL && \
-                                                     (uint64_t)(p) < 0x800000000000ULL)
-                                int64_t total_nodes = 0, nonnull_buckets = 0;
-                                int64_t sent_chains = 0, noncanon_chains = 0;
-                                int64_t capped_chains = 0; /* chains hitting depth cap = cycle suspects */
-                                int     max_depth = 0;
-                                const int DEPTH_CAP = 8192; /* > cap(4096): a chain this long = cycle */
-                                int64_t first_sent_bucket = -1, first_sent_node = 0;
-                                for (int32_t bi = 0; bi < cap; bi++) {
-                                    int64_t cur = *(int64_t *)(cur_arr + (int64_t)bi * 8);
-                                    if (!cur) continue;
-                                    nonnull_buckets++;
-                                    int depth = 0;
-                                    while (PW_PLAUS(cur) && depth < DEPTH_CAP) {
-                                        int64_t next = *(int64_t *)(cur + 0x00);
-                                        total_nodes++;
-                                        depth++;
-                                        if ((uint64_t)next == SENT) {
-                                            sent_chains++;
-                                            if (first_sent_bucket < 0) {
-                                                first_sent_bucket = bi;
-                                                first_sent_node   = cur;
-                                            }
-                                            break;
-                                        }
-                                        if (next == 0) break;
-                                        if (!PW_PLAUS(next)) { noncanon_chains++; break; }
-                                        cur = next;
-                                    }
-                                    if (depth >= DEPTH_CAP) capped_chains++;
-                                    if (depth > max_depth) max_depth = depth;
-                                }
-                                #undef PW_PLAUS
-                                char _ps[320];
-                                sprintf(_ps,
-                                    "[eaw-mt] PREWARM-SURVEY entity %d  cap=%d nonnull_buckets=%lld"
-                                    " total_nodes=%lld sent_chains=%lld noncanon_chains=%lld"
-                                    " capped_chains=%lld max_depth=%d first_sent_bucket=%lld"
-                                    " first_sent_node=0x%llx arr_moved=%d\n",
-                                    count, (int)cap, (long long)nonnull_buckets,
-                                    (long long)total_nodes, (long long)sent_chains,
-                                    (long long)noncanon_chains, (long long)capped_chains,
-                                    max_depth, (long long)first_sent_bucket,
-                                    (unsigned long long)first_sent_node,
-                                    (cur_arr != arr_pre) ? 1 : 0);
-                                log_write(_ps);
-                            }
-
                             /* Check whether arr was reallocated during the pump.
                              *
                              * If cur_arr == arr_pre: arr was NOT moved by GC — it still
@@ -2907,13 +2808,6 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                     if (pumped_ok) {
                         pumped++;
                         g_prewarm_lua_state = lua_state;
-                        /* Step 35 INSTRUMENTATION: snapshot the real coroutine L
-                         * (= *(ctx+0x58) = buf) and its l_G so pumpe_hook can detect
-                         * the block being overwritten/freed-and-reused. Reset the
-                         * one-shot so each battle's prewarm gets a fresh detection. */
-                        g_pw_realL    = buf;
-                        g_pw_realL_lG = buf ? *(int64_t *)(buf + 0x20) : 0;
-                        InterlockedExchange(&g_pw_uaf_logged, 0);
                     }
                 }
             }
