@@ -9,6 +9,8 @@ game-base := env('HOME') + "/gam/steam/steamapps/common/sweaw"
 game-dir  := env('HOME') + "/gam/steam/steamapps/common/sweaw/corruption"
 compat-data := env('HOME') + "/gam/steam/steamapps/compatdata/32470"
 log-file  := env('HOME') + "/gam/steam/steamapps/common/sweaw/corruption/eaw-mt.log"
+# Virtual-desktop resolution for launch-foc-desktop. Override: just desktop-res=2560x1440 launch-foc-desktop
+desktop-res := "1920x1080"
 save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
@@ -61,6 +63,27 @@ launch-foc:
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \
       steam-run {{wine}} \
+      {{game-dir}}/StarWarsG.exe MODPATH=Mods/Imperial_Civil_War \
+    ' \
+  "
+
+# Launch FoC+TR inside a Wine virtual desktop ("eaw" window at {{desktop-res}}).
+# Running under explorer /desktop keeps the game in a contained top-level window that
+# holds focus reliably and believes it is always foreground, so the game no longer
+# pauses/halts when the pointer leaves the window (focus-follows-mouse WMs). Identical
+# env to launch-foc; only difference is the `explorer /desktop=` wrapper before the exe.
+launch-foc-desktop:
+  unshare --mount --map-root-user bash -c " \
+    mount --bind {{justfile_directory()}}/patches/wine/ntdll.so \
+      /nix/store/jckwa9yy4aj2yq6r3c9x4rk0g95cvwm9-source/files/lib/wine/x86_64-unix/ntdll.so && \
+    capsh --inh='' -- -c ' \
+      WINEPREFIX={{compat-data}}/pfx \
+      WINEDLLOVERRIDES=winmm=n,b \
+      SteamAppId=32470 \
+      SteamGameId=32470 \
+      STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \
+      steam-run {{wine}} \
+      explorer /desktop=eaw,{{desktop-res}} \
       {{game-dir}}/StarWarsG.exe MODPATH=Mods/Imperial_Civil_War \
     ' \
   "

@@ -1,7 +1,7 @@
 # AI Subsystem (Lua Coroutine Engine)
 
-**Status:** Phase 5 Step 33 — ALMODEL_NULL_RP VEH guard; prewarm + live-pump safe.
-**Last verified:** 2026-05-25
+**Status:** Phase 5 Step 35 — prewarm DISABLED by default; confirmed cause of progressive battle-re-entry crashes.
+**Last verified:** 2026-05-29
 
 ---
 
@@ -362,3 +362,47 @@ entity re-runs its AI without protection in the live pump).
 - Move Pump_Threads to a background thread kicked from sim_tick
 - Join before WinMain line 584 (command queue)
 - Requires audit of all entity reads inside `lua_resume` call chain for write conflicts with command queue
+
+---
+
+## Step 35 — Prewarm confirmed as cause of progressive battle-re-entry crashes (2026-05-29)
+
+**Conclusion (A/B tested):** The prewarm mechanism is the root cause of the progressive,
+cumulative crashes seen on repeated battle entry. Prewarm is now **disabled by default**
+in `winmm_proxy.c` (`ai_init_prewarm_hook`); set `EAW_PREWARM=1` to opt back in for
+investigation only.
+
+### Evidence
+- Prewarm **ON**: crash at ~5–6 battle entries, *every run*, at varying null-deref sites —
+  `0x7b958d` (string-table), `0x12b6fb` (alHModel back-ref write), `0x20e6da`. Each VEH
+  guard added merely relocated the crash to the next-weakest null pointer.
+- Prewarm **OFF** (`EAW_PREWARM` unset): **10 battle entries, 0 crashes** (game still
+  running). Battle entries counted as menu→battle transitions in the `pumpe(247a90)`
+  per-frame `n=` stats.
+
+### Mechanism
+Prewarm's offset names were misleading. Decoded against Lua 5.1 x64 layout, confirmed by
+the `luaC_checkGC` pattern (`G->totalbytes`/`GCthreshold` at `G+0x70`/`G+0x74`):
+- prewarm `lua_state` (= `*(entity+0x2d8)`) = the **context object** `ctx`
+- prewarm `buf` (= `*(ctx+0x58)`) = the real **`lua_State* L`**
+- prewarm `hm` (= `*(L+0x20)`) = **`L->l_G`**, the **shared `global_State`** — NOT per-entity
+- prewarm `arr`/`cap` (= `hm+0x00`/`hm+0x0c`) = the global string table `strt.hash`/`strt.size`
+
+So the post-pump "reset" (calloc fresh empty arr + `strt.nuse=0`) **empties the shared VM
+string table**, orphaning every live `TString`; a later un-patched `luaC_step` then frees a
+still-referenced coroutine `lua_State`, and the freed block is recycled into a path string —
+hence `L->l_G` reading as UTF-16 text (`0x0073005c006d0061`) at the `0x7b958d` crash.
+
+### Survey instrumentation (temporary — `PREWARM-SURVEY`, `UAF-DETECT` in winmm_proxy.c)
+- **No `0xffffffffffffffef` poison** in the post-pump table across 6/6 battles
+  (`sent_chains=0`). The reset's stated premise (Pump_Threads poisons the table with
+  freed-slot sentinels) is **false** in the current build.
+- The table DOES carry 2 runaway/cyclic chains (`capped_chains=2`, `total_nodes` 3913→19785
+  at depth-cap 8192), present from the very first prewarm survey.
+
+### Next: corruption-free re-implementation (option 2)
+The ~33s first-encounter stall (the reason prewarm exists) is **C-side asset/model loading**
+triggered from Lua, not the Lua execution itself. Target: trigger those asset loads directly
+without resuming the coroutine through the shared `global_State`. Fallback: accept the stall
+(prewarm-off is the stable baseline). Remove `PREWARM-SURVEY`/`UAF-DETECT`/`EAW_PREWARM`
+scaffolding once the direction is locked.

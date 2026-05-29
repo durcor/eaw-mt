@@ -1712,6 +1712,18 @@ static volatile DWORD g_hook_deadline_ms = 0;
  * pumpe_hook once g_pumpe_count > 0 (battle game loop running, Lua AI safe). */
 static volatile int64_t g_deferred_ai_mgr = 0;
 static volatile int64_t g_prewarm_lua_state = 0; /* lua_state of last prewarm'd entity */
+
+/* Step 35 INSTRUMENTATION (temporary — remove after diagnosis):
+ * Snapshot of the real coroutine lua_State of the last prewarm'd entity, used to
+ * confirm/timestamp the use-after-free (UAF) of the prewarmed coroutine.
+ *   g_pw_realL    = *(ctx+0x58) — the real lua_State* passed to FUN_140246fb0.
+ *   g_pw_realL_lG = L->l_G snapshot at end of prewarm (valid global_State*).
+ * pumpe_hook polls L->l_G each call; if it diverges from the snapshot, the block
+ * was overwritten/freed-and-reused → logs once per prewarm. */
+static volatile int64_t g_pw_realL      = 0;
+static volatile int64_t g_pw_realL_lG   = 0;
+static volatile LONG    g_pw_uaf_logged = 0;
+
 static void prewarm_from_ai_manager(int64_t); /* forward decl — defined below */
 
 /* VEH / prewarm SEH-recovery globals — declared here so prewarm_from_ai_manager
@@ -1910,6 +1922,37 @@ static void pumpe_hook(int64_t a)
         log_write(_tr);
     }
 
+    /* Step 35 INSTRUMENTATION (temporary — remove after diagnosis):
+     * Poll the prewarmed coroutine's l_G slot. If it diverges from the snapshot
+     * taken at end of prewarm, the lua_State block was overwritten (UAF / freed
+     * and reused). Log once per prewarm with the coroutine header bytes so we can
+     * tell "still a live thread (tt=8)" from "reused as some other allocation". */
+    {
+        int64_t rl = g_pw_realL;
+        if (rl && InterlockedCompareExchange(&g_pw_uaf_logged, 0, 0) == 0) {
+            int64_t cur_lG = *(int64_t *)(rl + 0x20);
+            if (cur_lG != g_pw_realL_lG) {
+                if (InterlockedCompareExchange(&g_pw_uaf_logged, 1, 0) == 0) {
+                    uint8_t  tt     = *(uint8_t *)(rl + 0x08);
+                    uint8_t  marked = *(uint8_t *)(rl + 0x09);
+                    int64_t  hdr0   = *(int64_t *)(rl + 0x00);
+                    char _uaf[256];
+                    sprintf(_uaf,
+                        "[eaw-mt] UAF-DETECT realL=0x%llx l_G %llx->%llx"
+                        " tt=0x%02x(thread=%d) marked=0x%02x next=0x%llx"
+                        " pumpe_count=%ld a=0x%llx\n",
+                        (unsigned long long)rl,
+                        (unsigned long long)g_pw_realL_lG,
+                        (unsigned long long)cur_lG,
+                        (unsigned)tt, (tt == 8) ? 1 : 0, (unsigned)marked,
+                        (unsigned long long)hdr0,
+                        (long)g_pumpe_count, (unsigned long long)a);
+                    log_write(_uaf);
+                }
+            }
+        }
+    }
+
     /* BG dispatch disabled (Step 30): EaW's Lua C closures access shared game
      * state (entity lists, resource counts, vtable objects).  Running lua_resume
      * on a background thread while the main thread reads the same state causes
@@ -2060,6 +2103,15 @@ static BOOL install_pumpe_hook(void)
  * because an uninitialized dest slot (also 0) passes the CMP/JZ immediately. */
 #define ALMODEL_NULL_RP_RVA  0x12b6bfULL  /* MOV RAX,[RCX] — render-pass +8 null guard */
 #define ALMODEL_NULL_RP_SKIP 6            /* skip MOV(3) + CALL(3) */
+/* Step 35: second null render-pass site in the SAME ctor, different loop.
+ * At rva=0x12b6fb: MOV [RCX+0xb0], R14 — writes the model back-ref (param_1) into
+ * each render-pass element from the [R15] array.  When an element slot is null
+ * (RCX=0) the store faults av_write @0xb0.  Recovery: skip the 7-byte store; the
+ * (nonexistent) null element simply doesn't get the back-ref and the loop's INC
+ * ESI / next-iteration logic at 0x12b702 continues normally.  Confirmed crash on
+ * 6th battle entry 2026-05-29 (RCX=0, R14=0x4b730c20 back-ref). */
+#define ALMODEL_NULL_RP2_RVA  0x12b6fbULL /* MOV [RCX+0xb0],R14 — render-pass back-ref null guard */
+#define ALMODEL_NULL_RP2_SKIP 7           /* skip the 7-byte REX.WR MOV [RCX+disp32],R14 */
 
 typedef void (*AiInitFn)(int64_t);
 static AiInitFn  g_ai_init_orig      = NULL;
@@ -2325,6 +2377,64 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                         if (pumped_ok) {
                             int64_t cur_hm  = buf ? *(int64_t *)(buf + 0x20) : 0;
                             int64_t cur_arr = cur_hm ? *(int64_t *)(cur_hm + 0x00) : 0;
+
+                            /* Step 35 INSTRUMENTATION (temporary — remove after diagnosis):
+                             * Survey the post-pump string-table buckets to quantify the
+                             * 0xffffffffffffffef poison.  This decides whether an in-place
+                             * repair (unlink only sentinel-terminated nodes, keep valid
+                             * TStrings) is tractable vs. the current empty-table reset.
+                             * Conservative: validate each ptr is canonical heap-range before
+                             * deref; bound chain depth.  next is at TString+0x00 (GCObject). */
+                            if (cur_arr && cap > 0 && cap <= 0x10000) {
+                                const uint64_t SENT = 0xffffffffffffffefULL;
+                                #define PW_PLAUS(p) ((uint64_t)(p) > 0x10000ULL && \
+                                                     (uint64_t)(p) < 0x800000000000ULL)
+                                int64_t total_nodes = 0, nonnull_buckets = 0;
+                                int64_t sent_chains = 0, noncanon_chains = 0;
+                                int64_t capped_chains = 0; /* chains hitting depth cap = cycle suspects */
+                                int     max_depth = 0;
+                                const int DEPTH_CAP = 8192; /* > cap(4096): a chain this long = cycle */
+                                int64_t first_sent_bucket = -1, first_sent_node = 0;
+                                for (int32_t bi = 0; bi < cap; bi++) {
+                                    int64_t cur = *(int64_t *)(cur_arr + (int64_t)bi * 8);
+                                    if (!cur) continue;
+                                    nonnull_buckets++;
+                                    int depth = 0;
+                                    while (PW_PLAUS(cur) && depth < DEPTH_CAP) {
+                                        int64_t next = *(int64_t *)(cur + 0x00);
+                                        total_nodes++;
+                                        depth++;
+                                        if ((uint64_t)next == SENT) {
+                                            sent_chains++;
+                                            if (first_sent_bucket < 0) {
+                                                first_sent_bucket = bi;
+                                                first_sent_node   = cur;
+                                            }
+                                            break;
+                                        }
+                                        if (next == 0) break;
+                                        if (!PW_PLAUS(next)) { noncanon_chains++; break; }
+                                        cur = next;
+                                    }
+                                    if (depth >= DEPTH_CAP) capped_chains++;
+                                    if (depth > max_depth) max_depth = depth;
+                                }
+                                #undef PW_PLAUS
+                                char _ps[320];
+                                sprintf(_ps,
+                                    "[eaw-mt] PREWARM-SURVEY entity %d  cap=%d nonnull_buckets=%lld"
+                                    " total_nodes=%lld sent_chains=%lld noncanon_chains=%lld"
+                                    " capped_chains=%lld max_depth=%d first_sent_bucket=%lld"
+                                    " first_sent_node=0x%llx arr_moved=%d\n",
+                                    count, (int)cap, (long long)nonnull_buckets,
+                                    (long long)total_nodes, (long long)sent_chains,
+                                    (long long)noncanon_chains, (long long)capped_chains,
+                                    max_depth, (long long)first_sent_bucket,
+                                    (unsigned long long)first_sent_node,
+                                    (cur_arr != arr_pre) ? 1 : 0);
+                                log_write(_ps);
+                            }
+
                             /* Check whether arr was reallocated during the pump.
                              *
                              * If cur_arr == arr_pre: arr was NOT moved by GC — it still
@@ -2422,6 +2532,13 @@ static void prewarm_from_ai_manager(int64_t ai_manager)
                     if (pumped_ok) {
                         pumped++;
                         g_prewarm_lua_state = lua_state;
+                        /* Step 35 INSTRUMENTATION: snapshot the real coroutine L
+                         * (= *(ctx+0x58) = buf) and its l_G so pumpe_hook can detect
+                         * the block being overwritten/freed-and-reused. Reset the
+                         * one-shot so each battle's prewarm gets a fresh detection. */
+                        g_pw_realL    = buf;
+                        g_pw_realL_lG = buf ? *(int64_t *)(buf + 0x20) : 0;
+                        InterlockedExchange(&g_pw_uaf_logged, 0);
                     }
                 }
             }
@@ -2493,7 +2610,24 @@ static void ai_init_prewarm_hook(int64_t ai_manager)
      * that occurred when prewarm ran from pumpe_hook (game-loop context).
      * Skip on first load (pumpe_count=0) — no prior battle to warm from. */
     g_deferred_ai_mgr = 0;
-    if (g_pumpe_count > 0) {
+
+    /* Step 35: prewarm is DISABLED BY DEFAULT. A/B testing (2026-05-29) confirmed
+     * prewarm is the cause of the progressive battle-re-entry crashes: it pumps Lua
+     * coroutines through the SHARED global_State and hack-restores the string table
+     * / GC counters, leaving cumulative corruption that surfaces as null-deref
+     * crashes (0x7b958d, 0x12b6fb, 0x20e6da) after ~5-6 battle entries. With prewarm
+     * off the game ran 10+ entries with zero crashes. Opt back in with EAW_PREWARM=1
+     * (experimental — only for investigating a corruption-free re-implementation). */
+    static int s_prewarm_on = -1;
+    if (s_prewarm_on < 0) {
+        const char *e = getenv("EAW_PREWARM");
+        s_prewarm_on = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(s_prewarm_on
+            ? "[eaw-mt] PREWARM: ENABLED via EAW_PREWARM (experimental — corrupts global_State over battle re-entries)\n"
+            : "[eaw-mt] PREWARM: disabled by default (set EAW_PREWARM=1 to re-enable)\n");
+    }
+
+    if (s_prewarm_on && g_pumpe_count > 0) {
         log_write("[eaw-mt] PREWARM: firing in ai_init_hook (loading, post-ai-init)\n");
         prewarm_from_ai_manager(ai_manager);
         InterlockedExchange(&g_post_prewarm_log, 10);
@@ -5454,6 +5588,28 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
             char s[96];
             snprintf(s, sizeof(s),
                 "[eaw-mt] ALMODEL_NULL_RP #%ld prewarm=%d -> null slot\n",
+                (long)n, (int)g_in_prewarm_pumpe);
+            if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+
+    /* Step 35: alHModel ctor null render-pass back-ref guard (rva=0x12b6fb).
+     * Different loop than ALMODEL_NULL_RP: MOV [RCX+0xb0],R14 with RCX=null →
+     * av_write at fault_addr 0xb0.  Skip the 7-byte store and continue the loop. */
+    if (code == EXCEPTION_ACCESS_VIOLATION &&
+        ep->ExceptionRecord->NumberParameters >= 2 &&
+        ep->ExceptionRecord->ExceptionInformation[0] == 1 /* write */ &&
+        ep->ExceptionRecord->ExceptionInformation[1] == 0xb0 /* RCX+0xb0, RCX=null */) {
+        uint64_t img_base_rp2 = (uint64_t)GetModuleHandleA(NULL);
+        uint64_t rip_rp2      = (uint64_t)ep->ContextRecord->Rip;
+        if (img_base_rp2 && rip_rp2 == img_base_rp2 + ALMODEL_NULL_RP2_RVA) {
+            ep->ContextRecord->Rip += ALMODEL_NULL_RP2_SKIP;
+            static volatile LONG g_almodel_rp2_suppressed = 0;
+            LONG n = InterlockedIncrement(&g_almodel_rp2_suppressed);
+            char s[96];
+            snprintf(s, sizeof(s),
+                "[eaw-mt] ALMODEL_NULL_RP2 #%ld prewarm=%d -> skip back-ref\n",
                 (long)n, (int)g_in_prewarm_pumpe);
             if (g_log_fp) { fputs(s, g_log_fp); fflush(g_log_fp); }
             return EXCEPTION_CONTINUE_EXECUTION;
