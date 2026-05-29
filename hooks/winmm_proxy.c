@@ -559,7 +559,7 @@ static ReadFile_t    real_ReadFile_fn    = NULL;
 #define FS_MAX_FILES   20000          /* >this in one dir → unindexable (fall through) */
 typedef struct {
     char      dir[MAX_PATH];          /* normalized: lowercased, '\'-separated, no trailing sep */
-    int       status;                 /* 0=unused, 1=indexed, 2=unindexable */
+    int       status;                 /* 0=unused, 1=indexed, 2=unindexable, 3=nonexistent(all-absent) */
     uint32_t *set;                    /* FS_SET_SLOTS hashes, 0=empty slot */
     int       nfiles;
 } fs_dir_t;
@@ -568,17 +568,20 @@ static int           g_fs_ndirs        = 0;
 static int           g_fscache_enabled = -1;   /* -1=uninit, 0/1 resolved from env */
 static long          g_fscache_hits    = 0;    /* opens short-circuited as absent */
 
-/* lowercase + '/'→'\' into dst (bounded). */
+/* lowercase + '/'→'\' + collapse duplicate separators, into dst (bounded).
+ * Collapsing handles probe paths like "...GameData\\Data\..." (doubled backslash)
+ * that would otherwise break FindFirstFile and dir-cache keying. */
 static void fs_norm(char *dst, size_t cap, const char *src)
 {
-    size_t i = 0;
-    for (; src[i] && i + 1 < cap; i++) {
+    size_t i = 0, j = 0;
+    for (; src[i] && j + 1 < cap; i++) {
         char c = src[i];
         if (c == '/') c = '\\';
         else if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        dst[i] = c;
+        if (c == '\\' && j > 0 && dst[j - 1] == '\\') continue;  /* collapse run */
+        dst[j++] = c;
     }
-    dst[i] = '\0';
+    dst[j] = '\0';
 }
 static uint32_t fs_hash(const char *s)   /* djb2 over already-lowercased string */
 {
@@ -603,15 +606,22 @@ static int fs_is_read_open(DWORD dwAccess, DWORD dwCreate)
     if (dwAccess & GENERIC_WRITE) return 0;
     return dwCreate == OPEN_EXISTING;
 }
-/* Enumerate `orig_dir` (real case preserved for FS access) into a fresh set. */
-static void fs_index_dir(fs_dir_t *d, const char *orig_dir)
+/* Enumerate `dir` (normalized, lowercase — Wine resolves case-insensitively)
+ * into a fresh filename set. A directory that does not exist is recorded as
+ * status=3 (all-absent): every file under a missing dir is provably absent. */
+static void fs_index_dir(fs_dir_t *d, const char *dir)
 {
     char pattern[MAX_PATH];
-    snprintf(pattern, sizeof(pattern), "%s\\*",
-             (orig_dir[0] ? orig_dir : "."));
+    snprintf(pattern, sizeof(pattern), "%s\\*", (dir[0] ? dir : "."));
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) { d->status = 2; return; }  /* unindexable */
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        /* dir missing or empty → nothing can be opened from it → all-absent */
+        d->status = (e == ERROR_PATH_NOT_FOUND || e == ERROR_FILE_NOT_FOUND ||
+                     e == ERROR_NO_MORE_FILES) ? 3 : 2;
+        return;
+    }
     uint32_t *set = (uint32_t *)calloc(FS_SET_SLOTS, sizeof(uint32_t));
     if (!set) { FindClose(h); d->status = 2; return; }
     int nfiles = 0, overflow = 0;
@@ -673,13 +683,9 @@ static int fs_absent(const char *path)
         d = &g_fs_dirs[g_fs_ndirs++];
         snprintf(d->dir, sizeof(d->dir), "%s", dirbuf);
         d->status = 0; d->set = NULL; d->nfiles = 0;
-        /* enumerate using the original (real-case) dir slice of `path` */
-        char orig_dir[MAX_PATH];
-        size_t dl = sep ? (size_t)(sep - norm) : 0;
-        if (dl >= sizeof(orig_dir)) dl = sizeof(orig_dir) - 1;
-        memcpy(orig_dir, path, dl); orig_dir[dl] = '\0';
-        fs_index_dir(d, orig_dir);
+        fs_index_dir(d, dirbuf);           /* dirbuf is normalized; Wine is case-insensitive */
     }
+    if (d->status == 3) return 1;          /* directory doesn't exist → file is absent */
     if (d->status != 1) return 0;          /* unindexable → fall through */
     uint32_t hsh = fs_hash(filebuf);
     uint32_t slot = hsh & (FS_SET_SLOTS - 1);

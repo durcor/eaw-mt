@@ -429,9 +429,13 @@ fail to enumerate are never short-circuited; scoped to read-only `OPEN_EXISTING`
 unchanged (the Hapan-model corruption is the pre-existing DXVK issue, reproduced with fscache
 off).
 
-**Remaining (cold cache):** ~30–50% of probes still fall through — `.ALA` animations probed via
-a *relative* `Data\Art\Models\…` (resolves against a CWD where that dir doesn't exist) and an
-*absolute* `…GameData\\Data\…` form (doubled backslash). Their directory string doesn't
-enumerate → unindexable → fall through. On a truly cold cache these still cost ~2.5ms each.
-Planned enhancement: key the index by canonical `Data\…` suffix and enumerate the known real
-roots (mod dir + `GameData`), catching all path spellings.
+**Cold-cache enhancement (done):** the misses were `.ALA` animations probed via a *relative*
+`Data\Art\Models\…` (resolves to a game-dir path that doesn't exist) and an *absolute*
+`…GameData\\Data\…` form (doubled backslash). Two fixes: (1) `fs_norm` now collapses duplicate
+separators so doubled-backslash paths enumerate/key correctly; (2) a directory that does not
+exist (`FindFirstFile` → `ERROR_PATH_NOT_FOUND`) is recorded `status=3` and treated as
+**all-absent** — a file under a missing dir is provably absent, so every open to it is
+short-circuited. Result: 4803/4960 failed opens short-circuited (97%, was ~1644), `open_sum_ms`
+13099→255. Since those 4803 cost ~2.5ms each cold, the cold first-launch stall is also largely
+eliminated. Remaining ~157 misses are `.lua`/`.lc` scripts and bare effect names (few, mostly
+real files) — not pursued.
