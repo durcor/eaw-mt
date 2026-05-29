@@ -436,6 +436,15 @@ separators so doubled-backslash paths enumerate/key correctly; (2) a directory t
 exist (`FindFirstFile` → `ERROR_PATH_NOT_FOUND`) is recorded `status=3` and treated as
 **all-absent** — a file under a missing dir is provably absent, so every open to it is
 short-circuited. Result: 4803/4960 failed opens short-circuited (97%, was ~1644), `open_sum_ms`
-13099→255. Since those 4803 cost ~2.5ms each cold, the cold first-launch stall is also largely
-eliminated. Remaining ~157 misses are `.lua`/`.lc` scripts and bare effect names (few, mostly
+13099→255. Remaining ~157 misses are `.lua`/`.lc` scripts and bare effect names (few, mostly
 real files) — not pursued.
+
+**Cold-cache A/B verified (2026-05-29, `tools/drop_caches.sh` to drop OS dentry/page cache):**
+| cold + fscache | worst first pump | time in opens | short-circuited |
+|---|---|---|---|
+| OFF | 13,928 ms | 13,108 ms | 0/4960 |
+| ON  |  1,104 ms |    288 ms | 4803/4960 |
+
+So even cold, fscache cuts the first-encounter stall ~14s→~1.1s (12.6×). The ~1.1s residual is
+genuine first-load asset work (MEG reads, model/texture decode), not probe time (opens are only
+288ms of it).
