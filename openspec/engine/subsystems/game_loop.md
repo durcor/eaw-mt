@@ -1227,6 +1227,33 @@ volume: `gsvc(28d400)` avg ~21ms (max 44–77ms), dominated by `b387400` (path-f
 render frame, so the ~21ms tick compounds. Source B's asset stall is fixed; fast-forward
 smoothness is a separate movement-tick-volume problem — next investigation target.
 
+### Phase 5 Step 35 — sim-tick scheduler mapped (lever 3 scoping, 2026-05-29)
+
+Traced the full sim-tick scheduling (WinMain `FUN_14005d990` → gsvc):
+- **Sim tick = `DAT_140b0a320`** — a frame counter incremented +1 per loop iteration by
+  `FUN_14027c360` (which also does the once-per-1000ms FPS calc). Read at `0x5f20e` into EBX and
+  passed to `gsvc` as `param_2` (`MOV EDX,EBX` @`0x5f2c8`), then forwarded to the mode service
+  `vtable[0xb0]` and down to per-entity `FUN_1403a6b80(entity, tick)`, which diffs it against
+  `entity+0x60` for delta-ticks. **No game-speed multiplier in the tick** (the `IMUL` at
+  `0x5f227` is a `%100` autosave check).
+- **`DAT_140b0a340`** = ticks-per-second constant (read in ~300 functions; `game_seconds =
+  frame_counter / DAT_140b0a340`).
+- **`DAT_1409cf314`** = fast-forward / run-unlimited flag. Gates the loop idle path
+  (`if (DAT_1409cf314==0) WaitMessage()`, line 831); when set, the loop drops the idle wait and
+  runs flat-out, so the frame counter (= sim tick) advances as fast as the CPU sustains.
+
+**Mechanism of fast-forward choppiness:** `b387400` rate-limits per component via a countdown
+(`+0x58 -= delta`, early-return until exhausted). Faster tick advance → countdowns exhaust more
+often → more components do full path-following per gsvc → the ~21ms tick → frame drops. So
+fast-forward is **already CPU-bound flat-out**; the choppiness is inherent, not a scheduler
+mis-pacing.
+
+**Lever 3 verdict:** A clean cap point exists (inject a minimum frame interval at the
+`DAT_1409cf314`-gated pacing, lines 831/907), but it is a **tradeoff, not a fix** — it would make
+fast-forward *slower but smoother* rather than faster. Since fast-forward already runs maximally,
+this is a subjective gameplay-feel change. Not a clear win; recommend leaving fast-forward as-is
+unless a capped/smooth fast-forward is explicitly desired.
+
 Behavior after priming:
 - Each unique ship type pays the 119-probe cost exactly once (~1,060ms, first encounter only)
 - All subsequent movement orders for known ship types: 119 cache hits, 0ms MEG I/O
