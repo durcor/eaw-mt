@@ -1,7 +1,7 @@
 # Threading Model
 
-**Status:** Phase 1.4 complete — OS thread roster fully mapped. Lua confirmed as coroutines.
-**Last verified:** 2026-04-19
+**Status:** Phase 5 — Model A (render thread) shipped; Model B (Lua pump offload) scoped, NOT recommended as-is (see Phase 5 scoping section).
+**Last verified:** 2026-05-29
 
 ---
 
@@ -102,6 +102,45 @@ RTTI reveals a **task-based renderer**:
 `MultiLinkedListClass<alRenderTask>` — render tasks are queued in a linked list. The "Flush" task variants suggest a **two-phase render**: accumulate tasks, then flush/submit. This is the insertion point for render thread separation (Model A).
 
 Error string: `render task for %s exceeded the dynamic geometry limits (%d pverts, %d lverts, %d indices)` — confirms tasks carry geometry budgets.
+
+---
+
+## Phase 5 — Model B (Lua Coroutine Pump Offload) Scoping (2026-05-29)
+
+Scope of "offload `Pump_Threads` (`FUN_140247a90`) to a worker thread" given everything Phase 5 learned.
+
+### The two-level AI architecture (why offload is hard)
+Per `game_loop.md`, per-unit AI is split:
+1. **Pump_Threads** (`FUN_140247a90`, via `FUN_140488660::Service`, rate-limited by `ServiceRate`) — advances the high-level Lua AI coroutines. Runs at frame step 1 (mode `vtable[0x158]` → `FUN_14035cc10`).
+2. **Command queue** (`FUN_1403b08c0`, step 6, every frame) — drains queued unit orders; the native execution of what the Lua AI requested.
+
+On the main thread these are **serialized** (pump at step 1, command queue at step 6), so the pump's reads and the command queue's writes never overlap. Offloading the pump breaks that serialization.
+
+### Conflict surface (reads AND writes — larger than the blueprint's original gate)
+The blueprint (Section 6, Model B) flagged one hazard: yield-type-1 (`FUN_140247700` case 1) **reads** the C++ entity hierarchy (`entity->list[4]/[5]`) that the command queue writes. But Phase 5 proved the surface is bigger:
+- **The AI Lua C closures WRITE pervasive shared simulation state during `lua_resume`** — fog-of-war, entity spawns, resource counts, and they touch vtable objects. Direct evidence: prewarm had to **skip** `cap<4096` entities because "their Lua AI issues side-effecting C callbacks (fog-of-war writes, entity spawn, etc.) that modify game state outside the Lua VM; there is no way to undo those" (winmm_proxy.c prewarm skip path). These writes do **not** all funnel through the command queue.
+
+### Empirical result: naive Model B fails (Step 30)
+Dispatching `g_pumpe_orig` to a background worker (`pumpe_bg_worker`, still compiled but disabled) caused **main-thread vtable corruption → crash (`av_read`@heap addr)**: the worker's C-closure reads/writes raced the main thread. Naive offload is ruled out. The blueprint's proposed mitigation (snapshot/read-lock for yield-type-1) is **insufficient** — it addresses reads only, not the pervasive writes.
+
+### Options
+| Option | Idea | Verdict |
+|---|---|---|
+| **B0 naive** | dispatch pump to worker, join next frame | **Ruled out** — Step 30 crash |
+| **B1 global sim lock** | worker holds lock; main acquires before any sim touch | Serializes pump vs all sim → ~no parallelism gain (render is already split by Model A) |
+| **B2 snapshot-and-defer** | worker runs on an immutable sim snapshot; ALL writes captured as deferred ops applied on main thread post-join | The "correct" model, but requires enumerating & redirecting **every** AI C-closure side-effect (large, fragile; engine command queue covers only some) |
+| **B3 partition** | offload only pure-compute coroutines (no C side-effects) | Needs per-coroutine closure analysis; uncertain payoff |
+
+### Motivation has shifted — the original "why" is largely solved
+Model B existed to remove AI-pump frame hitches. Phase 5 removed them by cheaper means: per-gsvc budget (`PUMPE_BUDGET_MS=33`) bounds a pass, steady-state `rv_max≈1ms`, and the first-encounter stall is fixed by `fscache` (~14s→~1.1s). **So Model B no longer fixes a current problem** — its value is now "multithreading headroom for the blueprint's mission," not "fix a hitch."
+
+### Recommendation
+Do **not** start Model B coding now. Either (a) declare the AI-perf objective met by the cheaper budget+fscache approach and pursue multithreading elsewhere (e.g., revisit Model A profiling, or a subsystem with a cleaner conflict surface), or (b) if Model B is pursued for the mission, the **prerequisite** is a complete enumeration of the AI C-closure write set (the deferred-apply surface for B2) — that RE must precede any threading code, with a human-approval gate.
+
+### Open RE questions (prerequisites for any Model B work)
+- Enumerate the C closures reachable from `lua_resume` during a pump and classify each: pure-compute vs. sim-write (and which state each writes).
+- Do any AI writes already go through the command queue (`FUN_1403b08c0`), or are fog/spawn/resource writes all direct? (Determines B2 feasibility.)
+- Is the main-thread pump actually a frame-time bottleneck now (post budget+fscache)? Profile before investing.
 
 ---
 
