@@ -1136,6 +1136,23 @@ has not been probed in the current session. After the first probe run, subsequen
 for the SAME ship type still go through all 119 probes (b142f80 returning 0 each time
 because the assets weren't found) — the function never writes a "not found" cache entry.
 
+#### Phase 5 Step 35 — verified: fscache does NOT cover Source B (2026-05-29)
+
+Checked whether the Step-35 `fscache` (CreateFile negative directory cache, which cured the
+AI/Lua first-encounter `NtCreateFile` stall) also mitigates Source B. It does **not**.
+`Phase5MegProbeMechanism.java` decompiled the entire `FUN_14025ec10`→`b142f80`/`b141f70`
+call tree (173 functions): there is **no `CreateFile`/`ReadFile`/open primitive anywhere** —
+`b141f70` is an **in-memory linear scan of the MEG archive index** (`FUN_1402136f0`), ~9ms ×
+119 probes. (The lone `SetFilePointer`/`WriteFile` is a side branch — the NF-cache file
+persistence.) Because fscache hooks `CreateFileA/W` and Source B issues no such calls, the
+two stalls are unrelated despite both probing `.ALA` names. The `.ALA` opens fscache catches
+come from a *different* (Lua-pump asset) path, not the movement-order path.
+
+Consequence: Source B is **compute** (O(N) index scan × 119), not file I/O and not pathfinding —
+so it is **not a threading target** either. The correct fix is algorithmic: a result cache at
+`b25ec10` (below) and/or an O(1) hashed MEG-index lookup, in the same spirit as fscache but at
+the in-memory index layer.
+
 #### Fix options
 
 **Fix A — Memoize at b25ec10 level (implementable in hook DLL now):**
