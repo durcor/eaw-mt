@@ -1198,6 +1198,35 @@ Cache persists for the lifetime of the process (not reset per 300-frame window).
 
 **W6: b25ec10 max = 0.15ms vs pre-fix ~1,060ms — 7,000× speedup.**
 
+### Phase 5 Step 35 — MEG index repair + b25ec10 result cache (2026-05-29)
+
+Two follow-ups while investigating fast-forward lag:
+
+1. **MEG index (Fix E) was silently broken.** `build_meg_index()` located `Data\*.meg` via
+   `GetCurrentDirectoryA`, but it runs at DLL init *before* the game `chdir`s to `corruption\`,
+   so it indexed **0 files** (`meg_idx files=0 ready=0`) and `b2136f0_hook` never skipped.
+   Fixed: derive the game dir from `GetModuleFileNameA(NULL)` (exe path, timing-independent) +
+   recurse the full `Data\` tree and every `Mods\*\Data` tree for completeness. Now indexes
+   **43 .meg / 36,941 filenames**. Note: at runtime the skip is largely *shadowed* by the
+   nf_cache (which short-circuits at `b141f70` before `b2136f0` is reached), so `skip=0` in
+   practice — the repair is correct but mostly helps the cold first-encounter. Kill switch
+   `EAW_NO_MEGSKIP=1`.
+
+2. **b25ec10 result cache.** nf_cache made each of the 119 probes fast, but the original still
+   ran the 119-iteration filename-building loop (`_splitpath`/`_makepath`/`sprintf`) every
+   slow-path call (~9.6k `b141f70` calls/window). A string-keyed `(path|filter)→result` cache
+   in `b25ec10_hook` skips the whole loop on repeat: `b141f70` 9,681→0, `b25ec10` max 365→~0ms.
+   Correctness: full-string `strcmp` (no hash-collision → wrong object); flush on asset-DB
+   pointer (`DAT_140a62700`) change (battle reload). Models/audio verified intact. Kill switch
+   `EAW_NO_B25CACHE=1`.
+
+**Key finding (verify-don't-assume, again):** neither fix removes the **fast-forward
+choppiness** — that is NOT asset probing. Profiling shows it's the movement/AI service tick
+volume: `gsvc(28d400)` avg ~21ms (max 44–77ms), dominated by `b387400` (path-following) called
+**121k–161k times per window** (~537 calls/frame). At fast-forward the sim runs many ticks per
+render frame, so the ~21ms tick compounds. Source B's asset stall is fixed; fast-forward
+smoothness is a separate movement-tick-volume problem — next investigation target.
+
 Behavior after priming:
 - Each unique ship type pays the 119-probe cost exactly once (~1,060ms, first encounter only)
 - All subsequent movement orders for known ship types: 119 cache hits, 0ms MEG I/O

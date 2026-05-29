@@ -4146,13 +4146,87 @@ static BOOL install_b3a4820_subcallee_hooks(void)
     return (n3729f0 + n3a5840 + n265560) > 0;
 }
 
+static uint32_t djb2(const char *s);  /* defined below (nf_cache section) */
+
 /* FUN_14025ec10 — art-model object lookup by path string.
  * 2 args: (char *path, char *filter) — confirmed by decompile. */
 typedef int64_t (*B25ec10Fn)(int64_t, int64_t);
 static B25ec10Fn g_b25ec10_orig  = NULL;
 static LONG      g_b25ec10_count = 0;
 static double    g_b25ec10_sum_ms = 0, g_b25ec10_max_ms = 0;
+
+/* Result cache (the real Source-B fix). Each call runs a ~119-iteration probe loop
+ * (b141f70 ×~105/call); nf_cache makes each probe fast but the loop itself runs on
+ * every movement order (~9.6k b141f70 calls/window) — the residual lag, worst in
+ * fast-forward. Memoizing the whole result per (path,filter) skips the loop entirely
+ * on repeat. Correctness: store the full key string and strcmp (no hash-collision →
+ * wrong-object risk); flush the whole cache when the asset-DB pointer (DAT_140a62700)
+ * changes (battle reload), so we never hand back a stale/freed registry object.
+ * Negative results (r==0) are cached too — that's the empty-animation lag case.
+ * Kill switch: EAW_NO_B25CACHE=1. */
+#define B25_SLOTS 16384            /* power of 2 */
+#define B25_KEYLEN 160
+static char     g_b25_key[B25_SLOTS][B25_KEYLEN];
+static int64_t  g_b25_result[B25_SLOTS];
+static uint8_t  g_b25_used[B25_SLOTS];
+static int64_t  g_b25_db_seen   = 0;   /* asset-DB ptr the cache is valid for */
+static LONG     g_b25_hits = 0, g_b25_inserts = 0;
+static int      g_b25cache_off  = -1;
+
 static int64_t b25ec10_hook(int64_t a, int64_t b) {
+    if (g_b25cache_off < 0) {
+        const char *e = getenv("EAW_NO_B25CACHE");
+        g_b25cache_off = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_b25cache_off
+            ? "[eaw-mt] B25CACHE: DISABLED via EAW_NO_B25CACHE\n"
+            : "[eaw-mt] B25CACHE: enabled (set EAW_NO_B25CACHE=1 to disable)\n");
+    }
+    const char *path = (const char *)a;
+    const char *filt = (const char *)b;
+
+    /* Build the lookup key "path|filter"; bail to passthrough if too long. */
+    char key[B25_KEYLEN];
+    int usable = 0;
+    if (!g_b25cache_off && path) {
+        int n = snprintf(key, sizeof(key), "%s|%s", path, filt ? filt : "");
+        if (n > 0 && n < (int)sizeof(key)) usable = 1;
+    }
+
+    if (usable) {
+        /* Flush on asset-DB change (battle reload) — cached pointers would be stale. */
+        int64_t db = *(int64_t *)((BYTE *)GetModuleHandleA(NULL) + 0xA62700ULL);
+        if (db != g_b25_db_seen) { memset(g_b25_used, 0, sizeof(g_b25_used)); g_b25_db_seen = db; }
+
+        uint32_t kh = djb2(key);
+        uint32_t slot = kh & (B25_SLOTS - 1);
+        for (int i = 0; i < 24; i++) {
+            uint32_t s = (slot + i) & (B25_SLOTS - 1);
+            if (!g_b25_used[s]) break;
+            if (strcmp(g_b25_key[s], key) == 0) {       /* exact-string hit */
+                InterlockedIncrement(&g_b25_hits);
+                g_b25ec10_count++;
+                return g_b25_result[s];
+            }
+        }
+        /* miss → run the real (slow) lookup once, then insert */
+        LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
+        int64_t r = g_b25ec10_orig(a, b); tgt_fake_qpc(&t1);
+        double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+        g_b25ec10_sum_ms += ms; if (ms > g_b25ec10_max_ms) g_b25ec10_max_ms = ms;
+        g_b25ec10_count++;
+        for (int i = 0; i < 24; i++) {
+            uint32_t s = (slot + i) & (B25_SLOTS - 1);
+            if (!g_b25_used[s] || strcmp(g_b25_key[s], key) == 0) {
+                memcpy(g_b25_key[s], key, sizeof(key));
+                g_b25_result[s] = r; g_b25_used[s] = 1;
+                InterlockedIncrement(&g_b25_inserts);
+                break;
+            }
+        }
+        return r;
+    }
+
+    /* passthrough (cache off / unusable key) */
     LARGE_INTEGER t0, t1; tgt_fake_qpc(&t0);
     int64_t r = g_b25ec10_orig(a, b); tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
@@ -4308,6 +4382,17 @@ static void meg_insert(uint32_t h) {
 }
 
 static BOOL meg_has(const char *path) {
+    /* Kill switch: EAW_NO_MEGSKIP=1 forces meg_has to always allow the real scan,
+     * disabling the index skip (back to pre-Fix-E behavior) without a rebuild. */
+    static int s_megskip_off = -1;
+    if (s_megskip_off < 0) {
+        const char *e = getenv("EAW_NO_MEGSKIP");
+        s_megskip_off = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(s_megskip_off
+            ? "[eaw-mt] MEGSKIP: DISABLED via EAW_NO_MEGSKIP (index skip off)\n"
+            : "[eaw-mt] MEGSKIP: enabled (set EAW_NO_MEGSKIP=1 to disable)\n");
+    }
+    if (s_megskip_off) return TRUE;
     if (!g_meg_ready) return TRUE;  /* index not built yet — allow all */
     /* MEG filenames are stored as "DATA\ART\..." (DATA\ prefix, backslashes, uppercase).
      * Game queries arrive as "data/art/..." (lowercase, forward slashes, same DATA prefix).
@@ -4359,15 +4444,66 @@ static void scan_meg_dir(const char *dir_path, int *meg_count) {
     FindClose(h);
 }
 
+/* Recursively index every *.meg under dir_path. Completeness matters: b2136f0_hook
+ * skips the MEG scan for paths absent from the index, so a MEG the index misses would
+ * cause false-absent (missing asset). The game keeps MEGs at Data\*.meg AND deeper
+ * (e.g. Data\Audio\SFX\*.meg), so a flat scan is not enough. */
+static void scan_meg_tree(const char *dir_path, int *meg_count, int depth) {
+    if (depth > 6) return;
+    scan_meg_dir(dir_path, meg_count);
+    char pattern[MAX_PATH];
+    snprintf(pattern, MAX_PATH, "%s\\*", dir_path);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (fd.cFileName[0] == '.') continue;          /* skip . and .. */
+        char sub[MAX_PATH];
+        snprintf(sub, MAX_PATH, "%s\\%s", dir_path, fd.cFileName);
+        scan_meg_tree(sub, meg_count, depth + 1);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
 static void build_meg_index(void) {
+    /* Derive the game directory from the EXE path, NOT the CWD: build_meg_index runs
+     * at DLL init, before the game chdir's to its own folder, so GetCurrentDirectoryA
+     * returns the launch dir (e.g. the repo) and `<cwd>\Data\*.meg` finds nothing.
+     * GetModuleFileNameA(NULL) is the StarWarsG.exe path; strip the filename to get
+     * the game dir (…\corruption), which holds Data\*.meg regardless of CWD timing. */
     char dir[MAX_PATH];
-    GetCurrentDirectoryA(MAX_PATH, dir);
+    DWORD exe_len = GetModuleFileNameA(NULL, dir, MAX_PATH);
+    if (exe_len == 0 || exe_len >= MAX_PATH) {
+        GetCurrentDirectoryA(MAX_PATH, dir);  /* fallback */
+    } else {
+        char *bs = strrchr(dir, '\\');
+        if (bs) *bs = '\0'; else GetCurrentDirectoryA(MAX_PATH, dir);
+    }
     int meg_count = 0;
 
-    /* Base game MEGs: <game>\Data\*.meg */
+    /* Base game MEGs: recurse all of <game>\Data (catches Data\Audio\SFX\*.meg etc.). */
     char data_dir[MAX_PATH];
     snprintf(data_dir, MAX_PATH, "%s\\Data", dir);
-    scan_meg_dir(data_dir, &meg_count);
+    scan_meg_tree(data_dir, &meg_count, 0);
+
+    /* Active mod MEGs: <game>\Mods\*\Data (recursive). The current mod
+     * (Imperial_Civil_War) ships loose files today, but a mod that packs MEGs would
+     * otherwise be missed → false-absent. Scan every mod's Data tree to be safe. */
+    char mods_pat[MAX_PATH];
+    snprintf(mods_pat, MAX_PATH, "%s\\Mods\\*", dir);
+    WIN32_FIND_DATAA mfd;
+    HANDLE mh = FindFirstFileA(mods_pat, &mfd);
+    if (mh != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(mfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            if (mfd.cFileName[0] == '.') continue;
+            char mod_data[MAX_PATH];
+            snprintf(mod_data, MAX_PATH, "%s\\Mods\\%s\\Data", dir, mfd.cFileName);
+            scan_meg_tree(mod_data, &meg_count, 0);
+        } while (FindNextFileA(mh, &mfd));
+        FindClose(mh);
+    }
 
     /* Workshop MEGs: go 3 levels up (corruption→EaW→common→steamapps),
      * then enumerate workshop\content\32470\<item>\Data\*.meg and one level deeper. */
@@ -5357,7 +5493,7 @@ static void profile_report_and_reset(void) {
             "  b3ac530(3ac530): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b38cf30(38cf30): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b3a59f0(3a59f0): avg=%.2f max=%.2f ms (n=%ld)\n"
-            "  b25ec10(25ec10): avg=%.2f max=%.2f ms (n=%ld)\n"
+            "  b25ec10(25ec10): avg=%.2f max=%.2f ms (n=%ld cache_hits=%ld ins=%ld)\n"
             "  b3718f0(3718f0): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b142f80(142f80): avg=%.2f max=%.2f ms (n=%ld)\n"
             "  b141f70(141f70): avg=%.2f max=%.2f ms (n=%ld)\n"
@@ -5417,6 +5553,7 @@ static void profile_report_and_reset(void) {
             g_b38cf30_sum_ms / cf30n, g_b38cf30_max_ms, (long)g_b38cf30_count,
             g_b3a59f0_sum_ms / f0n,   g_b3a59f0_max_ms, (long)g_b3a59f0_count,
             g_b25ec10_sum_ms / ec10n, g_b25ec10_max_ms, (long)g_b25ec10_count,
+            (long)g_b25_hits, (long)g_b25_inserts,
             g_b3718f0_sum_ms / f8f0n, g_b3718f0_max_ms, (long)g_b3718f0_count,
             g_b142f80_sum_ms / f80n,  g_b142f80_max_ms, (long)g_b142f80_count,
             g_b141f70_sum_ms / f70n,  g_b141f70_max_ms, (long)g_b141f70_count,
