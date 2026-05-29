@@ -139,11 +139,28 @@ objects via an **OO Lua binding** (RTTI classes `LuaCreateThread`, `ThreadValue`
 metatables), registered through `lua_pushcclosure` into metatables rather than flat
 `{name,fn}[]` tables. So the write-closure enumeration needs a different driver.
 
-### Next step (refined method)
-1. Locate `lua_pushcclosure` by decompiling the function that references the base-lib table
-   `0x8fe120` (that's `luaL_register`/`luaopen_base`; the per-entry call inside its loop is
-   `lua_pushcclosure`).
-2. Enumerate **all** `lua_pushcclosure` call sites across `.text` — the ones outside the
-   stdlib openers are the OO game-API methods (the sim-write candidates).
-3. Decompile + classify each game-API closure: reads-only vs. writes-C++-state (and which
-   state). That write set is the B2 deferred-apply surface.
+### RESOLVED — the binding is a generic reflection dispatcher (not enumerable closures)
+`lua_pushcclosure = FUN_1407b9340` (rva 0x7b9340); `luaL_register = FUN_1407ce7a0` (0x7ce7a0).
+Enumerating all 11 `lua_pushcclosure` call sites (`Phase5EnumGameApi.java`) found only **9
+distinct closures** beyond the stdlib — far too few to be the game API. Decompiling the
+registrar `FUN_14024bfb0` (`Phase5DecompGameBinding.java`) shows why: it builds a single
+metatable **"LuaWrapperMetaTable"** shared by all game-object userdata:
+
+| metamethod | handler |
+|---|---|
+| `__index`    | `FUN_14024a8a0` — the reflection dispatcher |
+| `__call`     | `FUN_14024a570` |
+| `__gc`       | `FUN_14024a7f0` |
+| `__tostring` | `FUN_14024c320` |
+| `__eq`       | `FUN_14024c200` |
+
+The `__index` dispatcher (`FUN_14024a8a0`): takes (object, key-name); for navigation it calls
+the object's `vtable[6]` and marshals the result via `FUN_140247700`; for methods it **hashes
+the key name (FNV-style) and looks it up in a per-type method table** (`FUN_14011f570`), then
+invokes the resolved C++ member. **Every** `obj:Method()`/`obj.Prop` from Lua — read or write —
+funnels through this one function into the full reflected C++ game-object API.
+
+**Consequence:** there is no small, enumerable "sim-write closure set." The write surface is the
+entire reflected game-object method API across all types (hundreds), reached by name through one
+dispatcher, with no read/write classification exposed at the binding layer. See
+`threading_model.md` Phase 5 for the resulting Model B verdict.

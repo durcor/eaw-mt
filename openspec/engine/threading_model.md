@@ -142,6 +142,27 @@ Do **not** start Model B coding now. Either (a) declare the AI-perf objective me
 - Do any AI writes already go through the command queue (`FUN_1403b08c0`), or are fog/spawn/resource writes all direct? (Determines B2 feasibility.)
 - Is the main-thread pump actually a frame-time bottleneck now (post budget+fscache)? Profile before investing.
 
+### Binding-audit result (2026-05-29) — B2 verdict: NOT tractable
+The prerequisite audit (`script_engine.md` Phase 5; scripts `Phase5LuaApiSurface` /
+`Phase5EnumGameApi` / `Phase5DecompGameBinding`) answered the gating question: **the AI's
+game-state access is a generic reflection dispatcher, not an enumerable closure set.** All
+game objects share one metatable ("LuaWrapperMetaTable"); every `obj:Method()`/`obj.Prop`
+(read or write) funnels through `__index` = `FUN_14024a8a0`, which hashes the method name and
+looks it up in a per-type C++ method table. So:
+- There is **no small write-closure set to redirect** — the write surface is the entire
+  reflected game-object API (hundreds of methods across all types), with no read/write flag
+  exposed at the binding layer.
+- B2 (snapshot-and-defer) would require either classifying every reflected C++ method by hand,
+  or treating the whole dispatcher as an opaque sim-mutation boundary and serializing it — i.e.
+  collapsing to B1 (global lock), which yields no parallelism gain over the current
+  main-thread pump.
+
+**Verdict:** Model B is not worth pursuing. The AI-perf objective it targeted is already met by
+the per-gsvc budget + fscache. The single dispatcher (`FUN_14024a8a0`) is noted as the unified
+choke point should this ever be revisited, but the cost/benefit is firmly negative now.
+Recommend pursuing multithreading (if at all) in a subsystem with a cleaner conflict surface,
+or treating the AI-threading goal as closed.
+
 ---
 
 ## Known Threading Issues / TODO
