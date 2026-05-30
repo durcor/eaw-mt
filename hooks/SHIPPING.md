@@ -47,6 +47,7 @@ reason to enable it. See `openspec/engine/subsystems/renderer.md`.
 | `EAW_NO_B25CACHE=1` | Disable the b25ec10 art-model result cache. |
 | `EAW_PREWARM=1` | Re-enable Lua AI prewarm (off by default; known to corrupt the Lua VM). |
 | `EAW_DIFFTRACE=1` | Profile build only — emit the per-tick movement-state fingerprint (`DIFFTRACE` log lines) used as the decomp differential-test oracle. Capture via `just difftrace=1 launch-foc-desktop`. |
+| `EAW_OFFWATCH=1` | Profile build only — entity transform-offset finder: samples one active entity's memory window across ticks and logs the float offsets that change (`OFFWATCH` lines). Capture via `just offwatch=1 launch-foc-desktop`, fight a battle, then `grep OFFWATCH eaw-mt.log`. |
 | `EAW_PROFILE` | **Build-time** define (not runtime) — enables the profiler (and makes `EAW_DIFFTRACE` available). |
 
 All caches/skips are conservative: collisions can only produce false-present (never false-absent),

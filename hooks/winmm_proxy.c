@@ -3093,6 +3093,114 @@ static void dt_fold_coordinator(int64_t coord) {
         g_dt_count++;
     }
 }
+
+/* =========================================================================
+ * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
+ *
+ * The entity world position is method-accessed, not a flat field; the engine stores
+ * transforms as 4x3 matrices (12 floats, 0x30 stride). To pin the entity's matrix
+ * offset empirically: latch one active entity, sample a byte window of it every
+ * OW_PERIOD ticks, and log the float offsets that CHANGED since the last sample with
+ * their per-sample delta. The world-position row reveals itself as a run of finite
+ * floats with small, smooth deltas (movement); a 12-float 0x30-stride block = the
+ * matrix. Profile-build only; runtime-gated by EAW_OFFWATCH=1. Grep "OFFWATCH".
+ *
+ * Window 0x40..0x478 is inside the confirmed object extent (movement code reads up to
+ * entity+0x478), so the bounded read stays within a live active entity.
+ * ========================================================================= */
+#define OW_OFF0   0x40
+#define OW_END    0x478
+#define OW_WIN    (OW_END - OW_OFF0)
+#define OW_PERIOD 16
+#define OW_ROUNDS 30
+static int      g_ow_enabled    = -1;
+static int64_t  g_ow_ent        = 0;
+static uint8_t  g_ow_prev[OW_WIN];
+static int      g_ow_have_prev  = 0;
+static uint32_t g_ow_next       = 0;
+static int      g_ow_rounds     = 0;
+
+static int ow_on(void) {
+    if (g_ow_enabled < 0) {
+        const char *e = getenv("EAW_OFFWATCH");
+        g_ow_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_ow_enabled
+            ? "[eaw-mt] OFFWATCH: enabled (entity transform-offset finder)\n"
+            : "[eaw-mt] OFFWATCH: off (set EAW_OFFWATCH=1 to hunt the transform offset)\n");
+    }
+    return g_ow_enabled;
+}
+static inline int ow_finite(float f) {       /* exclude NaN/Inf */
+    uint32_t b; memcpy(&b, &f, 4);
+    return ((b >> 23) & 0xff) != 0xff;
+}
+/* first active entity in the coordinator's list, or 0 */
+static int64_t ow_first_active(int64_t coord) {
+    if (!coord || (*(uint8_t *)(coord + 0x3a0) & 0x40)) return 0;
+    int64_t L = *(int64_t *)(coord + 0x2d0);
+    if (!L) return 0;
+    int32_t n = *(int32_t *)(L + 0x10);
+    int64_t arr = *(int64_t *)(L + 0x8);
+    if (!arr || n <= 0 || n > 1000000) return 0;
+    for (int i = 0; i < n; i++) {
+        int64_t e = *(int64_t *)(arr + (int64_t)i * 8);
+        if (!e) continue;
+        int64_t ent = *(int64_t *)(e + 0x20);
+        if (ent && *(int8_t *)(ent + 0x4d) == 1) return ent;
+    }
+    return 0;
+}
+/* is the latched entity still present+active in this coordinator's list? */
+static int ow_present(int64_t coord, int64_t ent) {
+    if (!coord || (*(uint8_t *)(coord + 0x3a0) & 0x40)) return 0;
+    int64_t L = *(int64_t *)(coord + 0x2d0);
+    if (!L) return 0;
+    int32_t n = *(int32_t *)(L + 0x10);
+    int64_t arr = *(int64_t *)(L + 0x8);
+    if (!arr || n <= 0 || n > 1000000) return 0;
+    for (int i = 0; i < n; i++) {
+        int64_t e = *(int64_t *)(arr + (int64_t)i * 8);
+        if (e && *(int64_t *)(e + 0x20) == ent && *(int8_t *)(ent + 0x4d) == 1) return 1;
+    }
+    return 0;
+}
+static void ow_sample(int64_t coord) {
+    if (g_ow_rounds >= OW_ROUNDS) return;
+    uint32_t g = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+    /* latch / re-latch on death */
+    if (g_ow_ent && !ow_present(coord, g_ow_ent)) { g_ow_ent = 0; g_ow_have_prev = 0; }
+    if (!g_ow_ent) {
+        g_ow_ent = ow_first_active(coord);
+        if (!g_ow_ent) return;
+        g_ow_have_prev = 0; g_ow_next = g + 4;
+        return;
+    }
+    if (g < g_ow_next) return;
+    g_ow_next = g + OW_PERIOD;
+
+    uint8_t cur[OW_WIN];
+    memcpy(cur, (void *)(g_ow_ent + OW_OFF0), OW_WIN);
+    if (g_ow_have_prev) {
+        char hdr[96];
+        snprintf(hdr, sizeof hdr, "OFFWATCH round=%d tick=%u ent=%p\n",
+                 g_ow_rounds, g, (void *)g_ow_ent);
+        log_write(hdr);
+        for (int o = 0; o < OW_WIN; o += 4) {
+            float cf, pf;
+            memcpy(&cf, cur + o, 4);
+            memcpy(&pf, g_ow_prev + o, 4);
+            if (!ow_finite(cf) || cf == pf) continue;
+            if (cf < -1e9f || cf > 1e9f) continue;          /* skip pointer-ish garbage */
+            char ln[96];
+            snprintf(ln, sizeof ln, "  off=0x%x val=%.4f d=%.5f\n",
+                     OW_OFF0 + o, (double)cf, (double)(cf - pf));
+            log_write(ln);
+        }
+        g_ow_rounds++;
+    }
+    memcpy(g_ow_prev, cur, OW_WIN);
+    g_ow_have_prev = 1;
+}
 #endif /* EAW_PROFILE */
 
 static void a76b0_hook(int64_t a, int32_t b)
@@ -3107,11 +3215,11 @@ static void a76b0_hook(int64_t a, int32_t b)
     g_a76b0_count++;
 
 #ifdef EAW_PROFILE
+    if (!g_dt_frame_ctr) {                                 /* shared by DIFFTRACE + OFFWATCH */
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+    }
     if (dt_on()) {
-        if (!g_dt_frame_ctr) {
-            HMODULE exe = GetModuleHandleA(NULL);
-            if (exe) g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
-        }
         uint32_t g = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
         if (g != g_dt_tick) {                              /* new sim tick: flush previous */
             if (g_dt_tick != 0xFFFFFFFFu) dt_emit();
@@ -3119,6 +3227,7 @@ static void a76b0_hook(int64_t a, int32_t b)
         }
         dt_fold_coordinator(a);                            /* aggregate all coordinators/tick */
     }
+    if (ow_on()) ow_sample(a);                             /* transform-offset finder */
 #endif
 }
 
