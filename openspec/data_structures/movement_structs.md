@@ -37,11 +37,25 @@ vtable ptr at `this+0` and initializes fields).
 | `+0x2d8` | ptr | Lua context (`ctx`; `*ctx+0x58` = lua_State*) — prewarm chain | ✓ high |
 | `+0x148`,`+0x1f0`,`+0x360` | ptr | sub-object pointers used by the movement path | low |
 
-- **Transform/position: NOT YET LOCATED.** It is *not* a typed-float cluster in the aggregate map
-  (only `+0x4f` shows a stray float), so position likely lives in a **sub-object** (one of the
-  member pointers above) or is accessed untyped (`undefined4`/matrix copy). Pinning it needs a
-  targeted decompile of a position getter / the integrator that writes it. **This is the next
-  Phase-2 unit** — it's what unlocks transform-value coverage in the differential harness.
+- **Transform/position — investigated 2026-05-30; method-accessed, not a flat field.** Findings:
+  - **Engine transform format = 4×3 matrix: 12 × `float`, 0x30-byte (48 B) stride.** Confirmed by
+    `FUN_14012d2c0` (copies 12 `undefined4` at `nodeIdx*0x30 + (*(spline+0xe8)+0x28)` into an output
+    vec/matrix; default element `0x3f800000` = 1.0f). Positions in the movement path come from
+    **path-spline node matrices**, not the entity directly.
+  - **Entity position is obtained via accessors, not a naked offset.** `FUN_140385cf0(component)`
+    derives the current position object from `entity+0x60` (a handle passed to `FUN_14001e680`);
+    `FUN_140387010`/`3825b0` consume it through methods. This matches the engine's abstraction style
+    (cf. the unified Lua reflection dispatcher).
+  - **Ruled out** as the position field: the Lua `Get_Position` binding (routes through the
+    reflection dispatcher — no per-method C body; the wrapper at `56d4c0` stores a constant, not a
+    fn ptr); the force integrator `FUN_140387f50` (only `component+0x28 -= force`); the deep-path
+    entity floats `+0x200` (mass·physics scale), `+0x23c` (speed threshold), `+0x250[]` (per-heading
+    LUT, indexed by `FUN_140398010`) — all tuning/state, **not** position.
+  - **Next unit (decisive):** decompile the locomotor transform-update vmethod (the
+    `LocomotorCommonClass`/behavior method that writes the entity's world matrix each tick) **or**
+    run a runtime watch (profile hook dumps candidate entity offsets across ticks in a battle;
+    the live position is the 12-float region that changes smoothly with movement). Then the harness
+    folds the entity 4×3 matrix (not a scalar) for transform coverage.
 
 ---
 
