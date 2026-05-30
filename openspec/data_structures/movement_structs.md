@@ -97,32 +97,68 @@ vtable ptr at `this+0` and initializes fields).
 
 ---
 
-## MovementComponent — the per-tick serviced element (RTTI class TBD)
+## HardPointClass — the per-tick serviced element  ⚠ NOT a movement component
 
-The element `e` in the movement coordinator's list (`coordinator+0x2d0` → array; see
-`decomp/3a76b0.c`) and the `param_1` of the path-follow `FUN_140387400`. A **compact movement-state
-record**, distinct from `LocomotorCommonClass` (below).
+**RTTI class RESOLVED 2026-05-30 (live read, `DTRTTI`): the element `e` is `HardPointClass`**
+(vtable RVA `0x865de8`; 5/5 live samples agreed). This **reframes the whole `a76b0` path** — see
+the box below. `e` is the element of the list at `coord+0x2d0` (see `decomp/3a76b0.c`) and the
+`param_1` of `FUN_140387400`. It is a **weapon hardpoint (fire-control) record**, not locomotion.
+
+> ### ⚠ The `a76b0`→`387010`→`387400` path is per-ship HARDPOINT fire-control, not movement
+> Live RTTI (`DTRTTI` one-shot in the harness) over the menu demo + battles established:
+> - **`coord` (the `a76b0` param_1) = `GameObjectClass`** (vtable `0x8661b8`) — a *ship*, not a
+>   "MovementCoordinator" class.
+> - **`coord+0x2d0` = `DynamicVectorClass<HardPointClass*>`** (container vtable `0x866238` in the
+>   RTTI map) — the ship's **hardpoint list**.
+> - **`e` = `HardPointClass`** — one weapon mount.
+> - `FUN_1403a76b0` = "for each of this ship's hardpoints, distribute a fire-rate budget (weighted
+>   by `+0x58` via `FUN_140540070`, scaled by game-speed mode) and service it." `FUN_140387400` =
+>   per-hardpoint **opportunity-target acquisition** (`OpportunityTargetAcquiredDataClass`, target
+>   set `382510` / release `3846c0` / capped search `385190` = **Fix B2**). `HardPointClass::vfunc_1`
+>   (`386a90`) = target/listener bookkeeping (on a "target destroyed" event `0x28` it nulls the
+>   target slots and unregisters from the target's `+0x38` listener list).
+> - **Cost reconciliation:** the per-tick audit's "≈1700 `387400` calls/tick ≈ N entities × ~55
+>   components" — the **~55 "components" per capital ship are its hardpoints**. Big-battle FF
+>   choppiness is **weapon target-acquisition** cost, not movement. The real locomotor system is the
+>   separate `LocomotorBehaviorClass` hierarchy (below), which is *not* the `coord+0x2d0` list.
+> - **Impact on prior analysis:** any earlier note calling this path "movement" / "path-following"
+>   (Model C "movement parallelization", the cost audit) is mislabeled as to *subsystem* — it's
+>   weapons. The structural conclusions (per-component volume; cross-object target writes block
+>   parallelism) still hold; only the name was wrong. Flagged for review.
+
+Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
 
 | Offset | Width | Meaning | Conf |
 |---|---|---|---|
 | `+0x10` | ptr | context/owner ptr (deref'd → `+0x298`,`+0x2b0` in `387400`) | med |
-| `+0x20` | ptr | **owning entity** (`GameObjectClass*`) | ✓ high |
-| `+0x28` | float | speed / weight (force-distribution numerator in `3a76b0`) | ✓ high |
-| `+0x48` | ptr | **current target** (target entity; `target+0x10` compared) | ✓ high |
-| `+0x58` | uint | rate-limit **countdown** (`-= delta`; gates per-component service cadence) | ✓ high |
-| `+0x60` | int | last-serviced tick stamp (`387010`: `delta = param_2 - *(comp+0x60)`) | ✓ high |
-| `+0x90` | int | **cached node id** (name→id via `12d520`; re-resolved when `< 0`) | ✓ high |
-| `+0x94` | int | **cached bone index** (primary; name→idx via `12d2a0`) | ✓ high |
-| `+0x98` | int | cached secondary bone index | ✓ med |
+| `+0x20` | ptr | **owner/state record** (non-polymorphic; `*(e+0x20)` is NOT a vtable — see note) | ✓ high |
+| `+0x28` | float | fire-rate / distribution weight (was mislabeled "speed"; `3a76b0` numerator) | ✓ high |
+| `+0x40` | ptr | target slot (cleared on target-death event in `386a90`) | ✓ high |
+| `+0x48` | ptr | **current target** (`target+0x10` compared) | ✓ high |
+| `+0x50` | ptr | secondary/opportunity target slot | ✓ med |
+| `+0x58` | float | **fire-rate weight** read by `540070` (was mislabeled "countdown") | ✓ high |
+| `+0x60` | int | last-serviced tick stamp (`387010`: `delta = param_2 - *(e+0x60)`) | ✓ high |
 | `+0x6c` | char | enable flag | ✓ med |
-| `+0x6d` | char | in-progress flag (set/cleared around the path step in `387400`) | ✓ med |
+| `+0x6d` | char | in-progress flag (set/cleared around the target step in `387400`) | ✓ med |
 | `+0x6e` | char | flag | ✓ med |
-| `+0xc0` | ptr | path/order object (alloc'd lazily; `+0xcc` reset to 0) | med |
+| `+0x90` | int | cached id (name→id via `12d520`; was assumed node id — **render path, unused here**) | med |
+| `+0x94` | int | cached bone index (name→idx via `12d2a0`; render path, `<0` ⇒ unresolved) | med |
+| `+0x98` | int | cached secondary bone index | med |
+| `+0xa8` | ptr | target slot (cleared in `386a90`) | ✓ med |
+| `+0xc0` | ptr | order/target object (alloc'd lazily; `+0xcc` reset to 0) | med |
 
-- **RTTI class: unresolved.** Confirmed it is **not** `LocomotorCommonClass` (that class's `+0x28`
-  is a pointer, not the speed float). Next step: resolve via what allocates the `+0x2d0` list entries
-  (or read RTTI off a live `e` from the harness). These offsets are the harness's current fingerprint
-  field set (index, entity `+0x48`, component `+0x28`, `+0x58`).
+- **`e+0x20` ("owner/state record") — class TBD.** Live read showed `*(e+0x20)` is a heap pointer,
+  not a vtable, so the struct is **non-polymorphic** — it is NOT itself a `GameObjectClass`. Yet it
+  carries the `+0x48` motion-state int, `+0x4d` active flag, `+0x4e` render-node gate, and `+0x60`
+  node-name `std::string` that were earlier attributed to `GameObjectClass` (see that section — those
+  offsets may actually belong to this record, or it is a non-primary base view of the owning unit).
+  **Open:** dump its first 16 bytes / sub-vtables to resolve whether it's a GameObject base view or a
+  distinct per-hardpoint owner struct. The DIFFTRACE harness's `*(e+0x20)+0x4d` active filter matches
+  `3a76b0`'s own filter, so it is correct regardless of the record's class name.
+- **NOTE on the differential harness:** DIFFTRACE folds `{index, *(e+0x20)+0x48, e+0x28, e+0x58}`.
+  This is a valid deterministic *sim* fingerprint (hardpoint target/fire state IS sim state), just
+  labeled "movement" — it is really a **weapon fire-control** fingerprint. Still the right oracle for
+  that subsystem; no change needed beyond the naming correction.
 
 ---
 
@@ -132,9 +168,11 @@ record**, distinct from `LocomotorCommonClass` (below).
   written by the derived behavior ctors (`TeamLocomotorBehaviorClass` `FUN_14062f680`,
   `FighterLocomotorBehaviorClass` `FUN_1405c8a80`).
 - **Empirical map:** `logs/Phase2Fields_LocomotorCommonClass.tsv` — 43 offsets / 57 methods.
-  Dominant member `+0x28` (ptr, 78×). Distinct from the MovementComponent above (a behavior attached
-  to an entity, not the per-tick coordinator element). Detailed labeling deferred — not on the
-  rewrite critical path until the MovementComponent↔behavior relationship is mapped.
+  Dominant member `+0x28` (ptr, 78×). This is the **actual movement/locomotion** behavior hierarchy —
+  distinct from `HardPointClass` above (which is the `coord+0x2d0` fire-control element). The real
+  per-tick locomotion path runs through these vmethods, NOT through `3a76b0`/`387400`. Detailed
+  labeling deferred — locating the locomotor's own per-tick service entry is the next movement target
+  (now that `3a76b0` is known to be hardpoints, not the mover).
 
 ---
 
@@ -147,9 +185,12 @@ record**, distinct from `LocomotorCommonClass` (below).
 ---
 
 ## Phase-2 TODO (priority order)
-1. ~~Entity transform/position offset~~ — **RESOLVED** (node-manager chain above). Remaining:
-   locate the `manager` singleton once for the harness fast path; validate transform determinism.
-2. **MovementComponent RTTI class** — allocation site / live-RTTI read.
+1. ~~Entity transform/position offset~~ — **RESOLVED** (render-side node-manager chain; not a sim
+   field — see GameObjectClass §). No harness fold.
+2. ~~MovementComponent RTTI class~~ — **RESOLVED: it's `HardPointClass`** (live RTTI), and the
+   `a76b0`/`387400` path is hardpoint fire-control, not movement. Follow-ups: (a) resolve the
+   `e+0x20` owner-record class; (b) locate the **actual** locomotor per-tick service entry (the
+   `LocomotorBehaviorClass` path) — the real movement subsystem the rewrite targets.
 3. **GOM entity list** layout (the double-buffer set).
 4. RNG + tick-clock globals already known (`DAT_140b0a320` counter, `0x9cf314` FF flag); fold into a
    determinism-surface struct doc in Phase 4.
