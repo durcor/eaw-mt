@@ -3044,13 +3044,16 @@ static uint32_t           g_dt_tick     = 0xFFFFFFFFu;
 static uint64_t           g_dt_hash     = DT_FNV_BASIS;
 static uint32_t           g_dt_count    = 0;
 static volatile uint32_t *g_dt_frame_ctr = NULL;   /* DAT_140b0a320, RVA 0xb0a320 */
+static uint32_t           g_dt_pos_n    = 0;       /* GameObjects whose position was folded this tick */
+static int                g_dt_pos_have = 0;       /* a sample position captured this tick */
+static float              g_dt_pos_xyz[3];         /* first folded GameObject's x/y/z (eyeball check) */
 
 static int dt_on(void) {
     if (g_dt_enabled < 0) {
         const char *e = getenv("EAW_DIFFTRACE");
         g_dt_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
         log_write(g_dt_enabled
-            ? "[eaw-mt] DIFFTRACE: enabled (per-tick movement-state fingerprint)\n"
+            ? "[eaw-mt] DIFFTRACE: enabled (per-tick movement-state + sim-position fingerprint)\n"
             : "[eaw-mt] DIFFTRACE: off (set EAW_DIFFTRACE=1 to capture golden trace)\n");
     }
     return g_dt_enabled;
@@ -3062,14 +3065,36 @@ static inline void dt_fold(const void *p, size_t n) {
     g_dt_hash = x;
 }
 static void dt_emit(void) {
-    char buf[96];
-    snprintf(buf, sizeof buf, "DIFFTRACE\ttick=%u\tn=%u\th=%016llx\n",
-             g_dt_tick, g_dt_count, (unsigned long long)g_dt_hash);
+    char buf[160];
+    snprintf(buf, sizeof buf, "DIFFTRACE\ttick=%u\tn=%u\tpos=%u\th=%016llx\n",
+             g_dt_tick, g_dt_count, g_dt_pos_n, (unsigned long long)g_dt_hash);
     log_write(buf);
+    /* Human-readable determinism check: one GameObject's sim position per tick.
+     * Same save+orders replayed twice must reproduce it; a moving unit's must change smoothly. */
+    if (g_dt_pos_have) {
+        snprintf(buf, sizeof buf, "DTPOS\ttick=%u\tx=%.3f\ty=%.3f\tz=%.3f\n",
+                 g_dt_tick, g_dt_pos_xyz[0], g_dt_pos_xyz[1], g_dt_pos_xyz[2]);
+        log_write(buf);
+    }
 }
 /* Fold one coordinator's serviced components into the current tick accumulator. */
 static void dt_fold_coordinator(int64_t coord) {
     if (!coord) return;
+    /* `coord` is the serviced GameObjectClass (a76b0's param). entity+0x78/+0x7c/+0x80 = the
+     * unit's authoritative SIM world position (x/y/z floats, written each tick by the locomotor
+     * vfunc_6 — deterministic, distinct from the render-side node transform). Fold it for
+     * transform coverage, before the hardpoint-disabled gate so every serviced ship is counted. */
+    uint32_t px = *(uint32_t *)(coord + 0x78);
+    uint32_t py = *(uint32_t *)(coord + 0x7c);
+    uint32_t pz = *(uint32_t *)(coord + 0x80);
+    dt_fold(&px, 4); dt_fold(&py, 4); dt_fold(&pz, 4);
+    g_dt_pos_n++;
+    if (!g_dt_pos_have) {
+        memcpy(&g_dt_pos_xyz[0], &px, 4);
+        memcpy(&g_dt_pos_xyz[1], &py, 4);
+        memcpy(&g_dt_pos_xyz[2], &pz, 4);
+        g_dt_pos_have = 1;
+    }
     if (*(uint8_t *)(coord + 0x3a0) & 0x40) return;        /* coordinator disabled */
     int64_t L = *(int64_t *)(coord + 0x2d0);
     if (!L) return;
@@ -3093,11 +3118,10 @@ static void dt_fold_coordinator(int64_t coord) {
         g_dt_count++;
         /* NOTE: the absolute world transform is deliberately NOT folded. It lives in the
          * render-side Alamo node manager (resolved via FUN_140385cf0/FUN_14012d2c0, gated on
-         * entity+0x4e==1), which is NEVER set for the sim-serviced movement components — proven
-         * empirically: across ~19k ticks (menu + two real moving battles) every serviced
-         * component had entity+0x4e==0, so the node transform never resolves. The sim entity
-         * carries no plain-float position; deterministic sim movement state is the order/path/
-         * target/countdown machine folded above. See openspec movement_structs.md "Transform". */
+         * entity+0x4e==1), which is NEVER set for the sim-serviced hardpoint components. The
+         * authoritative SIM position is the flat GameObject field at coord+0x78, folded once per
+         * coordinator above (this `e` is a HardPointClass; its owner ship = coord). The render
+         * matrix is a separate representation. See openspec movement_structs.md "Transform". */
     }
 }
 
@@ -3360,6 +3384,7 @@ static void a76b0_hook(int64_t a, int32_t b)
         if (g != g_dt_tick) {                              /* new sim tick: flush previous */
             if (g_dt_tick != 0xFFFFFFFFu) dt_emit();
             g_dt_tick = g; g_dt_hash = DT_FNV_BASIS; g_dt_count = 0;
+            g_dt_pos_n = 0; g_dt_pos_have = 0;
         }
         dt_fold_coordinator(a);                            /* aggregate all coordinators/tick */
     }

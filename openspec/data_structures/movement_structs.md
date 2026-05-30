@@ -196,8 +196,9 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
   *hardpoint* path (OFFWATCH latched `*(HardPoint+0x20)`, the non-polymorphic owner record, never the
   moving `GameObjectClass`). The render-side node transform (entity+0x4e gated, §GameObjectClass) is a
   *separate* representation; the **authoritative sim position is `entity+0x78`**, and the differential
-  harness CAN fingerprint it (the hardpoint coordinator `a76b0` param IS a `GameObjectClass`, so
-  `coord+0x78/+0x7c/+0x80` is the ship's position — fold that for deterministic transform coverage).
+  harness fingerprints it: the hardpoint coordinator `a76b0` param IS a `GameObjectClass`, so
+  `coord+0x78/+0x7c/+0x80` is the ship's position — **now folded into DIFFTRACE** (`dt_fold_coordinator`),
+  validated in-game (`pos=8`/tick, smooth moving-ship `DTPOS` trajectory). Deterministic transform coverage.
 
 - ### ✅ DRIVER PINNED = `FUN_1403a6b80` (the per-GameObject sim-tick update)
   Found by runtime return-address capture (vtable-hook slot 6 → `__builtin_return_address(0)`, LOCODRV):
@@ -288,5 +289,9 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
    per entity. The full sim entity-update chain (GOM → driver → behaviors+hardpoints) is now mapped.
 4. RNG + tick-clock globals already known (`DAT_140b0a320` counter, `0x9cf314` FF flag); fold into a
    determinism-surface struct doc in Phase 4.
-5. Remaining loose ends: hardpoint `e+0x20` owner-record class; label the GOM category index-lists;
-   optionally fold `coord+0x78` (sim position) into DIFFTRACE for transform coverage.
+5. ~~Fold `coord+0x78` (sim position) into DIFFTRACE~~ — **DONE + validated in-game** (`hooks/winmm_proxy.c`
+   `dt_fold_coordinator`): folds each serviced GameObject's `+0x78/+0x7c/+0x80` x/y/z into the per-tick
+   hash; `DIFFTRACE … pos=N`, plus a `DTPOS x/y/z` sample line. Capture showed `pos=8` every tick and a
+   smooth moving-ship trajectory (e.g. x −3756→−3497→−3328 at fixed z=−850), confirming it as a
+   deterministic sim-position oracle field. Remaining loose ends: hardpoint `e+0x20` owner-record class;
+   label the 11 GOM category index-lists.
