@@ -3108,26 +3108,41 @@ static void dt_fold_coordinator(int64_t coord) {
  * Window 0x40..0x478 is inside the confirmed object extent (movement code reads up to
  * entity+0x478), so the bounded read stays within a live active entity.
  * ========================================================================= */
-#define OW_OFF0   0x40
-#define OW_END    0x478
-#define OW_WIN    (OW_END - OW_OFF0)
-#define OW_PERIOD 8                      /* a76b0 ticks between samples (self-clocked) */
-#define OW_ROUNDS 30
+/* v2: the entity's flat 0x40..0x478 window proved static in a moving battle — the live
+ * transform is behind a pointer. So watch the entity window (level 0) AND follow every
+ * plausible pointer slot in the entity one level deep (level 1), reporting the floats that
+ * change. VirtualQuery-guard every followed read so a stale pointer can't fault. Rotate to
+ * the next active entity if the watched one stays idle (don't get stuck on a static unit). */
+#define OW_OFF0    0x40
+#define OW_END     0x478
+#define OW_WIN     (OW_END - OW_OFF0)
+#define OW_PERIOD  8                     /* a76b0 ticks between samples (self-clocked) */
+#define OW_ROUNDS  40
+#define OW_SUB_LO  0x08                  /* entity pointer-slot scan range */
+#define OW_SUB_HI  0x300
+#define OW_SUBLEN  0x80                  /* bytes watched in each followed sub-object */
+#define OW_NSLOTS  ((OW_SUB_HI - OW_SUB_LO) / 8)
+#define OW_MAXLOG  160                   /* per-round changed-field log cap */
 static int      g_ow_enabled    = -1;
 static int64_t  g_ow_coord      = 0;     /* latched coordinator (avoid multi-coord thrash) */
 static int64_t  g_ow_ent        = 0;
+static int      g_ow_entidx     = 0;     /* which active entity to latch (rotation) */
+static int      g_ow_idle       = 0;     /* consecutive rounds with 0 changes */
 static uint8_t  g_ow_prev[OW_WIN];
 static int      g_ow_have_prev  = 0;
 static uint32_t g_ow_ticks      = 0;     /* a76b0 calls on the latched coordinator */
 static uint32_t g_ow_next       = 0;
 static int      g_ow_rounds     = 0;
+static int64_t  g_ow_subptr[OW_NSLOTS];          /* last pointer seen per slot */
+static uint8_t  g_ow_subprev[OW_NSLOTS][OW_SUBLEN];
+static uint8_t  g_ow_subhave[OW_NSLOTS];
 
 static int ow_on(void) {
     if (g_ow_enabled < 0) {
         const char *e = getenv("EAW_OFFWATCH");
         g_ow_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
         log_write(g_ow_enabled
-            ? "[eaw-mt] OFFWATCH: enabled (entity transform-offset finder)\n"
+            ? "[eaw-mt] OFFWATCH: enabled (entity transform-offset finder, 2-level)\n"
             : "[eaw-mt] OFFWATCH: off (set EAW_OFFWATCH=1 to hunt the transform offset)\n");
     }
     return g_ow_enabled;
@@ -3136,23 +3151,34 @@ static inline int ow_finite(float f) {       /* exclude NaN/Inf */
     uint32_t b; memcpy(&b, &f, 4);
     return ((b >> 23) & 0xff) != 0xff;
 }
-/* first active entity in the coordinator's list, or 0 */
-static int64_t ow_first_active(int64_t coord) {
+static void ow_reset_subs(void) { memset(g_ow_subhave, 0, sizeof g_ow_subhave); }
+/* fault-free readability test for a followed pointer */
+static int ow_readable(const void *p, size_t n) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(p, &mbi, sizeof mbi) == 0) return 0;
+    if (mbi.State != MEM_COMMIT) return 0;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
+    uintptr_t end = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    if ((uintptr_t)p + n > end) return 0;
+    return 1;
+}
+/* k-th active entity in the coordinator's list, or 0 */
+static int64_t ow_nth_active(int64_t coord, int k) {
     if (!coord || (*(uint8_t *)(coord + 0x3a0) & 0x40)) return 0;
     int64_t L = *(int64_t *)(coord + 0x2d0);
     if (!L) return 0;
     int32_t n = *(int32_t *)(L + 0x10);
     int64_t arr = *(int64_t *)(L + 0x8);
     if (!arr || n <= 0 || n > 1000000) return 0;
+    int cnt = 0;
     for (int i = 0; i < n; i++) {
         int64_t e = *(int64_t *)(arr + (int64_t)i * 8);
         if (!e) continue;
         int64_t ent = *(int64_t *)(e + 0x20);
-        if (ent && *(int8_t *)(ent + 0x4d) == 1) return ent;
+        if (ent && *(int8_t *)(ent + 0x4d) == 1) { if (cnt == k) return ent; cnt++; }
     }
     return 0;
 }
-/* is the latched entity still present+active in this coordinator's list? */
 static int ow_present(int64_t coord, int64_t ent) {
     if (!coord || (*(uint8_t *)(coord + 0x3a0) & 0x40)) return 0;
     int64_t L = *(int64_t *)(coord + 0x2d0);
@@ -3166,45 +3192,77 @@ static int ow_present(int64_t coord, int64_t ent) {
     }
     return 0;
 }
+/* report changed finite floats between two byte buffers; returns #changed (capped logging) */
+static int ow_diff(const uint8_t *cur, const uint8_t *prev, int len,
+                   const char *tag, int slot, int *logbudget) {
+    int chg = 0;
+    for (int o = 0; o < len; o += 4) {
+        float cf, pf;
+        memcpy(&cf, cur + o, 4);
+        memcpy(&pf, prev + o, 4);
+        if (!ow_finite(cf) || cf == pf) continue;
+        if (cf < -1e9f || cf > 1e9f) continue;          /* skip pointer-ish garbage */
+        chg++;
+        if (*logbudget > 0) {
+            char ln[112];
+            if (slot < 0)
+                snprintf(ln, sizeof ln, "  %s off=0x%x val=%.4f d=%.5f\n",
+                         tag, OW_OFF0 + o, (double)cf, (double)(cf - pf));
+            else
+                snprintf(ln, sizeof ln, "  %s slot=0x%x+0x%x val=%.4f d=%.5f\n",
+                         tag, slot, o, (double)cf, (double)(cf - pf));
+            log_write(ln);
+            (*logbudget)--;
+        }
+    }
+    return chg;
+}
 static void ow_sample(int64_t coord) {
     if (g_ow_rounds >= OW_ROUNDS) return;
-    /* latch ONE coordinator (tactical may have land+space; sampling both thrashes) */
-    if (!g_ow_coord) {
-        if (ow_first_active(coord)) g_ow_coord = coord; else return;
-    }
+    if (!g_ow_coord) { if (ow_nth_active(coord, 0)) g_ow_coord = coord; else return; }
     if (coord != g_ow_coord) return;
     g_ow_ticks++;                                  /* self-clock: a76b0 call count, not 0xb0a320 */
-    /* latch / re-latch the watched entity on death */
     if (g_ow_ent && !ow_present(coord, g_ow_ent)) { g_ow_ent = 0; g_ow_have_prev = 0; }
     if (!g_ow_ent) {
-        g_ow_ent = ow_first_active(coord);
-        if (!g_ow_ent) { g_ow_coord = 0; return; } /* list emptied; re-latch later */
-        g_ow_have_prev = 0; g_ow_next = g_ow_ticks + 2;
+        g_ow_ent = ow_nth_active(coord, g_ow_entidx);
+        if (!g_ow_ent) { g_ow_entidx = 0; g_ow_ent = ow_nth_active(coord, 0); }
+        if (!g_ow_ent) { g_ow_coord = 0; return; }
+        g_ow_have_prev = 0; ow_reset_subs(); g_ow_next = g_ow_ticks + 2;
         return;
     }
     if (g_ow_ticks < g_ow_next) return;
     g_ow_next = g_ow_ticks + OW_PERIOD;
 
     uint8_t cur[OW_WIN];
-    memcpy(cur, (void *)(g_ow_ent + OW_OFF0), OW_WIN);
+    memcpy(cur, (void *)(g_ow_ent + OW_OFF0), OW_WIN);   /* entity is present+active: safe */
     if (g_ow_have_prev) {
-        uint32_t fc = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;   /* also log 0xb0a320 to see if it moves */
+        uint32_t fc = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+        int budget = OW_MAXLOG, chg = 0;
         char hdr[112];
-        snprintf(hdr, sizeof hdr, "OFFWATCH round=%d atick=%u fctr=%u ent=%p\n",
-                 g_ow_rounds, g_ow_ticks, fc, (void *)g_ow_ent);
+        snprintf(hdr, sizeof hdr, "OFFWATCH round=%d atick=%u fctr=%u idx=%d ent=%p\n",
+                 g_ow_rounds, g_ow_ticks, fc, g_ow_entidx, (void *)g_ow_ent);
         log_write(hdr);
-        for (int o = 0; o < OW_WIN; o += 4) {
-            float cf, pf;
-            memcpy(&cf, cur + o, 4);
-            memcpy(&pf, g_ow_prev + o, 4);
-            if (!ow_finite(cf) || cf == pf) continue;
-            if (cf < -1e9f || cf > 1e9f) continue;          /* skip pointer-ish garbage */
-            char ln[96];
-            snprintf(ln, sizeof ln, "  off=0x%x val=%.4f d=%.5f\n",
-                     OW_OFF0 + o, (double)cf, (double)(cf - pf));
-            log_write(ln);
+        chg += ow_diff(cur, g_ow_prev, OW_WIN, "ent", -1, &budget);   /* level 0 */
+        /* level 1: follow each plausible pointer slot one deep */
+        for (int slot = OW_SUB_LO; slot < OW_SUB_HI; slot += 8) {
+            int idx = (slot - OW_SUB_LO) / 8;
+            int64_t ptr; memcpy(&ptr, (void *)(g_ow_ent + slot), 8);
+            uint64_t up = (uint64_t)ptr;
+            if ((up & 3) || up < 0x10000 || up > 0x00007fffffffffffULL ||
+                !ow_readable((void *)ptr, OW_SUBLEN)) { g_ow_subhave[idx] = 0; continue; }
+            uint8_t sb[OW_SUBLEN];
+            memcpy(sb, (void *)ptr, OW_SUBLEN);
+            if (g_ow_subhave[idx] && g_ow_subptr[idx] == ptr)
+                chg += ow_diff(sb, g_ow_subprev[idx], OW_SUBLEN, "sub", slot, &budget);
+            memcpy(g_ow_subprev[idx], sb, OW_SUBLEN);
+            g_ow_subptr[idx] = ptr; g_ow_subhave[idx] = 1;
         }
         g_ow_rounds++;
+        if (chg == 0) {                            /* idle entity: rotate to the next one */
+            if (++g_ow_idle >= 2) {
+                g_ow_entidx++; g_ow_ent = 0; g_ow_have_prev = 0; ow_reset_subs(); g_ow_idle = 0;
+            }
+        } else g_ow_idle = 0;
     }
     memcpy(g_ow_prev, cur, OW_WIN);
     g_ow_have_prev = 1;
