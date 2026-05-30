@@ -109,9 +109,32 @@ Cheap, high-leverage discovery that can multiply or kill the effort. **Decision 
   functions, Product 1 is a months-scale solo effort and proceeds. If recovery is poor, re-scope to
   "assisted re-implementation of just the gsvc Phase-A body" (much smaller) and stop there.
 
-### Phase 1 — Infrastructure (1–2 weeks)
-Turn the one-function-at-a-time workflow into a pipeline. The current `.gpr` is 0 bytes — analysis
-isn't durably shared; fix that first.
+### Phase 1 — Infrastructure (1–2 weeks) — 🟡 IN PROGRESS (started 2026-05-30)
+
+**Done this session:**
+- **Persistence confirmed.** The Ghidra `.rep` is 173 MB and fully analyzed/durable (the 0-byte
+  `.gpr` is just a pointer file — no problem). The portable source of truth is the scripts + TSVs;
+  the `.rep` is a regenerable local cache (re-run `Phase1ApplyRtti` to rebuild symbols on any clone).
+- **RTTI applied as persistent symbols** (`Phase1ApplyRtti.java`): 523 class namespaces, 1,992
+  vftable labels, **5,207 DEFAULT methods renamed into `Class::vfunc_<slot>`** (93 hand-named
+  preserved). `FUN_` defaults dropped 20,558 → **15,543**; class-qualified functions now **5,583**.
+  Saved into the project — every future decompile resolves vtable calls to real class names
+  (verified: the movement path now shows e.g. `OutgoingEventQueueClass::vfunc_1`, the command/event
+  queue — a direct rewrite target).
+- **Batch decompiler** (`DecompileAt.java` + `just decomp <rva…>` / `just decomp-list <file>`):
+  reusable, replaces the one-off `Phase5Decomp*` scripts; outputs to `decomp/<rva>.c` with current
+  names. Smoke-tested on the sim-core hot path (387400/3a76b0/28d400).
+- `ExportFunctions.java` now emits fully-qualified names (`Class::method`).
+
+**Remaining Phase-1 work (next units):**
+- **Call-graph attribution** — name the non-virtual helpers (e.g. `FUN_140387400` path-follow) by
+  proximity to the named Locomotor/Coordinator vmethods that call them. Biggest remaining naming win.
+- **Differential-test harness** in the hook DLL — per-tick world-state checksum vs the live binary
+  (the correctness oracle for Phases 3–4).
+- (Struct DB is folded into Phase 2.)
+
+#### (Original Phase-1 plan, for reference)
+Turn the one-function-at-a-time workflow into a pipeline.
 
 - **Persistent, fully-analyzed, type-propagated Ghidra project**, committed/shareable (or a headless
   re-analysis recipe). All Phase-0 RTTI/string naming applied and saved.

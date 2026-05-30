@@ -19,7 +19,7 @@ public class ExportFunctions extends GhidraScript {
             Function fn = it.next();
             long va  = fn.getEntryPoint().getOffset();
             long rva = va - imageBase;
-            String name   = fn.getName();
+            String name   = fn.getName(true);   // fully-qualified (Class::method)
             String source = fn.getSymbol().getSource().toString();
             pw.println(String.format("0x%08X\t%s\t%s", rva, name, source));
             count++;
