@@ -33,29 +33,52 @@ vtable ptr at `this+0` and initializes fields).
 | `+0x48` | int | motion-state (read `*(int*)(entity+0x48)`, range [5,10] gate in `387400`) | ✓ high |
 | `+0x4d` | char | **active flag** (==1 ⇒ serviced; the coordinator/`387400` filter) | ✓ high |
 | `+0x50` | char | state flag (gates path branches in `387400`) | ✓ med |
+| `+0x60` | `std::string` | **node name** — keys the entity into the node manager (SSO: `+0x70` len, `+0x78` cap) | ✓ high |
+| `+0x1c0` | `std::string` | **bone/hardpoint name** — resolves to a bone index for the world matrix (SSO cap `+0x1d8`) | ✓ high |
+| `+0x1e0` | `std::string` | secondary bone name (used iff `+0x1f0 != 0`) | ✓ med |
 | `+0x2b0` | ptr | sub-object ptr (path/order context; deref'd in `387400`) | med |
 | `+0x2d8` | ptr | Lua context (`ctx`; `*ctx+0x58` = lua_State*) — prewarm chain | ✓ high |
 | `+0x148`,`+0x1f0`,`+0x360` | ptr | sub-object pointers used by the movement path | low |
 
-- **Transform/position — investigated 2026-05-30; method-accessed, not a flat field.** Findings:
-  - **Engine transform format = 4×3 matrix: 12 × `float`, 0x30-byte (48 B) stride.** Confirmed by
-    `FUN_14012d2c0` (copies 12 `undefined4` at `nodeIdx*0x30 + (*(spline+0xe8)+0x28)` into an output
-    vec/matrix; default element `0x3f800000` = 1.0f). Positions in the movement path come from
-    **path-spline node matrices**, not the entity directly.
-  - **Entity position is obtained via accessors, not a naked offset.** `FUN_140385cf0(component)`
-    derives the current position object from `entity+0x60` (a handle passed to `FUN_14001e680`);
-    `FUN_140387010`/`3825b0` consume it through methods. This matches the engine's abstraction style
-    (cf. the unified Lua reflection dispatcher).
-  - **Ruled out** as the position field: the Lua `Get_Position` binding (routes through the
-    reflection dispatcher — no per-method C body; the wrapper at `56d4c0` stores a constant, not a
-    fn ptr); the force integrator `FUN_140387f50` (only `component+0x28 -= force`); the deep-path
-    entity floats `+0x200` (mass·physics scale), `+0x23c` (speed threshold), `+0x250[]` (per-heading
-    LUT, indexed by `FUN_140398010`) — all tuning/state, **not** position.
-  - **Next unit (decisive):** decompile the locomotor transform-update vmethod (the
-    `LocomotorCommonClass`/behavior method that writes the entity's world matrix each tick) **or**
-    run a runtime watch (profile hook dumps candidate entity offsets across ticks in a battle;
-    the live position is the 12-float region that changes smoothly with movement). Then the harness
-    folds the entity 4×3 matrix (not a scalar) for transform coverage.
+- **Transform/position — RESOLVED 2026-05-30. The world transform is NOT in the entity struct.**
+  It lives in a global **Alamo node/skeleton manager**, keyed by the entity's *name string*, and is
+  read through a name→id→node→bone-matrix chain. Confirmed end-to-end by static decompile of
+  `FUN_140385cf0` / `FUN_140387010` and the `0x12dxxx` manager family. This is why five runtime
+  memory-scans (OFFWATCH v1–v4) of the entity's own 0x40..0x4c8 window found **no** coordinate
+  floats and **zero** moving VEC3 triples — there is nothing positional in the entity to find.
+
+  **Full resolution chain (the authoritative world position read):**
+  1. `manager = FUN_1402648b0(ctx)` — walks a subsystem list (`ctx+0x48`, vfunc-iterated `+0x20`
+     chain on `node+8`) for the one tagged `&DAT_140a12370`; returns the node/skeleton manager.
+  2. `entity+0x60` is a **`std::string`** (the entity's node name), NOT a handle.
+     `FUN_14001e680` is just the `std::string` **copy-ctor** (SSO: `+0x10`=len `+0x18`=cap;
+     heap-backed when len ≥ 0x10) — earlier "handle" reading was wrong.
+  3. `id = FUN_14012d520(manager, strupr(NAME))` — linear `_stricmp` scan over the manager's
+     **node vector at `manager+0xf0 .. +0xf8`** (stride 0x10, node ptr at `elem+8`, name via vfunc
+     slot 6). Cached on the component at **`component+0x90`** (re-resolved only when `< 0`).
+  4. `node = FUN_14012d6f0(manager, id)` = `*(manager+0xf0 + id*0x10 + 8)`.
+  5. `boneIdx = FUN_14012d2a0(node, entity+0x1c0)` — a **second `std::string`** (`entity+0x1c0`,
+     SSO cap at `+0x1d8`) names the bone/hardpoint; resolves to a bone index. Cached at
+     **`component+0x94`** (and a second optional bone `entity+0x1e0` → `component+0x98` when
+     `entity+0x1f0 != 0`). `FUN_14012d430(node, boneIdx, 1)` then marks the bone live.
+  6. `FUN_14012d2c0(node, boneIdx, out)` copies the **4×3 matrix** (12 × `float`, 0x30 stride):
+     `src = *(node+0xe8) + 0x28 + boneIdx*0x30`. First invokes vfunc slot 0xf (`*(node+0x78)`) to
+     recompute transforms. Identity default `0x3f800000`=1.0f on the diagonal.
+
+  **So: world matrix = `*(node+0xe8) + 0x28 + boneIdx*0x30`, 12 floats; translation = last 3
+  (`out+0x24/+0x28/+0x2c`).** Format = 4×3 matrix (confirmed; 0x30 stride).
+
+  - **Ruled out** as the position field (still valid): the Lua `Get_Position` binding (reflection
+    dispatcher; `56d4c0` stores a constant); the force integrator `FUN_140387f50` (`component+0x28
+    -= force`); the deep-path entity floats `+0x200` (mass·physics), `+0x23c` (speed threshold),
+    `+0x250[]` (per-heading LUT) — all tuning/state, **not** position. The OFFWATCH survey also
+    confirmed `+0x250..+0x380` are the all-`1.0` LUT in the live entity.
+  - **Harness fast path (next):** once warm, the chain reduces to two cached indices — read
+    `id=*(component+0x90)`, `boneIdx=*(component+0x94)`, then `node=*(manager+0xf0+id*0x10+8)` and
+    matrix `*(node+0xe8)+0x28+boneIdx*0x30`. Only the `manager` singleton must be located once
+    (via `FUN_1402648b0` / `DAT_140a12370`). Fold the root-bone translation triple into DIFFTRACE.
+    NOTE: this transform is recomputed via a vfunc (slot 0xf) and is the shared sim+render world
+    matrix — validate determinism (no frame-time interpolation) before trusting it as the oracle.
 
 ---
 
@@ -72,6 +95,10 @@ record**, distinct from `LocomotorCommonClass` (below).
 | `+0x28` | float | speed / weight (force-distribution numerator in `3a76b0`) | ✓ high |
 | `+0x48` | ptr | **current target** (target entity; `target+0x10` compared) | ✓ high |
 | `+0x58` | uint | rate-limit **countdown** (`-= delta`; gates per-component service cadence) | ✓ high |
+| `+0x60` | int | last-serviced tick stamp (`387010`: `delta = param_2 - *(comp+0x60)`) | ✓ high |
+| `+0x90` | int | **cached node id** (name→id via `12d520`; re-resolved when `< 0`) | ✓ high |
+| `+0x94` | int | **cached bone index** (primary; name→idx via `12d2a0`) | ✓ high |
+| `+0x98` | int | cached secondary bone index | ✓ med |
 | `+0x6c` | char | enable flag | ✓ med |
 | `+0x6d` | char | in-progress flag (set/cleared around the path step in `387400`) | ✓ med |
 | `+0x6e` | char | flag | ✓ med |
@@ -105,7 +132,8 @@ record**, distinct from `LocomotorCommonClass` (below).
 ---
 
 ## Phase-2 TODO (priority order)
-1. **Entity transform/position offset** (sub-object hunt) — unblocks harness transform coverage.
+1. ~~Entity transform/position offset~~ — **RESOLVED** (node-manager chain above). Remaining:
+   locate the `manager` singleton once for the harness fast path; validate transform determinism.
 2. **MovementComponent RTTI class** — allocation site / live-RTTI read.
 3. **GOM entity list** layout (the double-buffer set).
 4. RNG + tick-clock globals already known (`DAT_140b0a320` counter, `0x9cf314` FF flag); fold into a
