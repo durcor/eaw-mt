@@ -3045,13 +3045,39 @@ static uint64_t           g_dt_hash     = DT_FNV_BASIS;
 static uint32_t           g_dt_count    = 0;
 static volatile uint32_t *g_dt_frame_ctr = NULL;   /* DAT_140b0a320, RVA 0xb0a320 */
 
+/* Entity world-transform resolution (Phase 2, commit f71e452): position is NOT an
+ * entity field — it lives in a global Alamo node manager keyed by the entity's name
+ * string. The two engine routines that resolve it:
+ *   FUN_140385cf0(component) -> node object   (self-contained; locates the manager,
+ *       name->id lookup cached at component+0x90; exactly how 387010 calls it)
+ *   FUN_14012d2c0(node, boneIdx, out) -> copies the 4x3 matrix (12 floats, translation
+ *       last 3); first invokes vfunc slot 0xf to recompute, so the value is authoritative.
+ * boneIdx is the game's cached bone index at component+0x94, resolved by 387010 — which
+ * a76b0_orig has already run before this fold, so the caches are warm. */
+typedef int64_t (*DtGetNodeFn)(int64_t component);
+typedef int     (*DtGetMtxFn)(int64_t node, int boneIdx, void *out12floats);
+#define DT_GETNODE_RVA 0x385cf0ULL
+#define DT_GETMTX_RVA  0x12d2c0ULL
+static DtGetNodeFn g_dt_getnode = NULL;
+static DtGetMtxFn  g_dt_getmtx  = NULL;
+static uint32_t    g_dt_pos_n   = 0;     /* components with a resolved transform this tick */
+static int         g_dt_pos_have = 0;    /* a sample translation captured this tick */
+static float       g_dt_pos_xyz[3];      /* first resolved entity's translation (eyeball check) */
+
 static int dt_on(void) {
     if (g_dt_enabled < 0) {
         const char *e = getenv("EAW_DIFFTRACE");
         g_dt_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
         log_write(g_dt_enabled
-            ? "[eaw-mt] DIFFTRACE: enabled (per-tick movement-state fingerprint)\n"
+            ? "[eaw-mt] DIFFTRACE: enabled (per-tick movement-state fingerprint + transform)\n"
             : "[eaw-mt] DIFFTRACE: off (set EAW_DIFFTRACE=1 to capture golden trace)\n");
+        if (g_dt_enabled) {
+            HMODULE exe = GetModuleHandleA(NULL);
+            if (exe) {
+                g_dt_getnode = (DtGetNodeFn)((BYTE *)exe + DT_GETNODE_RVA);
+                g_dt_getmtx  = (DtGetMtxFn)((BYTE *)exe + DT_GETMTX_RVA);
+            }
+        }
     }
     return g_dt_enabled;
 }
@@ -3062,10 +3088,18 @@ static inline void dt_fold(const void *p, size_t n) {
     g_dt_hash = x;
 }
 static void dt_emit(void) {
-    char buf[96];
-    snprintf(buf, sizeof buf, "DIFFTRACE\ttick=%u\tn=%u\th=%016llx\n",
-             g_dt_tick, g_dt_count, (unsigned long long)g_dt_hash);
+    char buf[160];
+    snprintf(buf, sizeof buf, "DIFFTRACE\ttick=%u\tn=%u\tpos=%u\th=%016llx\n",
+             g_dt_tick, g_dt_count, g_dt_pos_n, (unsigned long long)g_dt_hash);
     log_write(buf);
+    /* Human-readable determinism check: one entity's world translation per tick. Same
+     * save+orders replayed twice must reproduce these; if the unit is moving they must
+     * change smoothly. (This is the validation the offset hunt could never produce.) */
+    if (g_dt_pos_have) {
+        snprintf(buf, sizeof buf, "DTPOS\ttick=%u\tx=%.3f\ty=%.3f\tz=%.3f\n",
+                 g_dt_tick, g_dt_pos_xyz[0], g_dt_pos_xyz[1], g_dt_pos_xyz[2]);
+        log_write(buf);
+    }
 }
 /* Fold one coordinator's serviced components into the current tick accumulator. */
 static void dt_fold_coordinator(int64_t coord) {
@@ -3091,6 +3125,26 @@ static void dt_fold_coordinator(int64_t coord) {
         dt_fold(&speedbits, 4);
         dt_fold(&countdown, 4);
         g_dt_count++;
+
+        /* World transform: fold the entity's 4x3 matrix (translation = last 3 floats).
+         * boneIdx (component+0x94) is <0 until 387010 has resolved it for this entity. */
+        int32_t boneIdx = *(int32_t *)(e + 0x94);
+        if (g_dt_getnode && g_dt_getmtx && boneIdx >= 0) {
+            int64_t node = g_dt_getnode(e);
+            if (node) {
+                float mat[12];
+                if (g_dt_getmtx(node, boneIdx, mat)) {
+                    dt_fold(mat, sizeof mat);          /* full transform into the fingerprint */
+                    g_dt_pos_n++;
+                    if (!g_dt_pos_have) {              /* latch one sample for the DTPOS line */
+                        g_dt_pos_xyz[0] = mat[9];
+                        g_dt_pos_xyz[1] = mat[10];
+                        g_dt_pos_xyz[2] = mat[11];
+                        g_dt_pos_have = 1;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -3353,6 +3407,7 @@ static void a76b0_hook(int64_t a, int32_t b)
         if (g != g_dt_tick) {                              /* new sim tick: flush previous */
             if (g_dt_tick != 0xFFFFFFFFu) dt_emit();
             g_dt_tick = g; g_dt_hash = DT_FNV_BASIS; g_dt_count = 0;
+            g_dt_pos_n = 0; g_dt_pos_have = 0;
         }
         dt_fold_coordinator(a);                            /* aggregate all coordinators/tick */
     }
