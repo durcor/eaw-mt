@@ -88,12 +88,14 @@ vtable ptr at `this+0` and initializes fields).
     The DIFFTRACE harness correctly fingerprints the **logical** movement state (motion-state
     `+0x48`, speed `+0x28`, countdown `+0x58`), which varies per-tick with real movement; that IS
     the right sim oracle. Transform-fold code removed (documented dead end in `dt_fold_coordinator`).
-  - **Corollary — the sim entity carries no plain-float world position.** Consistent with the
-    OFFWATCH result (entity's own `0x40..0x4c8` float window static during movement). If absolute
-    position coverage is ever needed, the remaining candidate is **path-spline progress** (the
-    path/order object at `component+0xc0` + which spline node the unit occupies; the spline node
-    matrices are the `FUN_14012d2c0` source) — not pursued now, since the state-machine fingerprint
-    already covers the deterministic movement surface.
+  - **Corollary — SUPERSEDED 2026-05-30.** This section earlier concluded "the sim entity carries no
+    plain-float world position," based on the OFFWATCH result. That was an artifact of watching the
+    **hardpoint** path (`*(HardPoint+0x20)` owner record), not the moving `GameObjectClass`. The
+    locomotor analysis (§LocomotorBehaviorClass) found the authoritative sim position **is** a flat
+    float vector at **`GameObjectClass + 0x78/+0x7c/+0x80`** (x/y/z), written each tick by the locomotor
+    `vfunc_6` and confirmed by four independent readers. The node-manager matrix above remains the
+    *render* transform; `entity+0x78` is the *sim* position. The OFFWATCH `0x40..0x478` window does
+    include `+0x78`, so it would have shown movement had it watched the moving GameObject directly.
 
 ---
 
@@ -162,17 +164,49 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
 
 ---
 
-## LocomotorCommonClass — the locomotor behavior (base)
+## LocomotorBehaviorClass — the locomotor (THE REAL MOVER)
 
-- **Vtable:** `0x869ea0` (97 methods — the base; Walk/Fighter/Fleet/JetPack/… derive it). Base vtable
-  written by the derived behavior ctors (`TeamLocomotorBehaviorClass` `FUN_14062f680`,
-  `FighterLocomotorBehaviorClass` `FUN_1405c8a80`).
-- **Empirical map:** `logs/Phase2Fields_LocomotorCommonClass.tsv` — 43 offsets / 57 methods.
-  Dominant member `+0x28` (ptr, 78×). This is the **actual movement/locomotion** behavior hierarchy —
-  distinct from `HardPointClass` above (which is the `coord+0x2d0` fire-control element). The real
-  per-tick locomotion path runs through these vmethods, NOT through `3a76b0`/`387400`. Detailed
-  labeling deferred — locating the locomotor's own per-tick service entry is the next movement target
-  (now that `3a76b0` is known to be hardpoints, not the mover).
+- **Vtables:** base `LocomotorBehaviorClass` `0x8adda0` (98 methods); base-class views `LocomotorCommonClass`
+  `0x869ea0`. Derived per-movement-type: `WalkLocomotorBehaviorClass 0x8ad798`,
+  `FighterLocomotorBehaviorClass 0x8a6198`, `FleetLocomotorBehaviorClass 0x899c58`,
+  `StarshipLocomotorBehaviorClass 0x8ae250`, `SimpleSpaceLocomotorBehaviorClass 0x8aeaf8`,
+  `LandTeam*LocomotorBehaviorClass`, etc. (~12 subclasses). Ctors e.g. `FighterLocomotorBehaviorClass`
+  `FUN_1405c8a80`, `TeamLocomotorBehaviorClass` `FUN_14062f680`.
+- **`behavior+0x28` = back-ref to the owning `GameObjectClass`** (the unit it moves; dominant member,
+  78× in the field map). The behavior reads/writes its owner each tick.
+
+- ### ✅ SERVICE ENTRY = vtable **slot 6** (`vfunc_6`) — the per-tick position integrator
+  Every derived locomotor **overrides slot 6** (base no-op `TacticalBuildObjects…::vfunc_6` `0x42f140`
+  just returns `0x650000`; real movers: Starship `0x6236b0`, Walk `0x61e930`, Fighter/Fleet/… likewise).
+  Each `vfunc_6(behavior, entity)`:
+  1. calls the shared `LocomotorCommonClass::vfunc_6` pre-step,
+  2. reads the unit's **world position** from `entity+0x78/+0x7c/+0x80` (x/y/z floats),
+  3. switches on the **locomotor state** `*(entity+0xa8)` (state record; `+0x48` = state enum,
+     `+0x54/+0x58/+0x5c/+0x60` = sub-state/timers),
+  4. runs the per-type movement state machine (accel/heading/turn math; `FUN_1404aaa40` = vector ops),
+  5. writes the updated position back to `entity+0x78/+0x7c/+0x80`.
+  This is the method the sim-parallel rewrite's movement body re-implements. Profile harness can fold
+  it directly — see the position note below.
+
+- **✅ WORLD POSITION = `GameObjectClass + 0x78/+0x7c/+0x80`** (flat `float` x/y/z), confirmed by FOUR
+  independent functions: `StarshipLocomotorBehaviorClass::vfunc_6` (read→integrate→write),
+  `MovementCoordinatorClass::vfunc_8` `0x4f7360` (group centroid), `SpaceMovementCoordinatorClass::vfunc_7`
+  `0x5d1710` (nearest-neighbor distance), and the Walk locomotor. **This corrects the earlier
+  "the sim entity carries no plain-float position" conclusion** — that conclusion came from watching the
+  *hardpoint* path (OFFWATCH latched `*(HardPoint+0x20)`, the non-polymorphic owner record, never the
+  moving `GameObjectClass`). The render-side node transform (entity+0x4e gated, §GameObjectClass) is a
+  *separate* representation; the **authoritative sim position is `entity+0x78`**, and the differential
+  harness CAN fingerprint it (the hardpoint coordinator `a76b0` param IS a `GameObjectClass`, so
+  `coord+0x78/+0x7c/+0x80` is the ship's position — fold that for deterministic transform coverage).
+
+- **Per-frame DRIVER (the caller of slot 6) — TODO.** slot 6 is invoked polymorphically (no static
+  xref); the immediate caller is the GameObject/behavior per-tick update loop (candidate: the
+  GameObject behavior list seen in `FUN_140388b60` at `entity+0x278` / count `+0x288`). Pin it with a
+  one-shot runtime return-address capture on a locomotor `vfunc_6`. The MovementCoordinator (Land/Space,
+  vtables `0x86b080`/`0x8a6520`) classes are **NOT** the driver — they are `SignalListenerClass`-derived
+  spatial-coherence/formation systems holding a registered-unit vector at `coordinator+0x28..+0x30`
+  (`vfunc_3` `0x4f6b60` = add-unit; `vfunc_1` `0x4f77e0` = signal callback), which read positions but
+  do not tick the locomotor.
 
 ---
 
@@ -187,10 +221,13 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
 ## Phase-2 TODO (priority order)
 1. ~~Entity transform/position offset~~ — **RESOLVED** (render-side node-manager chain; not a sim
    field — see GameObjectClass §). No harness fold.
-2. ~~MovementComponent RTTI class~~ — **RESOLVED: it's `HardPointClass`** (live RTTI), and the
-   `a76b0`/`387400` path is hardpoint fire-control, not movement. Follow-ups: (a) resolve the
-   `e+0x20` owner-record class; (b) locate the **actual** locomotor per-tick service entry (the
-   `LocomotorBehaviorClass` path) — the real movement subsystem the rewrite targets.
+2. ~~MovementComponent RTTI class~~ — **RESOLVED: it's `HardPointClass`** (live RTTI); `a76b0`/`387400`
+   = hardpoint fire-control, not movement.
+2b. ~~Locomotor service entry~~ — **RESOLVED: `LocomotorBehaviorClass` vtable slot 6 (`vfunc_6`)**, the
+   per-tick position integrator; world position = `entity+0x78/+0x7c/+0x80` (see §LocomotorBehaviorClass).
+   Follow-ups: (a) resolve the hardpoint `e+0x20` owner-record class; (b) pin the per-frame DRIVER that
+   calls `vfunc_6` (runtime return-address capture); (c) optionally fold `coord+0x78` into DIFFTRACE for
+   real transform coverage.
 3. **GOM entity list** layout (the double-buffer set).
 4. RNG + tick-clock globals already known (`DAT_140b0a320` counter, `0x9cf314` FF flag); fold into a
    determinism-surface struct doc in Phase 4.
