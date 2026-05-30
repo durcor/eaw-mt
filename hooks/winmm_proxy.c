@@ -1,28 +1,23 @@
 /*
  * winmm_proxy.c — proxy winmm.dll for EaW hook injection
  *
- * Phase 4 / Phase 5: Model A render thread (serialized) + Pump_Threads timing hook.
+ * Phase 5: shipped stability/perf fixes for StarWarsG.exe (FoC / Thrawn's Revenge
+ * under Wine/Proton + DXVK).  See hooks/SHIPPING.md for the full fix manifest and
+ * env kill-switches.
  *
- * Installs an inline hook on FUN_140180d90 (render flush wrapper, RVA 0x180d90).
- * The render flush (12-pass D3D9 draw + present + task drain) runs on a
- * dedicated render thread.  The main thread signals the render thread then
- * blocks on render_done — fully serialized, no concurrent access to render
- * task lists.
+ * BUILD MODES (compile-time):
+ *   just build-winmm           → RELEASE: fixes only, profiler compiled out (default).
+ *   just build-winmm-profile   → adds -DEAW_PROFILE: full per-function timing profiler
+ *                                + 300-frame stats dump + stall-sampling watchdog.
+ *   All `#ifdef EAW_PROFILE` blocks are measurement only; the functional fixes are
+ *   always compiled.  The release build is what you ship.
  *
- * True frame overlap requires double-buffering the render task lists so that
- * inter-flush WinMain code (lines 571-626) cannot race with flush#1 reads.
- * That investigation is deferred; this build establishes the stable baseline.
- *
- * Hook mechanics:
- *   - First 14 bytes of FUN_140180d90 are position-independent (verified):
- *       40 53           PUSH RBX
- *       48 83 ec 20     SUB RSP,0x20
- *       ba ff 0b 00 00  MOV EDX,0xbff
- *       48 8b d9        MOV RBX,RCX
- *   - Replaced with: FF 25 00 00 00 00 <abs addr of render_flush_hook>
- *   - Trampoline (VirtualAlloc exec): saved 14 bytes + JMP to RVA+14 (0x180d9e)
- *
- * Build: just build-winmm
+ * Render hook: inline hook on FUN_140180d90 (render flush wrapper, RVA 0x180d90).
+ * The render-thread offload (Model A) is dormant — flush runs on the main thread
+ * (measured ceiling ~0: flush is 0.01ms/frame; DXVK executes draws async).  The
+ * hook is retained as the frame anchor + binary-version sanity check.  First 14
+ * bytes of FUN_140180d90 are position-independent (PUSH RBX / SUB RSP,0x20 /
+ * MOV EDX,0xbff / MOV RBX,RCX) → replaced with FF 25 abs-JMP to render_flush_hook.
  *
  * Steam launch options:
  *   WINEDLLOVERRIDES="winmm=n,b" PROTON_USE_NTSYNC=1 %command% STEAMMOD=...
@@ -2007,43 +2002,11 @@ static volatile LONG g_in_prewarm_pumpe   = 0;
 static volatile LONG g_prewarm_jmp_valid  = 0;
 static jmp_buf        g_prewarm_jmp;
 
-/* Worker thread: one background Lua-AI thread at a time.  When an entity's
- * lua_resume is dispatched here, the main thread returns immediately and the
- * 14s init stall becomes invisible to the frame loop.
- *
- * Safety: each entity has an independent lua_State (entity+0x2d8).  After
- * pumpe_hook returns without calling g_pumpe_orig, FUN_1403a6b80 only reads
- * entity_manager+0x121 (done flag) and writes LastService timestamp — neither
- * field is written by the BG thread until after lua_resume completes.
- * If the main thread arrives for the same entity again while BG is running,
- * g_pumpe_bg_running blocks the call (skip), preventing double-resume. */
-static volatile LONG g_pumpe_bg_running = 0;
-
-typedef struct { int64_t a; LARGE_INTEGER t0; } PumpeWorkItem;
-
-static DWORD WINAPI pumpe_bg_worker(LPVOID arg)
-{
-    PumpeWorkItem *item = (PumpeWorkItem *)arg;
-    int64_t a = item->a;
-    LARGE_INTEGER t0 = item->t0, t1;
-    free(item);
-
-    g_pumpe_orig(a);
-
-    tgt_fake_qpc(&t1);
-    double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
-    g_pumpe_bg_sum_ms += ms;
-    if (ms > g_pumpe_bg_max_ms) g_pumpe_bg_max_ms = ms;
-
-    if (ms >= 100.0) {
-        char s[80];
-        sprintf(s, "[eaw-mt] PUMPE-BG %.1fms (entity Lua AI, background)\n", ms);
-        log_write(s);
-    }
-
-    InterlockedExchange(&g_pumpe_bg_running, 0);
-    return 0;
-}
+/* NOTE: the background Lua-AI dispatch worker (Model B) was removed — it was the
+ * abandoned offload experiment (Step 30), proven to corrupt main-thread vtable
+ * state because EaW's Lua C closures touch shared sim state during lua_resume.
+ * Pumping is synchronous on the main thread; the Fix B3 per-gsvc budget is the
+ * stall guard. See openspec/engine/threading_model.md (Model B verdict). */
 
 static volatile LONG g_post_prewarm_log = 0; /* arms after prewarm fires */
 
@@ -2228,11 +2191,12 @@ static BOOL install_pumpe_resume_shim(void)
 
 static void pumpe_hook(int64_t a)
 {
+#ifdef EAW_PROFILE
+    /* Stall-sampler watchdog (measurement only): a 1ms-polling thread that can
+     * suspend+sample the main thread during a stall. Not in the release build. */
     static LONG g_pumpe_once = 0;
     if (InterlockedCompareExchange(&g_pumpe_once, 1, 0) == 0) {
         log_write("[eaw-mt] DBG: pumpe_hook first call\n");
-        /* Open a real handle to this (the main/battle-loop) thread so the watchdog
-         * can suspend+sample it during a stall. pumpe_hook always runs on main. */
         g_main_thread_h = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME,
                                      FALSE, GetCurrentThreadId());
         if (!g_main_thread_h)
@@ -2243,6 +2207,7 @@ static void pumpe_hook(int64_t a)
         if (wdh) { CloseHandle(wdh); log_write("[eaw-mt] pumpe watchdog thread started (deadline=4ms)\n"); }
         else      { log_write("[eaw-mt] WARN: failed to start pumpe watchdog thread\n"); }
     }
+#endif
 
     /* Post-prewarm trace: log first N calls so we know the game loop resumed. */
     LONG rem = InterlockedCompareExchange(&g_post_prewarm_log, 0, 0);
@@ -2266,17 +2231,17 @@ static void pumpe_hook(int64_t a)
         return;
     }
 
-    /* Watchdog: arm for timing measurement only (no abort flag write).
-     * Writing *(a+0x121)=1 causes Pump_Threads to take an abort-cleanup
-     * path that writes to corrupted wake_addr → ntdll null-ptr crash. */
+    /* t0/t1 timing is FUNCTIONAL: it feeds g_pumpe_frame_used_ms, the Fix B3
+     * per-gsvc budget accumulator. Required in every build. */
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
 
+#ifdef EAW_PROFILE
+    /* Watchdog arming + open-storm profiler (measurement only). */
     g_wd_pump_start = real_timeGetTime();
     g_wd_deadline   = g_wd_pump_start + PUMP_DEADLINE_MS;
     InterlockedExchange(&g_wd_armed, 1);
 
-    /* Step 35 open-storm profiler: reset (O(1) gen bump) and activate for this pump. */
     g_open_gen++;
     g_open_n = g_open_fail = g_open_unique = g_open_repeat = 0;
     g_open_sum_ms = g_open_max_ms = 0.0;
@@ -2284,16 +2249,15 @@ static void pumpe_hook(int64_t a)
     g_open_fail_sample_n = 0;
     g_fscache_hits = 0;
     g_open_profile_active = 1;
+#endif
 
     g_pumpe_orig(a);
 
+#ifdef EAW_PROFILE
     g_open_profile_active = 0;
     InterlockedExchange(&g_wd_armed, 0);
 
     /* If this pump was a stall, dump the open-storm characterization. */
-    /* OPEN-STORM dump uses a lower threshold than the RIP sampler: it only reads
-     * counters (no thread suspend), so it can cheaply capture sub-stall pumps —
-     * e.g. the ~1s residual after the fscache fix. */
     if ((real_timeGetTime() - g_wd_pump_start) >= 300 && g_open_n > 0) {
         char hdr[256];
         snprintf(hdr, sizeof(hdr),
@@ -2310,13 +2274,16 @@ static void pumpe_hook(int64_t a)
             log_write(ln);
         }
     }
+#endif
 
     tgt_fake_qpc(&t1);
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
-    g_pumpe_frame_used_ms += ms;
+    g_pumpe_frame_used_ms += ms;   /* Fix B3 budget accumulator (functional) */
+#ifdef EAW_PROFILE
     g_pumpe_sum_ms += ms;
     if (ms > g_pumpe_max_ms) g_pumpe_max_ms = ms;
     g_pumpe_count++;
+#endif
     if (ms >= 100.0) {
         int64_t pw = g_prewarm_lua_state;
         char s[96];
@@ -3377,7 +3344,10 @@ static volatile int g_opp_per_call = 0;
 
 static void b387400_hook(int64_t a, int32_t b)
 {
+    /* Functional (Fix B2): reset the per-component opp-target budget before each call.
+     * b385190_hook gates on g_opp_per_call, so this reset is required in every build. */
     g_opp_per_call = 0;
+#ifdef EAW_PROFILE
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
     g_b387400_orig(a, b);
@@ -3386,6 +3356,9 @@ static void b387400_hook(int64_t a, int32_t b)
     g_b387400_sum_ms += ms;
     if (ms > g_b387400_max_ms) g_b387400_max_ms = ms;
     g_b387400_count++;
+#else
+    g_b387400_orig(a, b);
+#endif
 }
 
 typedef int64_t (*B385cf0Fn)(int64_t);
@@ -3460,9 +3433,13 @@ static BOOL install_b87010_subcallee_hooks(void)
         BYTE *target = fn_b87010 + i + 5 + rel;
         BYTE *stub   = NULL;
         int  *cnt    = NULL;
+        /* 387400 reset-wrapper is functional (Fix B2) — always wired. The 385cf0/381ff0
+         * redirects are timing-only and compiled out of the release build. */
         if      (target == fn_b387400) { stub = stub_b387400; cnt = &n387400; }
+#ifdef EAW_PROFILE
         else if (target == fn_b385cf0) { stub = stub_b385cf0; cnt = &n385cf0; }
         else if (target == fn_b381ff0) { stub = stub_b381ff0; cnt = &n381ff0; }
+#endif
         if (!stub) continue;
         int32_t new_rel = (int32_t)(stub - (fn_b87010 + i + 5));
         DWORD old;
@@ -3514,11 +3491,15 @@ static double    g_b385190_sum_ms    = 0, g_b385190_max_ms = 0;
 
 static int64_t * b385190_hook(int64_t component, int64_t candidate, float *score)
 {
+    /* Functional (Fix B2): cap opp-target search candidates per component. */
     if (g_opp_per_call >= OPP_SEARCH_CAP) {
+#ifdef EAW_PROFILE
         InterlockedIncrement(&g_b385190_capped);
+#endif
         return (int64_t *)0;  /* budget exhausted — short-circuit the search */
     }
     g_opp_per_call++;
+#ifdef EAW_PROFILE
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
     int64_t *r = g_b385190_orig(component, candidate, score);
@@ -3528,6 +3509,9 @@ static int64_t * b385190_hook(int64_t component, int64_t candidate, float *score
     if (ms > g_b385190_max_ms) g_b385190_max_ms = ms;
     InterlockedIncrement(&g_b385190_count);
     return r;
+#else
+    return g_b385190_orig(component, candidate, score);
+#endif
 }
 
 static BOOL install_fix_b(void)
@@ -5018,7 +5002,11 @@ static LONG   g_bsel_count     = 0;
 static double g_bsel_sum_ms    = 0, g_bsel_max_ms    = 0;
 
 static void game_service_hook(int64_t a, int32_t b) {
-    g_pumpe_frame_used_ms = 0.0;  /* reset per-gsvc Lua AI budget */
+    /* FUNCTIONAL: reset the per-gsvc Lua AI budget at the start of each service
+     * pass — Fix B3's pumpe_hook accumulator depends on this. This hook is kept
+     * in the release build (installed unconditionally) for the reset alone. */
+    g_pumpe_frame_used_ms = 0.0;
+#ifdef EAW_PROFILE
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
     g_gsvc_orig(a, b);
@@ -5043,6 +5031,9 @@ static void game_service_hook(int64_t a, int32_t b) {
                 ms, (unsigned long long)slot22_rva, mode_obj ? "non-null" : "null");
         log_write(s);
     }
+#else
+    g_gsvc_orig(a, b);
+#endif
 }
 
 static void slot22_tail_hook(int64_t a, int64_t b, int64_t c, int64_t d) {
@@ -5691,6 +5682,12 @@ static DWORD WINAPI render_thread_proc(LPVOID unused) {
  * ========================================================================= */
 
 static void WINAPI render_flush_hook(void *param_1) {
+#ifndef EAW_PROFILE
+    /* RELEASE: pure passthrough. Render offload is dormant and the per-frame
+     * profiling/sim-tick instrumentation is measurement-only. */
+    g_trampoline(param_1);
+}
+#else
     /* Ensure sim tick vtable is hooked for this game mode */
     try_patch_sim_tick();
 
@@ -5764,6 +5761,7 @@ static void WINAPI render_flush_hook(void *param_1) {
         g_flush1_done_valid = TRUE;
     }
 }
+#endif /* EAW_PROFILE */
 
 
 /* =========================================================================
@@ -6188,36 +6186,41 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             return FALSE;
         }
 
-        /* Install inline hook (also builds g_trampoline) */
+        /* Render hook (frame anchor + binary-version sanity check; also builds g_trampoline).
+         * Render-thread offload is dormant: flush runs on the main thread (measured ceiling
+         * ~0). The render thread is not spawned. */
         if (!install_render_hook()) return FALSE;
 
-        /* BISECT LEVEL 4: all non-sub-callee hooks restored.
-         * Confirmed innocent: render hook (Level 2), WaitMessage IAT (Level 3).
-         * If crash returns → culprit is in this group; split further.
-         * If stable → crash lives in sub-callee hooks below. */
+        /* ---- Shipped fixes (always installed) ---- */
+        install_wait_message_iat_hook();   /* WaitMessage->1ms cap (unfocused-window keep-alive) */
+        install_io_iat_hooks();            /* fscache negative-dir cache (createfileA/W) */
+        install_game_service_hook();       /* Fix B3: resets the per-gsvc AI budget each pass */
+        install_pumpe_hook();              /* Fix B3: per-gsvc AI budget (PUMPE_BUDGET_MS=33) */
+        install_prewarm_hook();            /* prewarm OFF by default (EAW_PREWARM=1 to opt in) */
+        install_fn56480_wrapper();         /* prewarm allocator-safety wrapper (dormant when off) */
+        install_a7190_guard();             /* prewarm null guard (dormant when off) */
+        install_b87010_subcallee_hooks();  /* installs the b387400 reset-wrapper Fix B2 depends on */
+        install_fix_b();                   /* Fix B1 (opp interval) + Fix B2 (b385190 budget cap) */
+        install_b25ec10_subcallee_hooks(); /* b25ec10 art-model result cache (EAW_NO_B25CACHE) */
+        build_meg_index();                 /* MEG archive filename index (for meg_has / nf_cache) */
+        install_b141f70_subcallee_hooks(); /* nf_cache: MEG not-found memo (EAW_NO_MEGSKIP) */
+
+#ifdef EAW_PROFILE
+        /* ---- Measurement-only instrumentation (compiled out of the release build) ---- */
         install_pump_hook();
-        install_wait_message_iat_hook();
-        install_io_iat_hooks();
         install_inter_hooks();
         install_slot22_hooks();
-        install_game_service_hook();
         install_space_slot22_hook();
         install_space_unit_svc_hook();
         install_tail22i_hook();
         install_post_loop_hooks();
         install_tail22_body_hooks();
         install_2be640_body_hooks();
-        install_pumpe_hook();
         install_pumpe_resume_shim();
-        install_prewarm_hook();
-        install_fn56480_wrapper();
-        install_a7190_guard();
         install_a6b80_stall2_hooks();
         install_b87010_hook();
         install_d12d520_hook();
         install_d12d480_hook();
-        install_b87010_subcallee_hooks();
-        install_fix_b();
         install_b387400_subcallee_hooks();
         install_b3825b0_subcallee_hooks();
         install_b29f810_subcallee_hooks();
@@ -6225,16 +6228,12 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b3989a0_subcallee_hooks();
         install_b3a4820_subcallee_hooks();
         install_b375380_subcallee_hooks();
-        install_b25ec10_subcallee_hooks();
-        build_meg_index();
-        install_b141f70_subcallee_hooks();
         install_ga4d0_hook();
         install_galactic_slot22_hook();
+        log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
+#endif
 
-        /* DIAGNOSTIC: render thread disabled — g_trampoline called directly on main thread.
-         * Keeping thread creation suppressed to isolate whether idle render thread
-         * polling (WaitForSingleObject every 1000ms) was causing the use-after-free. */
-        log_write("[eaw-mt] Model A: render on main thread (no render thread)\n");
+        log_write("[eaw-mt] Model A: render on main thread (offload dormant)\n");
     }
 
     if (fdwReason == DLL_PROCESS_DETACH) {

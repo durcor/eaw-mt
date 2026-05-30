@@ -15,8 +15,14 @@ save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/us
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
 
+# RELEASE build (default): shipped fixes only, profiler compiled out.
 build-winmm:
   nix develop --command x86_64-w64-mingw32-gcc -shared -o patches/experimental/winmm.dll hooks/winmm_proxy.c -lkernel32
+  cp patches/experimental/winmm.dll {{game-dir}}
+
+# PROFILE build: adds -DEAW_PROFILE → full per-function timing profiler + stats dump.
+build-winmm-profile:
+  nix develop --command x86_64-w64-mingw32-gcc -DEAW_PROFILE -shared -o patches/experimental/winmm.dll hooks/winmm_proxy.c -lkernel32
   cp patches/experimental/winmm.dll {{game-dir}}
 
 ghidra-script script:
