@@ -126,9 +126,21 @@ Cheap, high-leverage discovery that can multiply or kill the effort. **Decision 
   names. Smoke-tested on the sim-core hot path (387400/3a76b0/28d400).
 - `ExportFunctions.java` now emits fully-qualified names (`Class::method`).
 
+- **Call-graph attribution DONE** (`Phase1CallGraphAttrib.java`): conservative rule (callers all in
+  one class; ≥2 class-callers or sole caller), iterated to fixpoint in 7 rounds (1731→586→145→35→9→2
+  →0 — exponential decay = attribution propagating down the call tree). **+2,508 helpers attributed →
+  8,097 class-owned functions (37% of 21,744).** Attributed helpers keep their `FUN_` name (DEFAULT
+  source) under a class namespace (`WalkLocomotorBehaviorClass::FUN_140386170`) — provenance stays
+  explicit: inferred owner, not an RTTI method. Spot-checked correct (locomotor helpers cluster under
+  their concrete subclasses; movement helpers in the 0x37xxxx–0x38xxxx neighborhood).
+  - **Known gap — indirect-dispatch roots.** The gsvc/movement hot path (`FUN_14028d400` →
+    `FUN_1403a76b0` → `FUN_140387400`) is *not* auto-attributed: it's reached by stored
+    function-pointer / registered-callback dispatch (`3a76b0` walks an array at `*(this+0x2d0)` and
+    calls through it), and Ghidra's static call graph has no edge for indirect calls. These roots are
+    already hand-mapped (openspec) and get confirmed when lifted in Phase 3. Optional future tool: an
+    indirect-dispatch resolver (map callback-registration sites / vtable-slot writes → callee).
+
 **Remaining Phase-1 work (next units):**
-- **Call-graph attribution** — name the non-virtual helpers (e.g. `FUN_140387400` path-follow) by
-  proximity to the named Locomotor/Coordinator vmethods that call them. Biggest remaining naming win.
 - **Differential-test harness** in the hook DLL — per-tick world-state checksum vs the live binary
   (the correctness oracle for Phases 3–4).
 - (Struct DB is folded into Phase 2.)
