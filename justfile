@@ -36,6 +36,16 @@ ghidra-script script:
     -postScript {{script}}.java \
     -log logs/{{script}}.log
 
+# Run a Ghidra script with trailing args (read-only). e.g. just gs Phase2VtableXrefs 8661b8 869ea0
+gs script +args:
+  nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
+    ghidra_projects EawProject \
+    -process StarWarsG.exe \
+    -noanalysis -readOnly \
+    -scriptPath tools/ghidra_scripts \
+    -postScript {{script}}.java {{args}} \
+    -log logs/{{script}}.log
+
 # Decompile one or more RVAs (hex) to decomp/<rva>.c using current RTTI-applied names.
 # e.g. just decomp 387400 3a76b0 28d400
 decomp +rvas:
