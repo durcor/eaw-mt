@@ -1,6 +1,6 @@
 # Threading Model
 
-**Status:** Phase 5 — Model A (render) shipped; Models B (AI) & C (movement) scoped & ruled out (pervasive shared state). Sim-side CPU parallelism beyond render not viable; multithreading-for-perf goal CLOSED.
+**Status:** Phase 5 — Model A (render) hook installed but offload **dormant** (flush currently runs synchronously on the main thread; the render thread is created but unkicked per-frame — async was deferred, then backed off to serial during crash debugging). Measured ceiling is ~0 anyway: render flush = 0.01ms avg / 1ms max even under heavy load (DXVK executes draws async; CPU-side flush is negligible). Models B (AI) & C (movement) scoped & ruled out (pervasive shared state). Sim-side CPU parallelism beyond render not viable from a hook; the engine-source rewrite that *would* enable it is scoped below. Multithreading-for-perf goal CLOSED at the hook level.
 **Last verified:** 2026-05-29
 
 ---
@@ -204,6 +204,70 @@ compute/apply boundary we can exploit without engine source. **Sim-side CPU para
 the render thread is not viable here.** The realized performance wins on this title are the
 render-thread split plus I/O/algorithmic caching (fscache, MEG index, nf_cache, b25ec10 result
 cache) — not additional worker threads. Treat the multithreading-for-sim-perf goal as closed.
+
+---
+
+## Engine-Source Sim-Parallel Rewrite — Boundary Scope (2026-05-29)
+
+Scoped at user request to **define what lies on the far side of the hook wall** — i.e. what it
+would take to actually parallelize the fast-forward sim, the only lever measured to be a *notable*
+improvement (FF frame is ~100% sim: `inter`≈4.5ms vs `flush`≈0.01ms). This is a boundary-definition
+document, **not** a build plan; all of it requires engine source and is out of scope for binary
+hooking.
+
+### Why a hook can't do it (recap, measured)
+Three independent walls, each confirmed this phase:
+1. **Ticks are sequential** — tick N+1 reads the world state tick N writes (hard RAW dependency); no temporal pipelining.
+2. **Intra-tick entity writes cross objects** — decompile-confirmed: a component writes *another* entity's `+0x38` listener list (`FUN_1403846c0`), the global order queue `DAT_140b27e60` (`FUN_1402d5290`), and the shared Lua `global_State`.
+3. **No compute/apply boundary, and we can't insert one** — the parallel-safe work is interleaved with the shared writes inside single game-binary functions we cannot refactor from a hook.
+
+### Target architecture: deterministic compute → apply
+Convert the per-tick sim from "iterate entities, mutate shared state inline" to two phases:
+- **Phase A (parallel, read-only):** each entity/component reads a *frozen* snapshot of last tick's
+  world state and emits its intended mutations as **deferred ops** into a thread-local command buffer. No shared writes.
+- **Phase B (serial):** a single thread drains all command buffers in a **canonical deterministic
+  order** and applies them to the world state.
+
+This is the standard command-buffer / SoA-ECS structure. Retrofitting it onto Alamo requires:
+
+| # | Work item | Grounded in | Difficulty |
+|---|---|---|---|
+| 1 | **Restructure the tick** into Phase A / Phase B; the gsvc movement service (`FUN_14028d400` → `FUN_1403a76b0` → per-component `FUN_140387400`) becomes the Phase-A body, emitting commands instead of writing. | The ~1700 path-follow components/tick are the bulk of the tick. | High — touches the core loop. |
+| 2 | **Double-buffer all sim state read during a tick** so Phase A sees a consistent frozen world: entity transforms/health/target ptrs, the entity lists, spatial structures. | Phase A must not observe mid-tick mutations. | High — memory + every read site. |
+| 3 | **Command schema + buffers** for every write kind: move order, target acquire/release, damage, spawn, resource delta, fog reveal, listener subscribe/unsubscribe. | The write set found in Model C scoping (cross-entity + global queue writes). | Medium — but the schema must be exhaustive (see #6). |
+| 4 | **Determinism preservation** — apply phase must yield bit-identical results to the serial order (canonical sort, e.g. by entity ID); no scheduling-dependent float-accumulation order. | EaW is lockstep-deterministic for **multiplayer + replays + save/load**. Any divergence = desync / broken replays. The FF force-sum loop in `FUN_1403a76b0` accumulates floats across members — order-sensitive. | **Hardest constraint** — pervades every system; the reason naive parallelism is unacceptable, not just unsafe. |
+| 5 | **Lua VM isolation** — the AI pump runs coroutines that issue side-effecting C callbacks through the shared `global_State` via the single reflection dispatcher (`FUN_14024a8a0`). To parallelize AI you'd need per-AI `lua_State`s (memory blowup; they share game-object refs) or a copy-on-write VM. | The prewarm corruption (Step 35) proved how fragile the shared VM is. The dispatcher has no read/write flag to gate Phase A. | Very high — but **avoidable** (see partition). |
+| 6 | **Exhaustive write-set classification** — every reflected C++ method + direct write must be tagged read vs write to know what becomes a command. | Binding audit (`script_engine.md`): access is a generic reflection dispatcher over hundreds of methods, no read/write flag. **With source** this is an audit; **without** it is per-function RE. | High volume, but mechanical with source. |
+
+### Realistic partition (what you'd actually parallelize)
+You would **not** parallelize everything — you'd peel off the write-light, high-cost subsystems and
+keep the coupled ones serial:
+- **Parallel (Phase A):** movement integration / path-following (the ~1700 components — the position
+  math is per-entity; the cross-entity target/queue writes become commands), particle/FX sim, collision broad-phase.
+- **Serial (Phase B):** AI Lua pump (already ~0.02ms/tick, rate-limited — cheap to leave serial,
+  which sidesteps work item #5 entirely), command-queue drain, fog/resource/spawn application, the deterministic apply.
+
+### Amdahl ceiling (measured)
+Favorable inputs: in FF the tick is almost all movement service — AI pump ≈0.02–0.04ms, cmd-queue
+≈0ms. So the parallelizable fraction is high (~80–90% of the tick), serial tail = apply + AI + cmd-queue.
+With the cross-entity writes (a few hundred commands/tick, microseconds each to apply) the serial
+apply is small. Estimated speedup ≈ 1/(s + p/N): for s≈0.15, **N=4 → ~2.9×, N=8 → ~4×**. So a
+correct rewrite could make fast-forward roughly **3–4× faster** — real, but bounded (not linear),
+and gated entirely on getting determinism (#4) and the snapshot (#2) right.
+
+### Feasibility verdict
+- **Without engine source: not feasible.** It requires changing struct layouts, calling conventions,
+  and the core loop — none reachable by patching a closed binary. You would be "rewriting" functions
+  you can only read as disassembly.
+- **With engine source: large but tractable** — a months-scale, determinism-audited refactor (core
+  loop restructure + state double-buffering + command system + a full replay/multiplayer determinism
+  test gate). The Lua VM (#5) is the worst subsystem and is best **avoided** by keeping AI serial,
+  which the measured AI cost (~0.02ms/tick) makes painless.
+
+**Bottom line:** the biggest possible win (≈3–4× fast-forward) and the blocked lever are the same
+lever. It is unreachable from a hook by construction; it becomes a bounded, well-understood refactor
+only with source. This closes the multithreading investigation: the hook-level frontier is exhausted,
+and the source-level frontier is now scoped and documented as the boundary.
 
 ---
 
