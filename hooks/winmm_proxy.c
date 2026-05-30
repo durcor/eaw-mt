@@ -3117,12 +3117,13 @@ static void dt_fold_coordinator(int64_t coord) {
 #define OW_END     0x478
 #define OW_WIN     (OW_END - OW_OFF0)
 #define OW_PERIOD  8                     /* a76b0 ticks between samples (self-clocked) */
-#define OW_ROUNDS  40
+#define OW_ROUNDS  60
 #define OW_SUB_LO  0x08                  /* entity pointer-slot scan range */
-#define OW_SUB_HI  0x300
-#define OW_SUBLEN  0x80                  /* bytes watched in each followed sub-object */
+#define OW_SUB_HI  0x500
+#define OW_SUBLEN  0x100                 /* bytes watched in each followed sub-object */
 #define OW_NSLOTS  ((OW_SUB_HI - OW_SUB_LO) / 8)
-#define OW_MAXLOG  160                   /* per-round changed-field log cap */
+#define OW_MAXLOG  200                   /* per-round changed-field log cap */
+#define OW_SIG     0.01f                 /* |delta| above this = real motion (not jitter) */
 static int      g_ow_enabled    = -1;
 static int64_t  g_ow_coord      = 0;     /* latched coordinator (avoid multi-coord thrash) */
 static int64_t  g_ow_ent        = 0;
@@ -3192,30 +3193,36 @@ static int ow_present(int64_t coord, int64_t ent) {
     }
     return 0;
 }
-/* report changed finite floats between two byte buffers; returns #changed (capped logging) */
+/* Report changed finite floats between two buffers. Logs only floats that moved by > OW_SIG
+ * (jitter near 0 is ignored). Flags a "VEC3?" when 3 consecutive 4-byte slots all moved — that
+ * is the position/transform signature. *sig accumulates the count of real (>OW_SIG) movers (used
+ * to decide whether the entity is actually moving, for rotation). Returns total significant movers. */
 static int ow_diff(const uint8_t *cur, const uint8_t *prev, int len,
-                   const char *tag, int slot, int *logbudget) {
-    int chg = 0;
+                   const char *tag, int slot, int *logbudget, int *sig) {
+    int moved = 0, run = 0;
     for (int o = 0; o < len; o += 4) {
         float cf, pf;
         memcpy(&cf, cur + o, 4);
         memcpy(&pf, prev + o, 4);
-        if (!ow_finite(cf) || cf == pf) continue;
-        if (cf < -1e9f || cf > 1e9f) continue;          /* skip pointer-ish garbage */
-        chg++;
+        if (!ow_finite(cf) || cf < -1e9f || cf > 1e9f) { run = 0; continue; }
+        float d = cf - pf;
+        float ad = d < 0 ? -d : d;
+        if (ad <= OW_SIG) { run = 0; continue; }         /* unchanged or jitter → breaks vec3 run */
+        moved++; (*sig)++;
+        run++;
         if (*logbudget > 0) {
-            char ln[112];
+            char ln[120];
             if (slot < 0)
-                snprintf(ln, sizeof ln, "  %s off=0x%x val=%.4f d=%.5f\n",
-                         tag, OW_OFF0 + o, (double)cf, (double)(cf - pf));
+                snprintf(ln, sizeof ln, "  %s off=0x%x val=%.3f d=%.4f%s\n",
+                         tag, OW_OFF0 + o, (double)cf, (double)d, run >= 3 ? "  <-VEC3?" : "");
             else
-                snprintf(ln, sizeof ln, "  %s slot=0x%x+0x%x val=%.4f d=%.5f\n",
-                         tag, slot, o, (double)cf, (double)(cf - pf));
+                snprintf(ln, sizeof ln, "  %s slot=0x%x+0x%x val=%.3f d=%.4f%s\n",
+                         tag, slot, o, (double)cf, (double)d, run >= 3 ? "  <-VEC3?" : "");
             log_write(ln);
             (*logbudget)--;
         }
     }
-    return chg;
+    return moved;
 }
 static void ow_sample(int64_t coord) {
     if (g_ow_rounds >= OW_ROUNDS) return;
@@ -3237,12 +3244,12 @@ static void ow_sample(int64_t coord) {
     memcpy(cur, (void *)(g_ow_ent + OW_OFF0), OW_WIN);   /* entity is present+active: safe */
     if (g_ow_have_prev) {
         uint32_t fc = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
-        int budget = OW_MAXLOG, chg = 0;
+        int budget = OW_MAXLOG, sig = 0;
         char hdr[112];
         snprintf(hdr, sizeof hdr, "OFFWATCH round=%d atick=%u fctr=%u idx=%d ent=%p\n",
                  g_ow_rounds, g_ow_ticks, fc, g_ow_entidx, (void *)g_ow_ent);
         log_write(hdr);
-        chg += ow_diff(cur, g_ow_prev, OW_WIN, "ent", -1, &budget);   /* level 0 */
+        ow_diff(cur, g_ow_prev, OW_WIN, "ent", -1, &budget, &sig);   /* level 0 */
         /* level 1: follow each plausible pointer slot one deep */
         for (int slot = OW_SUB_LO; slot < OW_SUB_HI; slot += 8) {
             int idx = (slot - OW_SUB_LO) / 8;
@@ -3253,12 +3260,12 @@ static void ow_sample(int64_t coord) {
             uint8_t sb[OW_SUBLEN];
             memcpy(sb, (void *)ptr, OW_SUBLEN);
             if (g_ow_subhave[idx] && g_ow_subptr[idx] == ptr)
-                chg += ow_diff(sb, g_ow_subprev[idx], OW_SUBLEN, "sub", slot, &budget);
+                ow_diff(sb, g_ow_subprev[idx], OW_SUBLEN, "sub", slot, &budget, &sig);
             memcpy(g_ow_subprev[idx], sb, OW_SUBLEN);
             g_ow_subptr[idx] = ptr; g_ow_subhave[idx] = 1;
         }
         g_ow_rounds++;
-        if (chg == 0) {                            /* idle entity: rotate to the next one */
+        if (sig == 0) {                            /* no real motion: rotate to the next entity */
             if (++g_ow_idle >= 2) {
                 g_ow_entidx++; g_ow_ent = 0; g_ow_have_prev = 0; ow_reset_subs(); g_ow_idle = 0;
             }
