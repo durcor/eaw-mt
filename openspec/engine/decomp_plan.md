@@ -271,18 +271,43 @@ depends on it):
 | tick/clock | `27c360` + globals | ~3 |
 | locomotor | 12× `vfunc_6` + common + state-machine helpers | ~40–60 |
 | hardpoint fire-control | `a76b0`,`387010`,`387400`,`3825b0`,`385cf0`,`385190`,`382510`,`3846c0`,`387f50`,`29f810` + callees | ~30 |
-| other sim behaviors | the in-slice `BehaviorClass` subtypes on a typical unit (TBD) | **open** |
+| sim behaviors (per-unit `vfunc_6`) | 13 in-slice classes (census below) + helpers | ~80–140 |
 | command/event queue | `OutgoingEventQueue` + event types | ~10 |
-| **Total** | | **~150–250 fns** (matches "hundreds") |
+| **Total** | | **~180–280 fns** |
 
-**The one open unknown — resolve FIRST in Phase 3 (gate from "scoped" → "lifting"):** the
-heterogeneous **behavior set**. `FUN_1403a6b80` ticks *every* behavior on an entity via `vfunc_6`,
-not just the locomotor — a unit carries many (locomotor, transform, select, targeting, abilities, …).
-Only behaviors that **mutate determinism-relevant sim state** are in-slice; presentation behaviors
-(render/UI/audio) are out. **First task: enumerate the behavior types on representative units**
-(runtime RTTI-read of the `entity+0x278` behavior-array vtables — same technique that resolved
-`HardPointClass`), then classify each `vfunc_6` as sim-mutating (in) vs presentation (out). This
-sizes the real slice.
+**✅ Behavior set RESOLVED 2026-05-30 (runtime `BEHENUM` census + decompile classification).** A
+representative space unit carries **~14 behaviors** (`entity+0x278` array, `+0x290` count), each with
+its **own** `vfunc_6` override (none inherit the base no-op) — so `FUN_1403a6b80` runs ~14
+sub-updates per unit per tick. RTTI named them all; classification (in = mutates determinism-relevant
+sim state; out = presentation):
+
+| Behavior class | `vfunc_6` | In/Out | Note |
+|---|---|---|---|
+| `SimpleSpaceLocomotorBehaviorClass` (+Walk/Fighter/Fleet/Starship…) | `0x626420` | **IN** | the mover — writes `entity+0x78` position [CORE] |
+| `UnitAIBehaviorClass` | `0x4f6070` | **IN** | per-tick AI decision/orders (977 B; cross-entity — the Model-B write surface) |
+| `TargetingBehaviorClass` | `0x633a30` | **IN** | weapon target selection (per game-speed mode) |
+| `DamageTrackingBehaviorClass` | `0x58bd80` | **IN** | HP/damage application (cross-entity) |
+| `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
+| `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | energy/power resource |
+| `IonStunEffectBehaviorClass` | `0x62bba0` | **IN** | ion-stun status effect |
+| `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ability cooldowns |
+| `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | environmental damage |
+| `NebulaBehaviorClass` | `0x437b60` | **IN** | nebula env effects (sensors/shields) |
+| `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | force-power target state (TR hero powers) |
+| `LureBehaviorClass` | `0x62b4c0` | **IN** | decoy/AI lure |
+| `RevealBehaviorClass` | `0x5373c0` | **IN** | fog-of-war reveal (sensor grid — MP-determinism-relevant) |
+| `SelectBehaviorClass` | `0x3c2310` | **out** | UI selection-indicator animation (damped-spring on a *displayed* value) |
+| `HideWhenFoggedBehaviorClass` | `0x53ddc0` | **out** | render-visibility reaction to fog |
+
+**Scope consequence:** the per-entity sim tick is **not just movement** — it is ~13 sim behaviors +
+hardpoint fire-control, several with **cross-entity writes** (damage to other units, AI order
+issuance, target acquisition, fog reveal). The Phase-B command buffer must therefore carry a rich
+write set (damage apply, order issue, target set, fog update), not only movement. This confirms the
+slice at the upper end (~180–280 fns) and re-affirms why naive parallelization was ruled out (pervasive
+cross-object writes) — the rewrite's value is in the compute/apply split, and each IN behavior must be
+classified Phase-A-compute vs Phase-B-apply when lifted. Census artifact: `BEHENUM` lines (the hook's
+one-shot RTTI dump of `entity+0x278`); decompiled `vfunc_6` bodies in `decomp/{3c2310,633a30,53ddc0,
+58bd80,4f6070,5373c0}.c`.
 
 **Validation:** the DIFFTRACE oracle already covers movement state machine + world position
 (`entity+0x78`) + hardpoint fire-control state. Each lifted function is diffed by replaying a fixed
@@ -347,12 +372,13 @@ yields **~3–4× faster fast-forward** (Amdahl, s≈0.15, N=4→2.9×, N=8→4�
 
 ## 5. Recommended next concrete step
 
-Phases 0–2 are done and Phase 3 is scoped (above). The next concrete action is the **Phase-3 gate
-task: enumerate the behavior set.** Runtime-dump the `vfunc_6` vtables of each behavior in a
-representative unit's behavior array (`entity+0x278`, count `+0x290`) via the proven in-hook RTTI
-read (the one that resolved `HardPointClass`), then classify each behavior as sim-mutating (in-slice)
-vs presentation (out-of-slice). That single capture turns "~150–250 fns" into a hard inventory and is
-the gate between *scoped* and *lifting*. After it: begin the lift in dependency order (tick clock →
-spine → locomotor integrators), diffing each unit against the DIFFTRACE oracle. Front-load the
-determinism pins (Phase 4) — the `a76b0` order-sensitive float sum and RNG draws — since they are
-*rewrite* risk surfaced early, not just decomp risk.
+Phases 0–2 done; Phase 3 scoped **and its gate task (behavior census) complete** — the in-slice set
+is the 13 sim behaviors + locomotor + hardpoint fire-control + spine tabulated above (~180–280 fns).
+The next concrete action is **begin the lift in dependency order**: (1) tick clock/scheduler →
+(2) entity-update spine (`3639d0`/`2be640`/`3a6b80`) → (3) locomotor integrators → (4) hardpoint
+fire-control → the IN behaviors, diffing each unit against the DIFFTRACE oracle as it lands. Two
+front-loads: (a) the determinism pins (Phase 4) — the `a76b0` order-sensitive float sum + RNG draws —
+since they are *rewrite* risk surfaced early; (b) classify each IN behavior's writes as Phase-A
+(own-entity, parallel) vs Phase-B (cross-entity, deferred-command) as it is lifted, since that split
+*is* the rewrite. Before heavy lifting, apply the recovered struct layouts as Ghidra types so the
+decompiles read as `entity->position`/`entity->behaviors[i]` rather than raw offsets.
