@@ -199,14 +199,30 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
   harness CAN fingerprint it (the hardpoint coordinator `a76b0` param IS a `GameObjectClass`, so
   `coord+0x78/+0x7c/+0x80` is the ship's position — fold that for deterministic transform coverage).
 
-- **Per-frame DRIVER (the caller of slot 6) — TODO.** slot 6 is invoked polymorphically (no static
-  xref); the immediate caller is the GameObject/behavior per-tick update loop (candidate: the
-  GameObject behavior list seen in `FUN_140388b60` at `entity+0x278` / count `+0x288`). Pin it with a
-  one-shot runtime return-address capture on a locomotor `vfunc_6`. The MovementCoordinator (Land/Space,
-  vtables `0x86b080`/`0x8a6520`) classes are **NOT** the driver — they are `SignalListenerClass`-derived
-  spatial-coherence/formation systems holding a registered-unit vector at `coordinator+0x28..+0x30`
-  (`vfunc_3` `0x4f6b60` = add-unit; `vfunc_1` `0x4f77e0` = signal callback), which read positions but
-  do not tick the locomotor.
+- ### ✅ DRIVER PINNED = `FUN_1403a6b80` (the per-GameObject sim-tick update)
+  Found by runtime return-address capture (vtable-hook slot 6 → `__builtin_return_address(0)`, LOCODRV):
+  the caller is **RVA `0x3a6f80`, inside `FUN_1403a6b80`** (entry `0x3a6b80`; next fn is `a76b0`). This
+  is the **per-entity sim update** — `FUN_1403a6b80(entity, tick, flag)`. Its behavior loop
+  (`decomp/3a6b80.c:128-134`):
+  ```c
+  for (i = (char)entity[0x52]; --i >= 0; )                 // behavior COUNT = *(entity+0x290)
+      b = *(GameObject_behaviors[i]);                      // behavior ARRAY = *(entity+0x278)
+      if (*(uint*)(b+0x30) <= tick &&                      // per-behavior schedule gate
+          FUN_1404c3700(b))                                // enabled? (behavior+0x3c == 0)
+          (**(code**)(*b + 0x30))(b, entity, tick);        // behavior->vfunc_6(entity, tick)  ← slot 6
+  ```
+  So **`vfunc_6` (slot 6) is the generic `BehaviorClass::Update(entity, tick)`** — every behavior on the
+  entity implements it; the *locomotor* behavior's override is the movement integrator (position at
+  `entity+0x78`). `FUN_1403a6b80` ticks ALL of an entity's behaviors, then services its hardpoints
+  (`FUN_1403a76b0`, `decomp/3a6b80.c:358`), and recurses into contained/child units. It is the real
+  per-entity sim-tick body. **The arg order is `(behavior, entity, tick)` — 3 register args** (rcx/rdx/r8;
+  the capture hook had to forward r8 to avoid dropping the tick delta).
+  - **Above the driver:** `FUN_1403a6b80` is invoked per root entity by the battle/GOM tick (recursive
+    for children); identifying that top-level iterator is the **GOM entity-list** task (Phase-2 #3).
+  - **Not the driver:** the Land/Space `MovementCoordinatorClass` (`0x86b080`/`0x8a6520`) are
+    `SignalListenerClass`-derived spatial-coherence/formation systems (registered-unit vector at
+    `coordinator+0x28..+0x30`; `vfunc_3` `0x4f6b60` = add-unit, `vfunc_1` `0x4f77e0` = signal callback);
+    they read positions but do not tick the locomotor.
 
 ---
 
@@ -225,9 +241,10 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
    = hardpoint fire-control, not movement.
 2b. ~~Locomotor service entry~~ — **RESOLVED: `LocomotorBehaviorClass` vtable slot 6 (`vfunc_6`)**, the
    per-tick position integrator; world position = `entity+0x78/+0x7c/+0x80` (see §LocomotorBehaviorClass).
-   Follow-ups: (a) resolve the hardpoint `e+0x20` owner-record class; (b) pin the per-frame DRIVER that
-   calls `vfunc_6` (runtime return-address capture); (c) optionally fold `coord+0x78` into DIFFTRACE for
-   real transform coverage.
+   Follow-ups: (a) resolve the hardpoint `e+0x20` owner-record class; ~~(b) pin the per-frame DRIVER~~
+   **DONE: driver = `FUN_1403a6b80`** (per-GameObject sim update; behavior loop at `entity+0x278`/count
+   `+0x290` → `BehaviorClass::vfunc_6(entity, tick)`); (c) optionally fold `coord+0x78` into DIFFTRACE
+   for real transform coverage.
 3. **GOM entity list** layout (the double-buffer set).
 4. RNG + tick-clock globals already known (`DAT_140b0a320` counter, `0x9cf314` FF flag); fold into a
    determinism-surface struct doc in Phase 4.
