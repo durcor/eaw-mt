@@ -3111,12 +3111,14 @@ static void dt_fold_coordinator(int64_t coord) {
 #define OW_OFF0   0x40
 #define OW_END    0x478
 #define OW_WIN    (OW_END - OW_OFF0)
-#define OW_PERIOD 16
+#define OW_PERIOD 8                      /* a76b0 ticks between samples (self-clocked) */
 #define OW_ROUNDS 30
 static int      g_ow_enabled    = -1;
+static int64_t  g_ow_coord      = 0;     /* latched coordinator (avoid multi-coord thrash) */
 static int64_t  g_ow_ent        = 0;
 static uint8_t  g_ow_prev[OW_WIN];
 static int      g_ow_have_prev  = 0;
+static uint32_t g_ow_ticks      = 0;     /* a76b0 calls on the latched coordinator */
 static uint32_t g_ow_next       = 0;
 static int      g_ow_rounds     = 0;
 
@@ -3166,24 +3168,30 @@ static int ow_present(int64_t coord, int64_t ent) {
 }
 static void ow_sample(int64_t coord) {
     if (g_ow_rounds >= OW_ROUNDS) return;
-    uint32_t g = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
-    /* latch / re-latch on death */
+    /* latch ONE coordinator (tactical may have land+space; sampling both thrashes) */
+    if (!g_ow_coord) {
+        if (ow_first_active(coord)) g_ow_coord = coord; else return;
+    }
+    if (coord != g_ow_coord) return;
+    g_ow_ticks++;                                  /* self-clock: a76b0 call count, not 0xb0a320 */
+    /* latch / re-latch the watched entity on death */
     if (g_ow_ent && !ow_present(coord, g_ow_ent)) { g_ow_ent = 0; g_ow_have_prev = 0; }
     if (!g_ow_ent) {
         g_ow_ent = ow_first_active(coord);
-        if (!g_ow_ent) return;
-        g_ow_have_prev = 0; g_ow_next = g + 4;
+        if (!g_ow_ent) { g_ow_coord = 0; return; } /* list emptied; re-latch later */
+        g_ow_have_prev = 0; g_ow_next = g_ow_ticks + 2;
         return;
     }
-    if (g < g_ow_next) return;
-    g_ow_next = g + OW_PERIOD;
+    if (g_ow_ticks < g_ow_next) return;
+    g_ow_next = g_ow_ticks + OW_PERIOD;
 
     uint8_t cur[OW_WIN];
     memcpy(cur, (void *)(g_ow_ent + OW_OFF0), OW_WIN);
     if (g_ow_have_prev) {
-        char hdr[96];
-        snprintf(hdr, sizeof hdr, "OFFWATCH round=%d tick=%u ent=%p\n",
-                 g_ow_rounds, g, (void *)g_ow_ent);
+        uint32_t fc = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;   /* also log 0xb0a320 to see if it moves */
+        char hdr[112];
+        snprintf(hdr, sizeof hdr, "OFFWATCH round=%d atick=%u fctr=%u ent=%p\n",
+                 g_ow_rounds, g_ow_ticks, fc, (void *)g_ow_ent);
         log_write(hdr);
         for (int o = 0; o < OW_WIN; o += 4) {
             float cf, pf;
@@ -6070,8 +6078,11 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
         ep->ExceptionRecord->NumberParameters >= 2 &&
         ep->ExceptionRecord->ExceptionInformation[0] == 1) {
         ULONG_PTR bad = ep->ExceptionRecord->ExceptionInformation[1];
-        /* Corrupted wake_addr: upper bits in Wine DLL range, lower 32 bits = 0 */
-        if ((bad & 0xFFFFFFFFULL) == 0 && bad >= 0x6f0000000000ULL) {
+        /* Corrupted wake_addr signature: junk in the upper dword, lower 32 bits = 0
+         * (a real waiter-byte pointer is never 4GB-aligned). Covers the original
+         * 0x6fff00000000 race AND other corrupt values e.g. 0x2ad00000000 seen at
+         * the 0x3a9e7d thunk — the inner instruction-pattern checks are the 2nd gate. */
+        if ((bad & 0xFFFFFFFFULL) == 0 && (bad >> 32) != 0) {
             volatile unsigned char *ip =
                 (volatile unsigned char *)ep->ContextRecord->Rip;
             int skip_len = 0;
