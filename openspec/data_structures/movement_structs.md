@@ -228,9 +228,47 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
 
 ## GameObjectManagerClass — the GOM
 
-- **Vtable:** `0x85b9a8`. **Ctor:** `FUN_14029aaa0` (constructed by `GameModeClass`'s ctor
-  `FUN_14029a0c0` — the GOM is a GameMode member). Entity-list layout TBD (the world-state set the
-  rewrite must double-buffer); next after the entity transform.
+- **Vtable:** `0x85b9a8`. **Ctor/dtor:** `FUN_14029aaa0` is the **destructor** (tears down all the
+  member collections below); constructed by `GameModeClass`'s ctor `FUN_14029a0c0` (the GOM is a
+  GameMode member).
+
+- ### ✅ Entity-list layout RESOLVED 2026-05-30 (dtor `FUN_14029aaa0` + iterator `FUN_1402be640`)
+  The GOM owns the world entity set. Member collections (offset = `param_1[idx]*8`, from the dtor's
+  vtable-typed teardown — types are explicit in the decompile):
+
+  | Offset | Type | Role |
+  |---|---|---|
+  | **`+0xe8`** | `ReferenceListClass<GameObjectClass>` | **MASTER per-tick UPDATE list** (sentinel `+0xf0`, head `+0xf8`) — the one iterated each tick |
+  | `+0x130` | `ReferenceListClass<GameObjectClass>` | second update pass list (sentinel `+0x138`, head `+0x140`) |
+  | `+0x38`,`+0x178`,`+0x1c8`,`+0x210`,`+0x258`,`+0x2a0`,`+0x2e8`,`+0x330`,`+0x378`,`+0x560`,`+0x5a8` | `ReferenceListClass<GameObjectClass>` | category/index views (by type/owner/state — labels TBD) |
+  | `+0x408` | `MultiLinkedListClass<GameObjectClass>` | primary owning collection (all objects) |
+  | `+0x3d8` | `DynamicVectorRefClass<GameObjectClass*>` | ref vector view |
+  | `+0x5f0` | `DynamicVectorClass<CreationParamsStruct>` | deferred-creation params |
+
+- ### ✅ The top-level sim-tick iterator = `FUN_1402be640` (a GOM method)
+  Walks the master list at `GOM+0xe8` and calls the per-entity driver (`decomp/2be640.c:60-66`):
+  ```c
+  for (node = *(GOM+0xf8); node != GOM+0xf0; node = *(node+8)) {  // ReferenceListClass walk
+      entity = *(node+0x18) - 0x18;                               // node+0x18 = ref; -0x18 = base subobj
+      FUN_1403a6b80(entity, tick, flag);                          // per-GameObject sim update
+  }
+  ```
+  Node layout: `+0x8` = next, `+0x18` = entity ref (`entity = *(node+0x18) - 0x18`). A second pass over
+  the same list (`2be640.c:75-85`) and the `+0x140` list follows. `FUN_1402be640` is itself called
+  twice from `FUN_1403639d0` (the sim-frame update; `CallersOf` → `0x363c30`/`0x363c40`).
+
+- ### ✅ COMPLETE per-tick sim entity-update chain (movement + weapons, end to end)
+  ```
+  FUN_1403639d0                      sim-frame update
+    └─ FUN_1402be640(GOM)            iterate GOM+0xe8 ReferenceList<GameObject>
+         └─ FUN_1403a6b80(entity)    per-GameObject update  (recurses into child units)
+              ├─ for each behavior: BehaviorClass::vfunc_6(entity, tick)   [slot 6]
+              │     └─ locomotor override → integrate movement → entity+0x78/+0x7c/+0x80
+              └─ FUN_1403a76b0(entity) → hardpoint fire-control (387400 targeting)
+  ```
+  **Rewrite double-buffer target:** the world-state set is the `GameObjectClass` instances reachable
+  from `GOM+0xe8` (and the owning `MultiLinkedListClass` at `+0x408`); the per-tick mutated fields are
+  the movement state (`entity+0x78` pos, `+0xa8` locomotor state) and the hardpoint/target state.
 
 ---
 
@@ -245,6 +283,10 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
    **DONE: driver = `FUN_1403a6b80`** (per-GameObject sim update; behavior loop at `entity+0x278`/count
    `+0x290` → `BehaviorClass::vfunc_6(entity, tick)`); (c) optionally fold `coord+0x78` into DIFFTRACE
    for real transform coverage.
-3. **GOM entity list** layout (the double-buffer set).
+3. ~~GOM entity list layout~~ — **RESOLVED** (see §GameObjectManagerClass): master per-tick list =
+   `ReferenceListClass<GameObjectClass>` at `GOM+0xe8`, iterated by `FUN_1402be640` → `FUN_1403a6b80`
+   per entity. The full sim entity-update chain (GOM → driver → behaviors+hardpoints) is now mapped.
 4. RNG + tick-clock globals already known (`DAT_140b0a320` counter, `0x9cf314` FF flag); fold into a
    determinism-surface struct doc in Phase 4.
+5. Remaining loose ends: hardpoint `e+0x20` owner-record class; label the GOM category index-lists;
+   optionally fold `coord+0x78` (sim position) into DIFFTRACE for transform coverage.
