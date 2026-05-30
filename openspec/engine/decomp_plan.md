@@ -55,7 +55,43 @@ in isolation against the running game before we depend on it.
 
 ## 2. Phases
 
-### Phase 0 — Recon & feasibility gate (days)
+### Phase 0 — Recon & feasibility gate — ✅ EXECUTED 2026-05-30, GATE PASSED DECISIVELY
+
+**Result: the binary retains full, descriptive MSVC RTTI. Feasibility for the sim-core slice is
+strongly confirmed.** Measured (`tools/ghidra_scripts/Phase0RttiRecon.java` → `logs/Phase0RttiMap.tsv`):
+
+| Metric | Value |
+|---|---|
+| RTTI TypeDescriptors (named classes) | **1,703** (1,628 game/engine-specific, not std/CRT) |
+| Validated CompleteObjectLocators / vftables | 1,992 |
+| Total vtable method slots | 20,346 |
+| **Distinct functions named via vtables** | **5,310 = 24.4% of all 21,744** (5,300 are known entry points) |
+| Descriptive `Class::Method` debug strings | present (e.g. `GamePlayUIClass::Init`, `DatabaseConversionSystemClass::Get().System_Initialize`) — a second, independent naming source |
+
+**The sim-core / Phase-A target subsystem is fully RTTI-named** — every type the rewrite touches:
+`GameObjectClass`, `GameObjectManagerClass`, `GameModeClass`/`GameModeManagerClass`, `PlayerClass`,
+the entire **Locomotor** hierarchy (`LocomotorBehaviorClass` + 15 subclasses: Starship/Walk/Fighter/
+Fleet/Flying/JetPack/Bike/LandBomber/SimpleSpace/Team/LandTeam…, ~97 vmethods each),
+`MovementCoordinatorClass`/`Land`/`Space`, all five pathfinders (`Land/Space/DynamicLand/LandZone/
+Galactic PathFinderClass`), `TheMovementClassManagerClass`, the command/event types
+(`StopMovementEventClass` and the `EventFactoryClass<…>` family), and the determinism-relevant enums
+(`MovementClassType`, `LocomotorStateType`, `GameObjectCategoryType`, `CellPassabilityType`).
+
+Our hand-mapped hot-path functions (`FUN_140387400` path-follow, `FUN_1403a76b0`, `FUN_14028d400`
+gsvc, etc.) are **non-virtual helpers** — not in a vtable directly, but reachable by call-graph from
+the named Locomotor/Coordinator vmethods, so Phase 1's call-graph attribution names them. The 24.4%
+vtable figure is a *floor*: it excludes non-virtual methods (named by class proximity), free
+functions, and the `Class::Method` debug-string set.
+
+**Gate verdict: PASSED.** RTTI alone names a quarter of the binary and 100% of the sim-core class
+skeleton — far above the ~40–50% sim-reachable threshold. **Product 1 (sim-core slice) proceeds.**
+Remaining Phase-0 task before Phase 1: external-corpus recon (mod SDK / community Lua-API method
+names) to label the reflected-method set (boundary item #6) — lower priority now that RTTI carries
+the structural load.
+
+---
+
+#### (Original Phase-0 plan, for reference)
 Cheap, high-leverage discovery that can multiply or kill the effort. **Decision gate at the end.**
 
 - **RTTI recovery.** MSVC binaries retain RTTI. EaW is heavily C++ (`TheGameScoringManagerClass`,
