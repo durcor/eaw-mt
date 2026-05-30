@@ -3018,6 +3018,83 @@ static A76b0Fn g_a76b0_orig   = NULL;
 static LONG    g_a76b0_count  = 0;
 static double  g_a76b0_sum_ms = 0, g_a76b0_max_ms = 0;
 
+#ifdef EAW_PROFILE
+/* =========================================================================
+ * Differential-test harness (decomp Phase 1) — per-tick world-state fingerprint.
+ *
+ * Emits, once per sim tick, an FNV-1a hash over the deterministic VALUE fields of
+ * every active locomotor component the movement coordinator services this tick.
+ * This is the correctness oracle for the sim-parallel rewrite (Phases 3-4): a
+ * re-implemented movement path must reproduce this hash stream tick-for-tick on a
+ * fixed save+replay (lockstep determinism makes the trace reproducible across runs).
+ *
+ * Enumeration mirrors FUN_1403a76b0 (decomp/3a76b0.c): coordinator+0x2d0 -> list L
+ * (skip if coordinator+0x3a0 & 0x40); L+0x10 = count, L+0x8 = ptr array (stride 8);
+ * element e = arr[i]; entity = *(e+0x20); active iff *(entity+0x4d)==1. Per active
+ * component we fold {iteration index, entity motion-state @+0x48, component speed
+ * float @+0x28, component countdown @+0x58} — all value-deterministic. (Transform
+ * offsets get added once Phase 2 recovers the entity layout; the framework is the
+ * deliverable, the hashed field set is a knob.) Profile-build only; runtime-gated
+ * by EAW_DIFFTRACE=1. Grep "DIFFTRACE" out of the log to extract the golden trace.
+ * ========================================================================= */
+#define DT_FNV_BASIS 0xcbf29ce484222325ULL
+#define DT_FNV_PRIME 0x00000100000001b3ULL
+static int                g_dt_enabled  = -1;
+static uint32_t           g_dt_tick     = 0xFFFFFFFFu;
+static uint64_t           g_dt_hash     = DT_FNV_BASIS;
+static uint32_t           g_dt_count    = 0;
+static volatile uint32_t *g_dt_frame_ctr = NULL;   /* DAT_140b0a320, RVA 0xb0a320 */
+
+static int dt_on(void) {
+    if (g_dt_enabled < 0) {
+        const char *e = getenv("EAW_DIFFTRACE");
+        g_dt_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_dt_enabled
+            ? "[eaw-mt] DIFFTRACE: enabled (per-tick movement-state fingerprint)\n"
+            : "[eaw-mt] DIFFTRACE: off (set EAW_DIFFTRACE=1 to capture golden trace)\n");
+    }
+    return g_dt_enabled;
+}
+static inline void dt_fold(const void *p, size_t n) {
+    const uint8_t *b = (const uint8_t *)p;
+    uint64_t x = g_dt_hash;
+    for (size_t i = 0; i < n; i++) { x ^= b[i]; x *= DT_FNV_PRIME; }
+    g_dt_hash = x;
+}
+static void dt_emit(void) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "DIFFTRACE\ttick=%u\tn=%u\th=%016llx\n",
+             g_dt_tick, g_dt_count, (unsigned long long)g_dt_hash);
+    log_write(buf);
+}
+/* Fold one coordinator's serviced components into the current tick accumulator. */
+static void dt_fold_coordinator(int64_t coord) {
+    if (!coord) return;
+    if (*(uint8_t *)(coord + 0x3a0) & 0x40) return;        /* coordinator disabled */
+    int64_t L = *(int64_t *)(coord + 0x2d0);
+    if (!L) return;
+    int32_t n = *(int32_t *)(L + 0x10);
+    int64_t arr = *(int64_t *)(L + 0x8);
+    if (!arr || n <= 0 || n > 1000000) return;             /* sanity bound */
+    for (int i = 0; i < n; i++) {
+        int64_t e = *(int64_t *)(arr + (int64_t)i * 8);
+        if (!e) continue;
+        int64_t ent = *(int64_t *)(e + 0x20);
+        if (!ent) continue;
+        if (*(int8_t *)(ent + 0x4d) != 1) continue;        /* match a76b0's active filter */
+        uint32_t idx       = (uint32_t)i;
+        int32_t  motion    = *(int32_t *)(ent + 0x48);     /* motion-state (value) */
+        uint32_t speedbits = *(uint32_t *)(e + 0x28);      /* component speed float bits */
+        uint32_t countdown = *(uint32_t *)(e + 0x58);      /* rate-limit countdown */
+        dt_fold(&idx, 4);
+        dt_fold(&motion, 4);
+        dt_fold(&speedbits, 4);
+        dt_fold(&countdown, 4);
+        g_dt_count++;
+    }
+}
+#endif /* EAW_PROFILE */
+
 static void a76b0_hook(int64_t a, int32_t b)
 {
     LARGE_INTEGER t0, t1;
@@ -3028,6 +3105,21 @@ static void a76b0_hook(int64_t a, int32_t b)
     g_a76b0_sum_ms += ms;
     if (ms > g_a76b0_max_ms) g_a76b0_max_ms = ms;
     g_a76b0_count++;
+
+#ifdef EAW_PROFILE
+    if (dt_on()) {
+        if (!g_dt_frame_ctr) {
+            HMODULE exe = GetModuleHandleA(NULL);
+            if (exe) g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+        }
+        uint32_t g = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+        if (g != g_dt_tick) {                              /* new sim tick: flush previous */
+            if (g_dt_tick != 0xFFFFFFFFu) dt_emit();
+            g_dt_tick = g; g_dt_hash = DT_FNV_BASIS; g_dt_count = 0;
+        }
+        dt_fold_coordinator(a);                            /* aggregate all coordinators/tick */
+    }
+#endif
 }
 
 typedef void (*A9e30Fn)(int64_t, int32_t, int64_t, int32_t, int64_t,

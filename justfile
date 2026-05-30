@@ -11,6 +11,8 @@ compat-data := env('HOME') + "/gam/steam/steamapps/compatdata/32470"
 log-file  := env('HOME') + "/gam/steam/steamapps/common/sweaw/corruption/eaw-mt.log"
 # Virtual-desktop resolution for launch-foc-desktop. Override: just desktop-res=2560x1440 launch-foc-desktop
 desktop-res := "1920x1080"
+# Differential-test golden-trace capture (profile build only). Override: just difftrace=1 launch-foc-desktop
+difftrace := ""
 save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
@@ -106,6 +108,7 @@ launch-foc-desktop:
     capsh --inh='' -- -c ' \
       WINEPREFIX={{compat-data}}/pfx \
       WINEDLLOVERRIDES=winmm=n,b \
+      EAW_DIFFTRACE={{difftrace}} \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \

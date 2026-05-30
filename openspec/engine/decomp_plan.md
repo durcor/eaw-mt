@@ -140,10 +140,27 @@ Cheap, high-leverage discovery that can multiply or kill the effort. **Decision 
     already hand-mapped (openspec) and get confirmed when lifted in Phase 3. Optional future tool: an
     indirect-dispatch resolver (map callback-registration sites / vtable-slot writes → callee).
 
-**Remaining Phase-1 work (next units):**
-- **Differential-test harness** in the hook DLL — per-tick world-state checksum vs the live binary
-  (the correctness oracle for Phases 3–4).
-- (Struct DB is folded into Phase 2.)
+- **Differential-test harness DONE** (`winmm_proxy.c`, `a76b0_hook`): a per-tick movement-state
+  fingerprint — the correctness oracle for Phases 3–4. Once per sim tick (detected via the frame
+  counter `DAT_140b0a320`/RVA 0xb0a320) it emits an FNV-1a hash over every active locomotor
+  component the coordinator services, folding value-deterministic fields {iteration index, entity
+  motion-state `+0x48`, component speed-float `+0x28`, countdown `+0x58`}; enumeration mirrors
+  `FUN_1403a76b0` exactly (coordinator `+0x2d0` list, `+0x10` count, `+0x8` ptr array, entity at
+  element `+0x20`, active iff `+0x4d`==1). Output: `DIFFTRACE\ttick=…\tn=…\th=…` log lines.
+  - **Build/gate:** profile-build only (`#ifdef EAW_PROFILE`; release carries 0 `DIFFTRACE`
+    symbols — verified), runtime-enabled by `EAW_DIFFTRACE=1`. Capture: `just difftrace=1
+    launch-foc-desktop`, load a tactical battle, then `grep DIFFTRACE eaw-mt.log` (written to the
+    process CWD = repo root, not `corruption/`). Both builds compile clean; in-game smoke test
+    confirmed the profile DLL loads with all fixes active and no startup regression. Actual per-tick
+    lines require a tactical battle (movement coordinator only runs there) — that's the golden-trace
+    capture step, done when the rewrite work in Phase 3 needs a baseline.
+  - **Coverage note:** v1 fingerprints the movement *state machine* (which entities serviced, in
+    what order, with what cadence/speed) — catches iteration-order, entity-set, and cadence
+    divergence. Raw transform/position values are added once Phase 2 recovers the entity layout; the
+    framework is the deliverable, the hashed field set is a knob.
+
+**Phase 1 COMPLETE.** Next: Phase 2 (struct recovery) — folds in the struct DB and unlocks
+transform-value coverage in the harness.
 
 #### (Original Phase-1 plan, for reference)
 Turn the one-function-at-a-time workflow into a pipeline.
