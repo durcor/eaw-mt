@@ -1254,6 +1254,46 @@ fast-forward *slower but smoother* rather than faster. Since fast-forward alread
 this is a subjective gameplay-feel change. Not a clear win; recommend leaving fast-forward as-is
 unless a capped/smooth fast-forward is explicitly desired.
 
+### Per-tick cost-profile audit — NO ACTIONABLE FAT (2026-05-29)
+
+Live measurement of a big-battle fast-forward (winmm_proxy.c sub-path timing profiler, dumps to
+`eaw-mt.log` every PROFILE_WINDOW=300 frames). `gsvc` = **13–28 ms/tick** (max spikes ~100ms).
+Per-tick call distribution across the movement hot path:
+
+| Function | calls/tick | role |
+|---|---|---|
+| `b87010` (387010) | ~1746 | per-component entry |
+| `b387400` (387400) | ~1701 | path-follow update |
+| `b384850` (384850) | ~1576 | "current path still valid?" check |
+| `b385190` (385190) | ~1373, **capped=0** | opp-target scan predicate |
+| `b3825b0` (3825b0) | ~859 | path-to-target (deep path) |
+| `b385e70` (385e70) | ~836 | formation position |
+| `b29f810` (29f810) | ~5–31 | actual A*/nav submission |
+| `b381ff0` (381ff0) | **0** | cosmetic bone transform |
+
+**Both candidate hotspots confirmed innocent:**
+- **Opp-target scan** — `b385190_capped = 0` in every window. The scan never hits its budget cap
+  → Fix B1's interval throttle keeps it from firing most ticks; when it fires, random-start /
+  first-match resolves fast. Not the cost.
+- **Real pathfinding** (`b29f810`) — ~0.02ms/call × ~30/tick ≈ **0.5 ms/tick**. Already throttled.
+
+**The funnel rules out redundant path recompute:** `1701 path-follows → 859 path-validity checks
+→ only 31 actual nav submissions/tick`. `b3825b0` runs 859×/tick but 96% exit cheaply ("path
+still good"); only ~31 reach the expensive `b29f810`. The engine already early-outs — there is no
+cacheable redundancy here (unlike the b25ec10 asset-lookup case).
+
+**Verdict:** the 13–28ms is **distributed per-component volume** (~1700 components/tick = N_entities
+× subsystems), not a hotspot or wasteful recompute. Empirically confirms the static read. The two
+expensive ops (scan, nav) are already gated to a handful of calls. The cosmetic-transform
+decimation idea is **moot** (`b381ff0` ran 0×). Only levers remain: lever-3 cap (smoothness
+tradeoff) or parallelism (ruled out — see threading_model.md).
+
+Caveat: profiler timer = `timeGetTime` (~1–16ms granularity under Wine), too coarse to resolve the
+exact ms split among microsecond-scale volume functions (their `avg` reads 0.00). The two
+*actionable* forms of fat (cacheable hotspot; redundant recompute) are ruled out via exact
+call-counts. Residual diffuse micro-inefficiency inside the binary functions is not hook-addressable
+(would require rewriting function internals), so it does not change the verdict.
+
 Behavior after priming:
 - Each unique ship type pays the 119-probe cost exactly once (~1,060ms, first encounter only)
 - All subsequent movement orders for known ship types: 119 cache hits, 0ms MEG I/O
