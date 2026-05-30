@@ -32,6 +32,7 @@ vtable ptr at `this+0` and initializes fields).
 | `+0x38` | ptr/list | listener/subscription list (cross-entity write target in Model C scoping) | ✓ high |
 | `+0x48` | int | motion-state (read `*(int*)(entity+0x48)`, range [5,10] gate in `387400`) | ✓ high |
 | `+0x4d` | char | **active flag** (==1 ⇒ serviced; the coordinator/`387400` filter) | ✓ high |
+| `+0x4e` | char | **render-node gate** (==1 ⇒ entity has a live Alamo scene node → world transform resolvable via `385cf0`/`12d2c0`). Empirically ==0 for all sim-serviced movement components. | ✓ high |
 | `+0x50` | char | state flag (gates path branches in `387400`) | ✓ med |
 | `+0x60` | `std::string` | **node name** — keys the entity into the node manager (SSO: `+0x70` len, `+0x78` cap) | ✓ high |
 | `+0x1c0` | `std::string` | **bone/hardpoint name** — resolves to a bone index for the world matrix (SSO cap `+0x1d8`) | ✓ high |
@@ -73,12 +74,26 @@ vtable ptr at `this+0` and initializes fields).
     -= force`); the deep-path entity floats `+0x200` (mass·physics), `+0x23c` (speed threshold),
     `+0x250[]` (per-heading LUT) — all tuning/state, **not** position. The OFFWATCH survey also
     confirmed `+0x250..+0x380` are the all-`1.0` LUT in the live entity.
-  - **Harness fast path (next):** once warm, the chain reduces to two cached indices — read
-    `id=*(component+0x90)`, `boneIdx=*(component+0x94)`, then `node=*(manager+0xf0+id*0x10+8)` and
-    matrix `*(node+0xe8)+0x28+boneIdx*0x30`. Only the `manager` singleton must be located once
-    (via `FUN_1402648b0` / `DAT_140a12370`). Fold the root-bone translation triple into DIFFTRACE.
-    NOTE: this transform is recomputed via a vfunc (slot 0xf) and is the shared sim+render world
-    matrix — validate determinism (no frame-time interpolation) before trusting it as the oracle.
+  - **This transform is RENDER-SIDE, not a sim-oracle source — proven empirically 2026-05-30
+    and NOT folded into the harness.** Wired the chain into DIFFTRACE (call `385cf0`→node, then
+    `12d2c0`→matrix), but it resolved **zero** transforms. Instrumented diagnostic (`DTDIAG`)
+    showed the wall: **`385cf0` requires `entity+0x4e == 1`** (the render-node gate; `387010`'s
+    bone-index resolution is gated on the same byte), and **across ~19,000 sim ticks (the menu
+    demo + two real moving space battles with ships under move orders) every serviced movement
+    component had `entity+0x4e == 0`** (per-tick tally `e4e1=0` throughout; `id`/`boneIdx` at
+    `component+0x90`/`+0x94` stayed `-1`, never resolved). So the Alamo node-manager matrix is
+    the scene-graph (render) transform, populated only for entities with a live model instance,
+    and is **never available to the sim-serviced components**. Folding it would couple the oracle
+    to rendering — exactly what the sim-parallel split must avoid — and is impossible here anyway.
+    The DIFFTRACE harness correctly fingerprints the **logical** movement state (motion-state
+    `+0x48`, speed `+0x28`, countdown `+0x58`), which varies per-tick with real movement; that IS
+    the right sim oracle. Transform-fold code removed (documented dead end in `dt_fold_coordinator`).
+  - **Corollary — the sim entity carries no plain-float world position.** Consistent with the
+    OFFWATCH result (entity's own `0x40..0x4c8` float window static during movement). If absolute
+    position coverage is ever needed, the remaining candidate is **path-spline progress** (the
+    path/order object at `component+0xc0` + which spline node the unit occupies; the spline node
+    matrices are the `FUN_14012d2c0` source) — not pursued now, since the state-machine fingerprint
+    already covers the deterministic movement surface.
 
 ---
 
