@@ -3137,6 +3137,10 @@ static int      g_ow_rounds     = 0;
 static int64_t  g_ow_subptr[OW_NSLOTS];          /* last pointer seen per slot */
 static uint8_t  g_ow_subprev[OW_NSLOTS][OW_SUBLEN];
 static uint8_t  g_ow_subhave[OW_NSLOTS];
+static int64_t  g_ow_bestcoord  = 0;             /* coordinator with most active entities */
+static int      g_ow_bestcnt    = 0;
+static int      g_ow_surveyN    = 0;             /* a76b0 calls observed before latching a coord */
+static int      g_ow_survey_pending = 0;
 
 static int ow_on(void) {
     if (g_ow_enabled < 0) {
@@ -3193,6 +3197,48 @@ static int ow_present(int64_t coord, int64_t ent) {
     }
     return 0;
 }
+static int ow_active_count(int64_t coord) {
+    if (!coord || (*(uint8_t *)(coord + 0x3a0) & 0x40)) return 0;
+    int64_t L = *(int64_t *)(coord + 0x2d0);
+    if (!L) return 0;
+    int32_t n = *(int32_t *)(L + 0x10);
+    int64_t arr = *(int64_t *)(L + 0x8);
+    if (!arr || n <= 0 || n > 1000000) return 0;
+    int cnt = 0;
+    for (int i = 0; i < n; i++) {
+        int64_t e = *(int64_t *)(arr + (int64_t)i * 8);
+        if (!e) continue;
+        int64_t ent = *(int64_t *)(e + 0x20);
+        if (ent && *(int8_t *)(ent + 0x4d) == 1) cnt++;
+    }
+    return cnt;
+}
+/* One-time structural dump of the latched entity: pointer slots + coordinate-like floats.
+ * Lets us reason about layout offline even if the live-diff misses the position. */
+static void ow_dump_survey(void) {
+    char b[128];
+    snprintf(b, sizeof b, "OWSURVEY ent=%p coord=%p nactive=%d\n",
+             (void *)g_ow_ent, (void *)g_ow_coord, ow_active_count(g_ow_coord));
+    log_write(b);
+    for (int slot = OW_SUB_LO; slot < OW_SUB_HI; slot += 8) {
+        if (!ow_readable((void *)(g_ow_ent + slot), 8)) continue;
+        int64_t ptr; memcpy(&ptr, (void *)(g_ow_ent + slot), 8);
+        uint64_t up = (uint64_t)ptr;
+        if ((up & 3) || up < 0x10000 || up > 0x00007fffffffffffULL) continue;
+        if (!ow_readable((void *)ptr, 8)) continue;
+        snprintf(b, sizeof b, "  ptr@0x%x=%p\n", slot, (void *)ptr);
+        log_write(b);
+    }
+    for (int off = 0; off < OW_SUB_HI; off += 4) {
+        if (!ow_readable((void *)(g_ow_ent + off), 4)) continue;
+        float f; memcpy(&f, (void *)(g_ow_ent + off), 4);
+        if (!ow_finite(f)) continue;
+        float af = f < 0 ? -f : f;
+        if (af < 1.0f || af > 1e7f) continue;          /* coordinate-like magnitude */
+        snprintf(b, sizeof b, "  f@0x%x=%.2f\n", off, (double)f);
+        log_write(b);
+    }
+}
 /* Report changed finite floats between two buffers. Logs only floats that moved by > OW_SIG
  * (jitter near 0 is ignored). Flags a "VEC3?" when 3 consecutive 4-byte slots all moved — that
  * is the position/transform signature. *sig accumulates the count of real (>OW_SIG) movers (used
@@ -3226,7 +3272,14 @@ static int ow_diff(const uint8_t *cur, const uint8_t *prev, int len,
 }
 static void ow_sample(int64_t coord) {
     if (g_ow_rounds >= OW_ROUNDS) return;
-    if (!g_ow_coord) { if (ow_nth_active(coord, 0)) g_ow_coord = coord; else return; }
+    /* latch the coordinator with the MOST active entities (over the first 8 a76b0 calls),
+     * so entity rotation has room to find a mover (a 1-entity coordinator traps rotation) */
+    if (!g_ow_coord) {
+        int c = ow_active_count(coord);
+        if (c > g_ow_bestcnt) { g_ow_bestcnt = c; g_ow_bestcoord = coord; }
+        if (++g_ow_surveyN >= 8) { if (!g_ow_bestcoord) return; g_ow_coord = g_ow_bestcoord; }
+        else return;
+    }
     if (coord != g_ow_coord) return;
     g_ow_ticks++;                                  /* self-clock: a76b0 call count, not 0xb0a320 */
     if (g_ow_ent && !ow_present(coord, g_ow_ent)) { g_ow_ent = 0; g_ow_have_prev = 0; }
@@ -3234,11 +3287,13 @@ static void ow_sample(int64_t coord) {
         g_ow_ent = ow_nth_active(coord, g_ow_entidx);
         if (!g_ow_ent) { g_ow_entidx = 0; g_ow_ent = ow_nth_active(coord, 0); }
         if (!g_ow_ent) { g_ow_coord = 0; return; }
-        g_ow_have_prev = 0; ow_reset_subs(); g_ow_next = g_ow_ticks + 2;
+        g_ow_have_prev = 0; ow_reset_subs(); g_ow_survey_pending = 1; g_ow_next = g_ow_ticks + 2;
         return;
     }
     if (g_ow_ticks < g_ow_next) return;
     g_ow_next = g_ow_ticks + OW_PERIOD;
+
+    if (g_ow_survey_pending) { ow_dump_survey(); g_ow_survey_pending = 0; }
 
     uint8_t cur[OW_WIN];
     memcpy(cur, (void *)(g_ow_ent + OW_OFF0), OW_WIN);   /* entity is present+active: safe */
@@ -3253,6 +3308,7 @@ static void ow_sample(int64_t coord) {
         /* level 1: follow each plausible pointer slot one deep */
         for (int slot = OW_SUB_LO; slot < OW_SUB_HI; slot += 8) {
             int idx = (slot - OW_SUB_LO) / 8;
+            if (!ow_readable((void *)(g_ow_ent + slot), 8)) { g_ow_subhave[idx] = 0; continue; }
             int64_t ptr; memcpy(&ptr, (void *)(g_ow_ent + slot), 8);
             uint64_t up = (uint64_t)ptr;
             if ((up & 3) || up < 0x10000 || up > 0x00007fffffffffffULL ||
