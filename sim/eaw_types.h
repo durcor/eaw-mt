@@ -17,4 +17,12 @@ using i64 = std::int64_t;
 using f32 = float;
 using f64 = double;
 
+// World-space 3-vector. The engine stores entity position as three consecutive floats at
+// GameObjectClass+0x78/+0x7c/+0x80 (x/y/z); this mirrors that layout.
+struct vec3 {
+    f32 x = 0.0f, y = 0.0f, z = 0.0f;
+    bool operator==(const vec3& o) const { return x == o.x && y == o.y && z == o.z; }
+    bool operator!=(const vec3& o) const { return !(*this == o); }
+};
+
 } // namespace eaw

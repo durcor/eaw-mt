@@ -67,9 +67,10 @@ struct EntityUpdateHooks {
     virtual void regen_roll(GameObject& /*e*/, u32 /*tick*/) {}           // tail FUN_1403ab890 (RNG)
 };
 
-// Sim-spine view of GameObjectClass (only the fields the spine reads).
+// Sim-spine view of GameObjectClass (only the fields the spine + locomotor read).
 struct GameObject {
-    u32 flags = 0;                         // +0x3a0
+    u32 flags = 0;                         // +0x3a0  (bit 0x100 = transform dirty; see set_position)
+    vec3 position;                         // +0x78/+0x7c/+0x80  world position (locomotor writes this)
     std::vector<Behavior*> behaviors;      // +0x278 array / +0x290 count
     std::vector<TimedAction> timed_actions;// +0x60..+0x68 (per-entity delayed-action queue)
     bool has_locomotor = false;            // +0xa8 (locomotor_state) != 0

@@ -1,8 +1,8 @@
 # Engine Source Decompilation Plan
 
-**Status:** Phases 0–2 EXECUTED (2026-05-30); Phase 3 **LIFTING** — unit 1 (tick clock) +
-unit 2 (entity-update spine) DONE (2026-05-30, `sim/`, host-validated via `just sim-test`).
-Companion to
+**Status:** Phases 0–2 EXECUTED (2026-05-30); Phase 3 **LIFTING** — units 1 (tick clock),
+2 (entity-update spine), 3 (locomotor integrators, Starship) DONE (2026-05-30, `sim/`,
+host-validated via `just sim-test`). Companion to
 `threading_model.md` → *Engine-Source Sim-Parallel Rewrite — Boundary Scope*, which defines
 *what the rewrite needs*; this defines *how we'd obtain the source it needs*. Phase 0 (RTTI gate)
 passed; Phase 1 (infra: RTTI applied, batch decompiler, call-graph attribution, diff harness) and
@@ -279,12 +279,29 @@ depends on it):
      `GameObjectClass`.
    - **Determinism notes:** behavior reverse-order + GOM list order + timed-action fire-on-zero
      ordering are all preserved; the tail regen roll draws RNG (Phase-4 pin).
-3. **Locomotor movement integrators (the Phase-A body).** `LocomotorBehaviorClass::vfunc_6` per
-   concrete type (Starship `0x6236b0`, Walk `0x61e930`, Fighter, Fleet, SimpleSpace, LandTeam*…) +
-   the shared `LocomotorCommonClass::vfunc_6` pre-step + each one's `entity+0xa8`-state-machine
-   helpers (e.g. Starship `622b80`/`622e90`/`559250`/`623340`, vector math `4aaa40`/`2bab90`). Reads
-   `entity+0x78` pos & `+0xa8` state; writes `entity+0x78`. **Directly oracle-validated** (DIFFTRACE
-   folds `entity+0x78` + motion state).
+3. **Locomotor movement integrators (the Phase-A body).** 🟢 **FIRST CUT LIFTED 2026-05-30** →
+   `sim/locomotor.{h,cpp}` (+ `sim/tests/locomotor_test.cpp`, all green). Lifted for the **Starship**
+   type, establishing the shared model every locomotor reuses:
+   - **Data model:** `LocomotorState` (entity+0xa8) — velocity `+0x14/18/1c`, prev-pos `+0x2c/30/34`,
+     state `+0x48`, substate `+0x50`, turn_rate `+0x54`, countdown `+0x5c`, vert_step `+0x60`,
+     docking anchors `+0x88/+0xa0` — and the `LocoState` enum (0 Idle / 1 Accelerate / 2,3 Turn,
+     Cruise / 4 PostMoveWait / 5 Burst / 6 Decelerate / 7 Stopped / 8 Docking).
+   - **Primitives (concrete):** `set_position` (`FUN_1403a8f90` — writes `entity+0x78`, sets the
+     transform-dirty flag `0x100` via the `+0x3a1` byte → **confirms `0x100` = transform dirty**),
+     `reschedule` (`LocomotorCommonClass::vfunc_6` `0x4c2f70` — sets `behavior+0x30 = +0x34 + tick`,
+     the schedule gate the spine reads), `set_state` (`0x559250`), `rotate_xz`/`rotate_xy`
+     (`0x4aaa40`/`0x2bab90` 2D rotations with the engine's small-angle fast path).
+   - **`starship_tick` (`0x6236b0` skeleton):** pre-step → read `entity+0x78` → switch on
+     `state+0x48` → core velocity integration + terrain-follow vertical clamp (toward
+     `destination.z + terrain` at `max_climb_rate`) → write `entity+0x78` → **arrival FSM**
+     (substate `0xa → fire "arriving"(9) → 0xb`; within `arrival_threshold` → fire "arrived"(10) →
+     `9`). The arrival events are **cross-entity listener writes = Phase-B commands** in the rewrite.
+   - **Behind `LocomotorEnv` (each its own future sub-unit):** per-state physics (accelerate
+     `622b80`, turn `622e90`, burst, docking, accel→velocity integrator `6224b0`) + world queries
+     (destination `623340`, terrain height `135140`, max climb `372440`, arrival threshold, listener
+     events). Host test validates the lifted logic; the in-game DIFFTRACE stream is the end-to-end
+     oracle. **TODO:** lift Walk `0x61e930` + the other ~13 subclasses (same vfunc_6 contract) and
+     the `LocomotorEnv` physics bodies.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
@@ -421,14 +438,15 @@ yields **~3–4× faster fast-forward** (Amdahl, s≈0.15, N=4→2.9×, N=8→4�
 
 Phases 0–2 done; Phase 3 scoped **and its gate task (behavior census) complete** — the in-slice set
 is the 13 sim behaviors + locomotor + hardpoint fire-control + spine tabulated above (~180–280 fns).
-**Units 1 (tick clock) + 2 (entity-update spine) are LIFTED** (`sim/`, host-validated via
-`just sim-test`). The next concrete action is **unit 3 — the locomotor movement integrators**
-(`LocomotorBehaviorClass::vfunc_6` per type: Starship `0x6236b0`, Walk `0x61e930`, … + the shared
-`LocomotorCommonClass::vfunc_6` pre-step + each one's `entity+0xa8`-state-machine helpers): the
-Phase-A body that reads `entity+0x78` position & `+0xa8` state and writes `entity+0x78`. This is the
-first unit **directly oracle-validated** (DIFFTRACE already folds `entity+0x78` + motion state), so
-it closes the loop from host test → in-game differential trace. It plugs into the spine as the
-locomotor behavior's `update()` / the `locomotor_prestep` hook. Two
+**Units 1 (tick clock), 2 (entity-update spine), 3 (locomotor — Starship skeleton + model) are
+LIFTED** (`sim/`, host-validated via `just sim-test`). Two concrete continuations, either order:
+(a) **deepen unit 3** — lift the `LocomotorEnv` physics bodies (accel `622b80`, turn `622e90`,
+accel→velocity integrator `6224b0`) and the Walk `0x61e930` variant, then **close the in-game
+differential loop**: replay a fixed save and diff the lifted Starship integrator's `entity+0x78`
+output against the live DIFFTRACE `DTPOS` stream (the first true oracle check); or
+(b) **unit 4 — hardpoint fire-control** (`a76b0`/`387010`/`387400` …) to broaden the slice.
+Recommended: (a) — it converts the host-validated skeleton into an oracle-validated integrator and
+exercises the differential-test methodology end-to-end for the first time. Two
 front-loads: (a) the determinism pins (Phase 4) — the `a76b0` order-sensitive float sum + RNG draws —
 since they are *rewrite* risk surfaced early; (b) classify each IN behavior's writes as Phase-A
 (own-entity, parallel) vs Phase-B (cross-entity, deferred-command) as it is lifted, since that split

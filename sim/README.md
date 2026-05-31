@@ -36,7 +36,7 @@ nix develop --command g++ -std=c++17 -O2 -Wall -Isim sim/tests/tick_clock_test.c
 |---|---|---|---|
 | **tick clock / scheduler** | `27c360` `27c2f0` `27c330` `27c5f0` | ✅ lifted (SP); MP lockstep gate behind `IFrameSynchronizer` (Phase-4 dep) | Fixed-timestep `1000/cap` ms; MP = lockstep `MaxAhead` + per-player command-ready gate |
 | **entity-update spine** | `3639d0` `2be640` `3a6b80` | ✅ lifted (skeleton + hooks) | reverse-order behavior dispatch; GOM list order; **no child recursion** (flat list); per-unit bodies are `EntityUpdateHooks` |
-| locomotor integrators | `6236b0` `61e930` + … | ⬜ next | per-type state machine; writes `entity+0x78` |
+| **locomotor integrators** | `6236b0` `4c2f70` `3a8f90` `623340` `4aaa40` `2bab90` `559250` | ✅ lifted (Starship skeleton + data model + primitives; deep physics behind `LocomotorEnv`) | reads/writes `entity+0x78`; state machine on `+0xa8`; arrival FSM fires cross-entity events (Phase B) |
 | hardpoint fire-control | `a76b0` `387010` `387400` … | ⬜ | order-sensitive fire-budget float sum; target-acq RNG |
 | sim behaviors (13 IN) | see decomp_plan census | ⬜ | per-behavior Phase-A vs Phase-B write split |
 | command/event queue | `OutgoingEventQueue` + event types | ⬜ | canonical Phase-B apply order |
