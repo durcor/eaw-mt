@@ -72,13 +72,18 @@ struct LocomotorBehavior; // fwd
 // accel->velocity integrator (integrate_accel) is now lifted (calls integrate_velocity below); the
 // remaining steering-decision bodies (accelerate/turn/burst/docking) are still future lifts and
 // default to inert so the skeleton + tests run in isolation.
+// Heading-angle unit conversion used by the integrator's rotations. The binary computes it as
+// (DAT_1408007dc * DAT_1408007d4) / DAT_1408007f4 = (PI * 2) / 360 = 2*PI/360 — i.e. degrees->radians.
+// So the entity heading fields (+0x88/+0x8c) are in DEGREES. Computed in float to match the binary.
+inline constexpr f32 DEG2RAD = (3.14159274f * 2.0f) / 360.0f;
+// Steering-damping gain (DAT_1408754bc), read from the binary.
+inline constexpr f32 STEER_GAIN = 1.0f;
+
 struct LocomotorEnv {
     virtual ~LocomotorEnv() = default;
-    // Game-speed scale (DAT_1408007dc*DAT_1408007d4/DAT_1408007f4) and the steering gain
-    // (DAT_1408754bc). TODO(oracle): source the real float values from the binary before the
-    // in-game DIFFTRACE/DTPOS differential check; the host tests pass them explicitly.
-    f32 gamespeed_scale = 1.0f;
-    f32 steer_gain = 0.0f;
+    // Heading->radians factor and steering gain, sourced from the binary (see constants above).
+    f32 heading_scale = DEG2RAD;
+    f32 steer_gain = STEER_GAIN;
     // Per-state physics (mutate LocomotorState; may read/write entity position).
     virtual void accelerate(LocomotorState&, GameObject&) {}        // state 1  (FUN_140622b80)
     virtual void turn(LocomotorState&, GameObject&) {}              // states 2,3 (FUN_140622e90)
@@ -127,12 +132,13 @@ void rotate_xy(vec3& v, f32 angle);
 // --- the integrator ---
 
 // FUN_1406224b0 — the accel->velocity integrator. Rotates the template's base acceleration
-// (scaled by state.turn_rate) by the entity heading, adds it to the velocity (state+0x14/18/1c),
-// clamps to max_speed, applies the steering-alignment damping (when state.scratch58 blend > 0), and
-// applies drag. `gamespeed` scales the heading angles; `steer_gain` scales the damping. This is the
-// deterministic producer of the per-tick velocity that drives entity+0x78.
+// (scaled by state.accel_factor) by the entity heading, adds it to the velocity (state+0x14/18/1c),
+// clamps to max_speed, applies the steering-alignment damping (when state.steer_blend > 0), and
+// applies drag. `heading_scale` converts the heading from degrees to radians (DEG2RAD); `steer_gain`
+// scales the damping. This is the deterministic producer of the per-tick velocity that drives
+// entity+0x78.
 void integrate_velocity(LocomotorState& st, const GameObject& e, const LocomotorTemplate& tpl,
-                        f32 gamespeed, f32 steer_gain);
+                        f32 heading_scale, f32 steer_gain);
 
 // StarshipLocomotorBehaviorClass::vfunc_6 — advance one unit's movement by one tick.
 void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, LocomotorEnv& env);

@@ -73,14 +73,15 @@ static f32 damp_axis(f32 cur, f32 target, f32 force) {
 
 // FUN_1406224b0
 void integrate_velocity(LocomotorState& st, const GameObject& e, const LocomotorTemplate& tpl,
-                        f32 gamespeed, f32 steer_gain) {
+                        f32 heading_scale, f32 steer_gain) {
     const f32 max_speed = tpl.max_speed;        // FUN_140370f00 base path (template+0x37c)
 
     if (st.accel_factor != 0.0f) {
-        // Base acceleration along local +x, scaled by throttle, rotated into world by heading.
+        // Base acceleration along local +x, scaled by throttle, rotated into world by heading
+        // (heading is in degrees; heading_scale = DEG2RAD).
         vec3 accel{ tpl.accel * st.accel_factor, 0.0f, 0.0f };  // template+0x384 * state+0x54
-        rotate_xz(accel, gamespeed * e.heading_yaw);            // entity+0x88
-        rotate_xy(accel, gamespeed * e.heading_pitch);          // entity+0x8c
+        rotate_xz(accel, heading_scale * e.heading_yaw);        // entity+0x88 (degrees)
+        rotate_xy(accel, heading_scale * e.heading_pitch);      // entity+0x8c (degrees)
 
         // velocity += accel
         st.velocity.x += accel.x;
@@ -127,7 +128,7 @@ void integrate_velocity(LocomotorState& st, const GameObject& e, const Locomotor
 // template. Tests override this to inject a velocity directly.
 void LocomotorEnv::integrate_accel(LocomotorState& st, GameObject& e) {
     if (e.locomotor_template)
-        integrate_velocity(st, e, *e.locomotor_template, gamespeed_scale, steer_gain);
+        integrate_velocity(st, e, *e.locomotor_template, heading_scale, steer_gain);
 }
 
 // StarshipLocomotorBehaviorClass::vfunc_6

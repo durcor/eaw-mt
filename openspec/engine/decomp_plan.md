@@ -309,9 +309,29 @@ depends on it):
      docking + world queries (destination `623340`, terrain height `135140`, max climb `372440`,
      arrival threshold, listener events). **TODO:** lift Walk `0x61e930` + the other ~13 subclasses
      (same vfunc_6 contract) and the steering bodies.
-   - **Oracle gap:** `integrate_velocity` is host-validated (16 checks) but the game-speed scale
-     (`DAT_1408007dc/d4/f4`) and steering gain (`DAT_1408754bc`) constants must be read from the
-     binary before the in-game DTPOS differential check can pass bit-for-bit.
+   - **Constants RECOVERED 2026-05-30** (`tools/ghidra_scripts/ReadFloats.java`): the "game-speed
+     scale" `(DAT_1408007dc·DAT_1408007d4)/DAT_1408007f4` = `(π·2)/360` = **2π/360 = degrees→radians**
+     — so the entity heading (`+0x88/+0x8c`) is in **degrees**. Steering gain `DAT_1408754bc` = 1.0;
+     `DAT_1407ffaf8` = 1.0; `DAT_1408007f8` = 1000.0 (confirms `realtime_accumulate`'s ms/sec);
+     `DAT_140800860` = `0x80000000` (float sign-flip mask). Baked into `sim/locomotor.{h,cpp}`
+     (`DEG2RAD`, `STEER_GAIN`).
+   - **In-game oracle attempt 2026-05-30 — INCONCLUSIVE (wrong unit type in the available scenario).**
+     Added a `DTVEL` capture to the DIFFTRACE harness (`winmm_proxy.c`: per tick, the sampled ship's
+     locomotor velocity `state+0x14/18/1c` + state `+0x48`) + an offline checker
+     (`tools/analyze_loco_oracle.py`) for the invariant `pos[t]-pos[t-1] == velocity[t]`. Captured
+     the menu-demo space battle (1052 ticks, 2 ships). Result: **both sampled ships are
+     capital/Fleet-class locomotors, NOT the Starship type** — `+0x14/18/1c` is a **unit direction
+     vector** (`|v|≡1.0`) with speed stored elsewhere (displacement = dir × a separately-varying
+     scale, e.g. ×750 in cruise), and their state codes are `19/22/44` (∉ the Starship enum `0..8`).
+     The Starship integrator (`6236b0` lines 211-214) adds `state+0x14/18/1c` **directly** to position
+     → for a Starship that field IS raw per-tick velocity; these capital ships are a **different
+     locomotor family** with a normalized-direction representation. The menu background demo contains
+     no maneuvering Starship-class units, so it cannot validate the Starship lift. **To close the
+     Starship oracle:** capture a battle with maneuvering Starship-class units (fighter/corvette;
+     player-driven or a loaded save), filtering `DTVEL` to those whose locomotor is a
+     `StarshipLocomotorBehaviorClass`. The harness + checker are reusable for that capture. The lift
+     itself remains internally consistent (16 host checks); validation is blocked on test data, not a
+     known defect.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release

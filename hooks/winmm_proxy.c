@@ -3047,6 +3047,13 @@ static volatile uint32_t *g_dt_frame_ctr = NULL;   /* DAT_140b0a320, RVA 0xb0a32
 static uint32_t           g_dt_pos_n    = 0;       /* GameObjects whose position was folded this tick */
 static int                g_dt_pos_have = 0;       /* a sample position captured this tick */
 static float              g_dt_pos_xyz[3];         /* first folded GameObject's x/y/z (eyeball check) */
+/* Locomotor velocity capture for the same first-folded GameObject — the oracle for the lifted
+ * position integration (sim/locomotor.cpp): verify offline that pos[t]-pos[t-1] == velocity[t].
+ * locomotor_state = *(coord+0xa8); velocity = state+0x14/18/1c; state enum = state+0x48. */
+static int                g_dt_loco_have = 0;
+static uint64_t           g_dt_ent       = 0;      /* coord ptr — only compare consecutive same-ent ticks */
+static float              g_dt_vel_xyz[3];
+static int32_t            g_dt_lstate    = -1;
 
 static int dt_on(void) {
     if (g_dt_enabled < 0) {
@@ -3076,6 +3083,14 @@ static void dt_emit(void) {
                  g_dt_tick, g_dt_pos_xyz[0], g_dt_pos_xyz[1], g_dt_pos_xyz[2]);
         log_write(buf);
     }
+    /* Locomotor velocity of the same sampled ship — oracle for the lifted pos += velocity step. */
+    if (g_dt_loco_have) {
+        snprintf(buf, sizeof buf,
+                 "DTVEL\ttick=%u\tent=%llx\tlstate=%d\tvx=%.4f\tvy=%.4f\tvz=%.4f\n",
+                 g_dt_tick, (unsigned long long)g_dt_ent, g_dt_lstate,
+                 g_dt_vel_xyz[0], g_dt_vel_xyz[1], g_dt_vel_xyz[2]);
+        log_write(buf);
+    }
 }
 /* Fold one coordinator's serviced components into the current tick accumulator. */
 static void dt_fold_coordinator(int64_t coord) {
@@ -3094,6 +3109,16 @@ static void dt_fold_coordinator(int64_t coord) {
         memcpy(&g_dt_pos_xyz[1], &py, 4);
         memcpy(&g_dt_pos_xyz[2], &pz, 4);
         g_dt_pos_have = 1;
+        /* Same ship: capture its locomotor velocity + state for the position-integration oracle. */
+        int64_t lst = *(int64_t *)(coord + 0xa8);          /* locomotor_state */
+        if (lst) {
+            memcpy(&g_dt_vel_xyz[0], (void *)(lst + 0x14), 4);
+            memcpy(&g_dt_vel_xyz[1], (void *)(lst + 0x18), 4);
+            memcpy(&g_dt_vel_xyz[2], (void *)(lst + 0x1c), 4);
+            g_dt_lstate = *(int32_t *)(lst + 0x48);
+            g_dt_ent = (uint64_t)coord;
+            g_dt_loco_have = 1;
+        }
     }
     if (*(uint8_t *)(coord + 0x3a0) & 0x40) return;        /* coordinator disabled */
     int64_t L = *(int64_t *)(coord + 0x2d0);
@@ -3385,6 +3410,7 @@ static void a76b0_hook(int64_t a, int32_t b)
             if (g_dt_tick != 0xFFFFFFFFu) dt_emit();
             g_dt_tick = g; g_dt_hash = DT_FNV_BASIS; g_dt_count = 0;
             g_dt_pos_n = 0; g_dt_pos_have = 0;
+            g_dt_loco_have = 0; g_dt_lstate = -1;
         }
         dt_fold_coordinator(a);                            /* aggregate all coordinators/tick */
     }
