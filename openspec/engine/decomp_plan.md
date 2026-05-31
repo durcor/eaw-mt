@@ -465,8 +465,18 @@ depends on it):
      gained `check_steer`: (A) continuity (`after[t]==before[t+1]`, capture coherence) and (B) the
      **pitch channel** — the clean `FUN_1405c8fb0` path — reproduced offline as `fighter_turn_angle(p0,
      wrap180(elevation), pitch_budget) == p1` (yaw stays informational, being roll-coupled). Hook
-     installs clean in-game (prologue matched, no regression); awaiting a fighter-battle capture to run
-     the offline validation. Decompiled `decomp/{2cf9e0,480f0}.c`.
+     installs clean in-game (prologue matched, no regression). Decompiled `decomp/{2cf9e0,480f0}.c`.
+   - **✅ DTSTEER PITCH ORACLE PASS — heading-integrator primitives validated in-game (2026-05-31).**
+     A fighter battle produced **10,602 controller ticks** of one latched maneuvering fighter. Oracle 5:
+     **(B) pitch channel = 9831/9840 = 99.9%** on clean (`ht==0`) ticks — `fighter_turn_angle`,
+     `fighter_target_bearing`, `wrap180/360`, and the offline `Rz(−yaw)·Ry(−pitch)` transform are
+     bit-faithful to the live `FUN_1405caaf0` pitch path. **(A) continuity = 10568/10601 = 99.7%.** The
+     9 misses share one signature: **waypoint-arrival singularities** (owner≈target, `|target−owner| < ms`
+     speed/tick) where the bearing is numerically degenerate and the real controller snaps a full-budget
+     step while the offline transform reads err≈0 — expected at the geometric singularity, not a primitive
+     bug. **Yaw = 88% on the simple model (roll-coupled / hard-turn-snapped, still unlifted).** First
+     in-game confirmation of the lifted bearing + turn-step primitives. Remaining caaf0 lift = yaw
+     integrator `FUN_1405c95a0` (roll coupling), ±180° hard-turn snap, near-target degenerate branch.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
