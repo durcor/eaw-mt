@@ -3054,6 +3054,15 @@ static int                g_dt_loco_have = 0;
 static uint64_t           g_dt_ent       = 0;      /* coord ptr — only compare consecutive same-ent ticks */
 static float              g_dt_vel_xyz[3];
 static int32_t            g_dt_lstate    = -1;
+static uintptr_t          g_dt_imgbase   = 0;      /* StarWarsG.exe base, for vtable->RVA */
+static uint32_t           g_dt_loco_rva  = 0;      /* locomotor vtable RVA of the first-folded ship */
+/* Dedicated Starship latch: the first ship each tick whose locomotor is a
+ * StarshipLocomotorBehaviorClass (vtable RVA 0x8ae250) — auto-targets the unit family the lifted
+ * sim/locomotor.cpp integrator models (raw per-tick velocity at state+0x14/18/1c, states 0..8). */
+static int                g_dt_ss_have   = 0;
+static uint64_t           g_dt_ss_ent    = 0;
+static float              g_dt_ss_vel[3];
+static int32_t            g_dt_ss_state  = -1;
 
 static int dt_on(void) {
     if (g_dt_enabled < 0) {
@@ -3083,15 +3092,49 @@ static void dt_emit(void) {
                  g_dt_tick, g_dt_pos_xyz[0], g_dt_pos_xyz[1], g_dt_pos_xyz[2]);
         log_write(buf);
     }
-    /* Locomotor velocity of the same sampled ship — oracle for the lifted pos += velocity step. */
+    /* Locomotor velocity of the same sampled ship (loco = its locomotor vtable RVA = family). */
     if (g_dt_loco_have) {
         snprintf(buf, sizeof buf,
-                 "DTVEL\ttick=%u\tent=%llx\tlstate=%d\tvx=%.4f\tvy=%.4f\tvz=%.4f\n",
-                 g_dt_tick, (unsigned long long)g_dt_ent, g_dt_lstate,
+                 "DTVEL\ttick=%u\tent=%llx\tloco=%x\tlstate=%d\tvx=%.4f\tvy=%.4f\tvz=%.4f\n",
+                 g_dt_tick, (unsigned long long)g_dt_ent, g_dt_loco_rva, g_dt_lstate,
                  g_dt_vel_xyz[0], g_dt_vel_xyz[1], g_dt_vel_xyz[2]);
         log_write(buf);
     }
+    /* Starship-confirmed velocity — the oracle target for the lifted integrator. */
+    if (g_dt_ss_have) {
+        snprintf(buf, sizeof buf,
+                 "DTVELS\ttick=%u\tent=%llx\tlstate=%d\tvx=%.4f\tvy=%.4f\tvz=%.4f\n",
+                 g_dt_tick, (unsigned long long)g_dt_ss_ent, g_dt_ss_state,
+                 g_dt_ss_vel[0], g_dt_ss_vel[1], g_dt_ss_vel[2]);
+        log_write(buf);
+    }
 }
+/* Scan a ship's behavior array (coord+0x278 ptr / +0x290 count) for a locomotor behavior; return
+ * its primary vtable RVA, or 0 if none. Identifies the locomotor FAMILY (families differ in their
+ * velocity representation — Starship stores raw per-tick velocity at state+0x14, capital/Fleet a
+ * unit direction). Profile-only; bounds-checked. */
+static uint32_t dt_loco_vtbl_rva(int64_t coord, uintptr_t base) {
+    int64_t barr = *(int64_t *)(coord + 0x278);
+    int32_t bcount = *(int32_t *)(coord + 0x290);
+    if (!barr || bcount <= 0 || bcount > 256) return 0;
+    for (int i = 0; i < bcount; i++) {
+        int64_t b = *(int64_t *)(barr + (int64_t)i * 8);
+        if (!b) continue;
+        int64_t vt = *(int64_t *)b;
+        if (vt <= (int64_t)base) continue;
+        uint32_t rva = (uint32_t)((uintptr_t)vt - base);
+        switch (rva) {
+            case 0x8ae250: /* Starship */   case 0x899c58: /* Fleet */
+            case 0x8a6198: /* Fighter */    case 0x8ad798: /* Walk */
+            case 0x8aeaf8: /* SimpleSpace */ case 0x8adda0: /* base */
+            case 0x8a3630: /* LandTeamContainer */ case 0x8af8d0: /* LandTeamInfantry */
+            case 0x8aff88: /* Team */
+                return rva;
+        }
+    }
+    return 0;
+}
+
 /* Fold one coordinator's serviced components into the current tick accumulator. */
 static void dt_fold_coordinator(int64_t coord) {
     if (!coord) return;
@@ -3109,7 +3152,7 @@ static void dt_fold_coordinator(int64_t coord) {
         memcpy(&g_dt_pos_xyz[1], &py, 4);
         memcpy(&g_dt_pos_xyz[2], &pz, 4);
         g_dt_pos_have = 1;
-        /* Same ship: capture its locomotor velocity + state for the position-integration oracle. */
+        /* Same ship: capture its locomotor velocity + state + family for the integration oracle. */
         int64_t lst = *(int64_t *)(coord + 0xa8);          /* locomotor_state */
         if (lst) {
             memcpy(&g_dt_vel_xyz[0], (void *)(lst + 0x14), 4);
@@ -3117,7 +3160,21 @@ static void dt_fold_coordinator(int64_t coord) {
             memcpy(&g_dt_vel_xyz[2], (void *)(lst + 0x1c), 4);
             g_dt_lstate = *(int32_t *)(lst + 0x48);
             g_dt_ent = (uint64_t)coord;
+            g_dt_loco_rva = g_dt_imgbase ? dt_loco_vtbl_rva(coord, g_dt_imgbase) : 0;
             g_dt_loco_have = 1;
+        }
+    }
+    /* Starship-family latch: first ship this tick with a StarshipLocomotorBehaviorClass — the unit
+     * type the lifted integrator models. Auto-targets the right units when a battle has them. */
+    if (!g_dt_ss_have && g_dt_imgbase && dt_loco_vtbl_rva(coord, g_dt_imgbase) == 0x8ae250) {
+        int64_t lst = *(int64_t *)(coord + 0xa8);
+        if (lst) {
+            memcpy(&g_dt_ss_vel[0], (void *)(lst + 0x14), 4);
+            memcpy(&g_dt_ss_vel[1], (void *)(lst + 0x18), 4);
+            memcpy(&g_dt_ss_vel[2], (void *)(lst + 0x1c), 4);
+            g_dt_ss_state = *(int32_t *)(lst + 0x48);
+            g_dt_ss_ent = (uint64_t)coord;
+            g_dt_ss_have = 1;
         }
     }
     if (*(uint8_t *)(coord + 0x3a0) & 0x40) return;        /* coordinator disabled */
@@ -3402,7 +3459,8 @@ static void a76b0_hook(int64_t a, int32_t b)
 #ifdef EAW_PROFILE
     if (!g_dt_frame_ctr) {                                 /* shared by DIFFTRACE + OFFWATCH */
         HMODULE exe = GetModuleHandleA(NULL);
-        if (exe) g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
     }
     if (dt_on()) {
         uint32_t g = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
@@ -3410,7 +3468,8 @@ static void a76b0_hook(int64_t a, int32_t b)
             if (g_dt_tick != 0xFFFFFFFFu) dt_emit();
             g_dt_tick = g; g_dt_hash = DT_FNV_BASIS; g_dt_count = 0;
             g_dt_pos_n = 0; g_dt_pos_have = 0;
-            g_dt_loco_have = 0; g_dt_lstate = -1;
+            g_dt_loco_have = 0; g_dt_lstate = -1; g_dt_loco_rva = 0;
+            g_dt_ss_have = 0; g_dt_ss_state = -1;
         }
         dt_fold_coordinator(a);                            /* aggregate all coordinators/tick */
     }

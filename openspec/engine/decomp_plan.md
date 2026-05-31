@@ -328,10 +328,22 @@ depends on it):
      locomotor family** with a normalized-direction representation. The menu background demo contains
      no maneuvering Starship-class units, so it cannot validate the Starship lift. **To close the
      Starship oracle:** capture a battle with maneuvering Starship-class units (fighter/corvette;
-     player-driven or a loaded save), filtering `DTVEL` to those whose locomotor is a
-     `StarshipLocomotorBehaviorClass`. The harness + checker are reusable for that capture. The lift
-     itself remains internally consistent (16 host checks); validation is blocked on test data, not a
-     known defect.
+     player-driven or a loaded save). The lift itself remains internally consistent (16 host checks);
+     validation is blocked on test data, not a known defect.
+   - **Starship auto-targeting added 2026-05-30** (`winmm_proxy.c` `dt_loco_vtbl_rva`): the harness
+     scans each ship's behavior array (`coord+0x278`/`+0x290`) for its locomotor vtable, tags `DTVEL`
+     with the family (`loco=<rva>`), and emits a dedicated `DTVELS` line for the first ship whose
+     locomotor is a `StarshipLocomotorBehaviorClass` (`0x8ae250`) — so a future battle capture
+     auto-targets the right units. `analyze_loco_oracle.py` reports families and prefers `DTVELS`.
+     Verified in-game (no fault): the menu-demo space ships are 100% `SimpleSpaceLocomotorBehaviorClass`
+     (`0x8aeaf8`), `DTVELS`=0.
+   - **⚠ Steer for next: SimpleSpace is the *common* space mover, not Starship.** The behavior census
+     already had `SimpleSpaceLocomotorBehaviorClass::vfunc_6` (`0x626420`) as the representative space
+     unit's mover, and the menu demo confirms it (100% SimpleSpace). It uses a **unit-direction**
+     velocity at `state+0x14/18/1c` with speed stored separately (≠ Starship's raw velocity). Lifting
+     SimpleSpace (`0x626420`) next would match the most common space units **and** be immediately
+     oracle-checkable against the always-available menu-demo capture — the fastest path to a first
+     true in-game differential pass.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release

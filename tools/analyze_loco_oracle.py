@@ -21,9 +21,13 @@ MOVE_EPS = 0.02   # min horizontal displacement to count a tick as "moved"
 TOL      = 0.03   # match tolerance (log rounding: pos %.3f, vel %.4f)
 
 def parse(path):
-    pos, vel = {}, {}
-    rp = re.compile(r"DTPOS\ttick=(\d+)\tx=(-?[\d.]+)\ty=(-?[\d.]+)\tz=(-?[\d.]+)")
-    rv = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)")
+    # vel:  tick -> (ent, lstate, vx, vy, vz)   from DTVELS (Starship) preferred, else DTVEL.
+    # NOTE: DTPOS samples the first-folded ship; DTVELS may be a DIFFERENT ship, so a Starship pos
+    # stream is only available when the first-folded ship IS the Starship (loco=8ae250 on DTVEL).
+    pos, vel, families = {}, {}, {}
+    rp  = re.compile(r"DTPOS\ttick=(\d+)\tx=(-?[\d.]+)\ty=(-?[\d.]+)\tz=(-?[\d.]+)")
+    rv  = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tloco=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)")
+    rvo = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)")  # legacy, no loco
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             m = rp.match(line)
@@ -31,16 +35,27 @@ def parse(path):
                 t = int(m.group(1)); pos[t] = tuple(float(m.group(i)) for i in (2, 3, 4)); continue
             m = rv.match(line)
             if m:
+                t = int(m.group(1)); families[int(m.group(3), 16)] = families.get(int(m.group(3), 16), 0) + 1
+                vel[t] = (int(m.group(2), 16), int(m.group(4)),
+                          float(m.group(5)), float(m.group(6)), float(m.group(7))); continue
+            m = rvo.match(line)
+            if m:
                 t = int(m.group(1))
                 vel[t] = (int(m.group(2), 16), int(m.group(3)),
                           float(m.group(4)), float(m.group(5)), float(m.group(6)))
-    return pos, vel
+    return pos, vel, families
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
-    pos, vel = parse(path)
+    pos, vel, families = parse(path)
+    nss = sum(1 for _ in open(path, encoding="utf-8", errors="replace") if _.startswith("DTVELS"))
     ticks = sorted(set(pos) & set(vel))
-    print(f"parsed {len(pos)} DTPOS, {len(vel)} DTVEL; {len(ticks)} ticks with both")
+    print(f"parsed {len(pos)} DTPOS, {len(vel)} DTVEL ({nss} DTVELS Starship-confirmed); {len(ticks)} ticks with both")
+    if families:
+        fam = {0x8ae250: "Starship", 0x899c58: "Fleet", 0x8a6198: "Fighter", 0x8ad798: "Walk",
+               0x8aeaf8: "SimpleSpace", 0x8adda0: "base", 0: "none/unknown"}
+        print("  DTVEL locomotor families: " +
+              ", ".join(f"{fam.get(k, hex(k))}={v}" for k, v in sorted(families.items(), key=lambda x: -x[1])))
 
     moved = matched = zmatch = 0
     fails = []
