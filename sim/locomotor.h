@@ -189,4 +189,18 @@ void simplespace_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, Simple
 // function + its direction extraction are validated; the magnitude source is not yet lifted.
 vec3 simplespace_straight_move(const vec3& in_pos, f32 heading_deg, f32 speed);
 
+// SimpleSpace special-mode 0x2c mover (FUN_1406269f0) — the timed fly-in / drift animation the menu
+// ships use. Over timer ticks [0x19, 0x96) the unit advances along its NORMALIZED facing direction
+// (state+0x14/18/1c) at a table-driven speed; outside that window it does not move. `timer` is
+// state+0x5c, pre-incremented each tick. `speed_table` is the runtime 150-float curve DAT_140b31440
+// (FUN_14049d400 returns table[timer] for timer<0x96 else 0) — loaded from game data; the static
+// image is zero, so the caller supplies the live table.
+//   new_pos = owner_pos + normalize(dir) * speed_table[timer]
+// ✅ ORACLE-VALIDATED (FULL POSITION) in-game (2026-05-30, menu-demo capture): the per-tick position
+// reproduces the live binary bit-exact — direction (cos/sin, 183 ticks) AND magnitude
+// (|disp| == table[timer], 123/123 move-window ticks). This is the first complete-position oracle
+// pass: the lifted formula equals the engine's output for the dominant menu-ship mover.
+vec3 simplespace_drift_move(const vec3& owner_pos, const vec3& dir, int timer,
+                            const std::vector<f32>& speed_table);
+
 } // namespace eaw

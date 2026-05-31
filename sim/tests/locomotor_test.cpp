@@ -343,6 +343,29 @@ static void test_ss_straight_move() {
     CHECK(approx(c.z, -850.0f));                        // z held
 }
 
+static void test_ss_drift_move() {
+    std::printf("test_ss_drift_move\n");
+    std::vector<f32> table(150, 0.0f);
+    table[30] = 750.0f;   // cruise plateau
+    table[60] = 100.0f;   // ramp-down
+    vec3 dir{0.8f, -0.6f, 0.0f};   // already unit
+    // timer 30 (in [0x19,0x96)) -> move by dir*750
+    vec3 a = simplespace_drift_move({1000, 2000, -850}, dir, 30, table);
+    CHECK(approx(a.x, 1000 + 0.8f * 750) && approx(a.y, 2000 - 0.6f * 750) && approx(a.z, -850));
+    // timer 60 -> dir*100
+    vec3 b = simplespace_drift_move({0, 0, -850}, dir, 60, table);
+    CHECK(approx(b.x, 80.0f) && approx(b.y, -60.0f) && approx(b.z, -850));
+    // setup phase (timer < 0x19) -> no move
+    vec3 c = simplespace_drift_move({5, 5, 5}, dir, 10, table);
+    CHECK(c == (vec3{5, 5, 5}));
+    // cleanup phase (timer >= 0x96) -> no move
+    vec3 d = simplespace_drift_move({7, 7, 7}, dir, 200, table);
+    CHECK(d == (vec3{7, 7, 7}));
+    // non-unit dir is normalized first
+    vec3 e = simplespace_drift_move({0, 0, 0}, {3, 4, 0}, 30, table);  // |dir|=5 -> (0.6,0.8)
+    CHECK(approx(e.x, 0.6f * 750) && approx(e.y, 0.8f * 750));
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -368,6 +391,7 @@ int main() {
     test_ss_special_mode();
     test_ss_invalid_state_noop();
     test_ss_straight_move();
+    test_ss_drift_move();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

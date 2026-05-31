@@ -370,12 +370,22 @@ depends on it):
      This is the **first end-to-end proof of the lift-and-validate methodology** (host lift → in-game
      differential trace → bit-exact agreement). **Correction from the run:** the move MAGNITUDE is
      **not** `state+0xec` (that field is a 0..1 throttle, often 0); it is spline/special-mode driven —
-     and the menu ships are mostly in **special mode `0x2c`** (`FUN_1406269f0`), a code path distinct
-     from the normal `Moving(0x13)` spline branch. So the validated part is the **direction core**;
-     the magnitude (the `0x2c` mover + the Hermite spline `vfunc_59`) remains a larger sub-lift.
-     Harness: `DTVEL` carries `hd=entity+0x8c`, `sp=state+0xec` at `%.6f`. **Operational lesson:
-     stop the game with `pkill -9 -f StarWarsG.exe` ONLY — never broadly kill `steam`/`proton`
-     (Proton needs the user's Steam client; it can't be restarted headless).**
+     and the menu ships are mostly in **special mode `0x2c`** (`FUN_1406269f0`).
+   - **✅ FULL-POSITION ORACLE PASS — 2026-05-30 (the 0x2c drift mover lifted + validated).** Lifted
+     `FUN_1406269f0` → `simplespace_drift_move`: the timed fly-in animation the menu ships use. Over
+     timer ticks `[0x19, 0x96)` (`timer = state+0x5c`, pre-incremented), `new_pos = owner_pos +
+     normalize(state+0x14/18/1c) · table[timer]`, where `table` = the runtime 150-float speed curve
+     `DAT_140b31440` (`FUN_14049d400`'s lookup; the static image is **zero** — loaded from game data
+     at runtime, so the harness dumps it live as `DTTAB` lines). Captured `tm=state+0x5c` per tick +
+     the table, and **`|disp| == table[timer]` matched 123/123 move-window ticks bit-exact** — so the
+     lifted **complete per-tick position** (direction × magnitude) reproduces the live binary. The
+     table is a plateau of `750.0` over the cruise timers then ramps. **This is the first
+     full-position differential pass.** The setup (`<0x19`) and cleanup (`>=0x96`) phases don't move;
+     the cross-entity events at `timer==0x2d`/`0x78` are presentation/command-side (out of slice).
+     The Hermite-spline `Moving(0x13)` mover (`vfunc_59`) remains a separate lift for non-drift
+     maneuvering. Harness: `DTVEL` carries `hd`/`sp`/`tm`; `DTTAB` dumps the runtime table.
+     **Operational lesson: stop the game with `pkill -9 -f StarWarsG.exe` ONLY — never broadly kill
+     `steam`/`proton` (Proton needs the user's Steam client; it can't be restarted headless).**
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release

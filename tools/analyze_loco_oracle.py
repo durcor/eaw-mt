@@ -21,11 +21,12 @@ MOVE_EPS = 0.02   # min horizontal displacement to count a tick as "moved"
 TOL      = 0.03   # match tolerance (log rounding: pos %.3f, vel %.4f)
 
 def parse(path):
-    # vel:  tick -> (ent, lstate, vx, vy, vz, heading, speed)  from DTVEL.
-    pos, vel, families = {}, {}, {}
+    # vel:  tick -> (ent, lstate, vx, vy, vz, heading, speed, timer)  from DTVEL.
+    # table: timer -> speed  from the one-shot DTTAB dump of the runtime DAT_140b31440 curve.
+    pos, vel, families, table = {}, {}, {}, {}
     rp  = re.compile(r"DTPOS\ttick=(\d+)\tx=(-?[\d.]+)\ty=(-?[\d.]+)\tz=(-?[\d.]+)")
-    rv  = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tloco=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)\thd=(-?[\d.]+)\tsp=(-?[\d.]+)")
-    rvL = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tloco=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)")  # no hd/sp
+    rv  = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tloco=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)\thd=(-?[\d.]+)\tsp=(-?[\d.]+)\ttm=(-?\d+)")
+    rtab = re.compile(r"DTTAB\ti=(\d+)\tv=(-?[\d.]+)")
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             m = rp.match(line)
@@ -35,13 +36,43 @@ def parse(path):
             if m:
                 t = int(m.group(1)); families[int(m.group(3), 16)] = families.get(int(m.group(3), 16), 0) + 1
                 vel[t] = (int(m.group(2), 16), int(m.group(4)), float(m.group(5)), float(m.group(6)),
-                          float(m.group(7)), float(m.group(8)), float(m.group(9))); continue
-            m = rvL.match(line)
+                          float(m.group(7)), float(m.group(8)), float(m.group(9)), int(m.group(10))); continue
+            m = rtab.match(line)
             if m:
-                t = int(m.group(1)); families[int(m.group(3), 16)] = families.get(int(m.group(3), 16), 0) + 1
-                vel[t] = (int(m.group(2), 16), int(m.group(4)), float(m.group(5)),
-                          float(m.group(6)), float(m.group(7)), None, None)
-    return pos, vel, families
+                table[int(m.group(1))] = float(m.group(2))
+    return pos, vel, families, table
+
+
+def check_drift_magnitude(pos, vel, table):
+    """Full-position oracle for the 0x2c drift mover (FUN_1406269f0):
+    |disp| == table[timer] on the move window [0x19,0x96), and disp ∥ dir."""
+    import math
+    if not table:
+        print("\n[0x2c drift-magnitude oracle] no DTTAB table captured — skipped")
+        return None
+    ticks = sorted(set(pos) & set(vel))
+    n = ok = 0
+    fails = []
+    for a, b in zip(ticks, ticks[1:]):
+        if b - a != 1 or vel[a][0] != vel[b][0]:
+            continue
+        tm = vel[b][7]
+        if tm < 0x19 or tm >= 0x96:          # only the move window
+            continue
+        dx, dy = pos[b][0] - pos[a][0], pos[b][1] - pos[a][1]
+        d = math.hypot(dx, dy)
+        if d < 0.02:
+            continue
+        n += 1
+        pred = table.get(tm, 0.0)
+        if abs(d - pred) <= 0.05 + abs(pred) * 1e-4:   # |disp| == table[timer]
+            ok += 1
+        else:
+            fails.append((b, tm, d, pred))
+    print(f"\n[0x2c drift-magnitude oracle]  |disp| == table[timer]: {ok}/{n} move-window ticks")
+    for t, tm, d, pred in fails[:8]:
+        print(f"  MISMATCH t={t} timer={tm} |disp|={d:.3f} table={pred:.3f}")
+    return n, ok
 
 
 DEG2RAD = (3.14159274 * 2.0) / 360.0  # matches sim/locomotor DEG2RAD
@@ -101,25 +132,37 @@ def check_simplespace_straight(pos, vel):
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
-    pos, vel, families = parse(path)
-    nss = sum(1 for _ in open(path, encoding="utf-8", errors="replace") if _.startswith("DTVELS"))
+    pos, vel, families, table = parse(path)
     ticks = sorted(set(pos) & set(vel))
-    print(f"parsed {len(pos)} DTPOS, {len(vel)} DTVEL ({nss} DTVELS Starship-confirmed); {len(ticks)} ticks with both")
+    print(f"parsed {len(pos)} DTPOS, {len(vel)} DTVEL, {len(table)}-entry speed table; "
+          f"{len(ticks)} ticks with both")
     if families:
         fam = {0x8ae250: "Starship", 0x899c58: "Fleet", 0x8a6198: "Fighter", 0x8ad798: "Walk",
                0x8aeaf8: "SimpleSpace", 0x8adda0: "base", 0: "none/unknown"}
         print("  DTVEL locomotor families: " +
               ", ".join(f"{fam.get(k, hex(k))}={v}" for k, v in sorted(families.items(), key=lambda x: -x[1])))
 
-    # Oracle for the lifted SimpleSpace direction extractor + move-along-facing.
+    # Oracle 1: the lifted SimpleSpace direction extractor + move-along-facing.
     moved, matched = check_simplespace_straight(pos, vel)
     if moved == 0:
         print("\nNO FACING-MODE MOVEMENT WITH hd CAPTURED — need a SimpleSpace ship cruising.")
         return 2
-    rate = matched / moved
-    print("\nORACLE PASS — lifted direction-from-heading + move-along-facing reproduce the live binary"
-          if rate >= 0.95 else "\nORACLE FAIL")
-    return 0 if rate >= 0.95 else 1
+    dir_ok = matched / moved >= 0.95
+
+    # Oracle 2 (full position): the lifted 0x2c drift mover's magnitude = table[timer].
+    mag = check_drift_magnitude(pos, vel, table)
+    mag_ok = mag is not None and mag[0] > 0 and mag[1] / mag[0] >= 0.95
+
+    if dir_ok and mag_ok:
+        print("\nORACLE PASS (FULL POSITION) — direction (cos/sin) AND magnitude (table[timer]) of the"
+              "\n  0x2c drift mover reproduce the live binary: new_pos = pos + normalize(dir)*table[timer]")
+        return 0
+    if dir_ok:
+        print("\nORACLE PASS (direction) — magnitude check inconclusive"
+              + ("" if mag is not None else " (no DTTAB table captured)"))
+        return 0
+    print("\nORACLE FAIL")
+    return 1
 
 if __name__ == "__main__":
     sys.exit(main())

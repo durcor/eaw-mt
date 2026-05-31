@@ -175,6 +175,19 @@ void simplespace_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, Simple
     env.engine_effects(entity, st);             // banking roll + engine glow/sound (presentation)
 }
 
+// FUN_1406269f0 — the 0x2c special-mode timed drift mover.
+vec3 simplespace_drift_move(const vec3& owner_pos, const vec3& dir, int timer,
+                            const std::vector<f32>& speed_table) {
+    if (timer < 0x19 || timer >= 0x96)          // setup (<0x19) / cleanup (>=0x96): no movement
+        return owner_pos;
+    vec3 d = dir;                                // normalize state+0x14/18/1c
+    const f32 m = vlen(d);
+    if (m > 0.0f) { const f32 inv = 1.0f / m; d.x *= inv; d.y *= inv; d.z *= inv; }
+    const f32 speed = (timer >= 0 && timer < static_cast<int>(speed_table.size()))
+                          ? speed_table[static_cast<std::size_t>(timer)] : 0.0f;  // FUN_14049d400
+    return { owner_pos.x + d.x * speed, owner_pos.y + d.y * speed, owner_pos.z + d.z * speed };
+}
+
 // FUN_140625990 straight-line branch + FUN_14041c000 (direction from heading angle).
 vec3 simplespace_straight_move(const vec3& in_pos, f32 heading_deg, f32 speed) {
     const f32 a = heading_deg * DEG2RAD;        // heading degrees -> radians (FUN_14041c000)

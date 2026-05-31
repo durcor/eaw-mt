@@ -3056,6 +3056,8 @@ static float              g_dt_vel_xyz[3];
 static int32_t            g_dt_lstate    = -1;
 static float              g_dt_heading   = 0;      /* coord+0x8c heading angle (deg) — SimpleSpace straight move */
 static float              g_dt_speed     = 0;      /* state+0xec speed scalar */
+static int32_t            g_dt_timer     = -1;     /* state+0x5c drift timer (0x2c mode magnitude index) */
+static int                g_dt_tab_done  = 0;      /* runtime speed table DAT_140b31440 dumped once */
 static uintptr_t          g_dt_imgbase   = 0;      /* StarWarsG.exe base, for vtable->RVA */
 static uint32_t           g_dt_loco_rva  = 0;      /* locomotor vtable RVA of the first-folded ship */
 /* Dedicated Starship latch: the first ship each tick whose locomotor is a
@@ -3098,9 +3100,9 @@ static void dt_emit(void) {
      * hd/sp feed the SimpleSpace straight-move oracle: pos += (cos hd, sin hd, 0) * sp. */
     if (g_dt_loco_have) {
         snprintf(buf, sizeof buf,
-                 "DTVEL\ttick=%u\tent=%llx\tloco=%x\tlstate=%d\tvx=%.6f\tvy=%.6f\tvz=%.6f\thd=%.6f\tsp=%.6f\n",
+                 "DTVEL\ttick=%u\tent=%llx\tloco=%x\tlstate=%d\tvx=%.6f\tvy=%.6f\tvz=%.6f\thd=%.6f\tsp=%.6f\ttm=%d\n",
                  g_dt_tick, (unsigned long long)g_dt_ent, g_dt_loco_rva, g_dt_lstate,
-                 g_dt_vel_xyz[0], g_dt_vel_xyz[1], g_dt_vel_xyz[2], g_dt_heading, g_dt_speed);
+                 g_dt_vel_xyz[0], g_dt_vel_xyz[1], g_dt_vel_xyz[2], g_dt_heading, g_dt_speed, g_dt_timer);
         log_write(buf);
     }
     /* Starship-confirmed velocity — the oracle target for the lifted integrator. */
@@ -3141,6 +3143,17 @@ static uint32_t dt_loco_vtbl_rva(int64_t coord, uintptr_t base) {
 /* Fold one coordinator's serviced components into the current tick accumulator. */
 static void dt_fold_coordinator(int64_t coord) {
     if (!coord) return;
+    /* One-shot: dump the runtime speed table DAT_140b31440[0..0x96) (FUN_14049d400's lookup, used by
+     * the 0x2c drift mover for the per-tick magnitude). Static image is zero; this is the live data. */
+    if (!g_dt_tab_done && g_dt_imgbase) {
+        const float *tab = (const float *)(g_dt_imgbase + 0xb31440);
+        char tb[64];
+        for (int i = 0; i < 0x96; i++) {
+            snprintf(tb, sizeof tb, "DTTAB\ti=%d\tv=%.6f\n", i, tab[i]);
+            log_write(tb);
+        }
+        g_dt_tab_done = 1;
+    }
     /* `coord` is the serviced GameObjectClass (a76b0's param). entity+0x78/+0x7c/+0x80 = the
      * unit's authoritative SIM world position (x/y/z floats, written each tick by the locomotor
      * vfunc_6 — deterministic, distinct from the render-side node transform). Fold it for
@@ -3164,6 +3177,7 @@ static void dt_fold_coordinator(int64_t coord) {
             g_dt_lstate = *(int32_t *)(lst + 0x48);
             memcpy(&g_dt_heading, (void *)(coord + 0x8c), 4);  /* heading angle (deg) */
             memcpy(&g_dt_speed,   (void *)(lst + 0xec), 4);    /* speed scalar */
+            g_dt_timer = *(int32_t *)(lst + 0x5c);             /* 0x2c drift timer (table index) */
             g_dt_ent = (uint64_t)coord;
             g_dt_loco_rva = g_dt_imgbase ? dt_loco_vtbl_rva(coord, g_dt_imgbase) : 0;
             g_dt_loco_have = 1;
@@ -3473,7 +3487,7 @@ static void a76b0_hook(int64_t a, int32_t b)
             if (g_dt_tick != 0xFFFFFFFFu) dt_emit();
             g_dt_tick = g; g_dt_hash = DT_FNV_BASIS; g_dt_count = 0;
             g_dt_pos_n = 0; g_dt_pos_have = 0;
-            g_dt_loco_have = 0; g_dt_lstate = -1; g_dt_loco_rva = 0;
+            g_dt_loco_have = 0; g_dt_lstate = -1; g_dt_loco_rva = 0; g_dt_timer = -1;
             g_dt_ss_have = 0; g_dt_ss_state = -1;
         }
         dt_fold_coordinator(a);                            /* aggregate all coordinators/tick */
