@@ -1,65 +1,66 @@
-/* FUN_140387010  RVA 0x387010  size 344  params 0  ret undefined */
+/* FUN_140387010  RVA 0x387010  size 344  params 2  ret undefined */
 
 
-void FUN_140387010(longlong param_1,int param_2)
+/* WARNING: Unknown calling convention */
+
+void FUN_140387010(HardPointClass *param_1,int param_2)
 
 {
-  longlong lVar1;
-  char cVar2;
-  int iVar3;
-  undefined4 uVar4;
-  longlong lVar5;
-  undefined8 *puVar6;
-  int iVar7;
+  char cVar1;
+  int iVar2;
+  longlong lVar3;
+  HardPointOwnerRecord *pHVar4;
+  undefined1 *puVar5;
+  int *piVar6;
+  uint uVar7;
   
-  if (*(longlong *)(param_1 + 0x20) == 0) {
+  if (param_1->owner_record == (HardPointOwnerRecord *)0x0) {
     return;
   }
-  if (*(longlong *)(param_1 + 0x10) == 0) {
+  if (param_1->context == (void *)0x0) {
     return;
   }
-  if ((*(byte *)(*(longlong *)(param_1 + 0x10) + 0x3a0) & 2) != 0) {
+  if ((*(byte *)((longlong)param_1->context + 0x3a0) & 2) != 0) {
     return;
   }
-  if ((DAT_140b15418 != 0) && (cVar2 = FUN_14035f790(), cVar2 != '\0')) {
+  if ((DAT_140b15418 != 0) && (cVar1 = FUN_14035f790(), cVar1 != '\0')) {
     return;
   }
-  lVar5 = *(longlong *)(param_1 + 0x20);
-  iVar7 = param_2 - *(int *)(param_1 + 0x60);
-  *(int *)(param_1 + 0x60) = param_2;
-  if ((*(int *)(lVar5 + 0x48) - 5U < 6) && (*(char *)(param_1 + 0x6c) == '\x01')) {
-    FUN_140387400(param_1,iVar7);
-    lVar5 = *(longlong *)(param_1 + 0x20);
+  pHVar4 = param_1->owner_record;
+  uVar7 = param_2 - param_1->last_serviced_tick;
+  param_1->last_serviced_tick = param_2;
+  if ((pHVar4->motion_state - 5U < 6) && (param_1->enable_flag == '\x01')) {
+    FUN_140387400(param_1,uVar7);
+    pHVar4 = param_1->owner_record;
   }
-  if ((((*(char *)(lVar5 + 0x4e) != '\x01') || (*(char *)(param_1 + 0x6c) != '\x01')) ||
-      (*(longlong *)(param_1 + 0x10) == 0)) || (*(float *)(param_1 + 0x28) <= 0.0))
-  goto LAB_140387148;
-  if (*(int *)(param_1 + 0x94) < 0) {
-    lVar5 = FUN_140385cf0(param_1);
-    if (lVar5 == 0) goto LAB_140387148;
-    puVar6 = (undefined8 *)(*(longlong *)(param_1 + 0x20) + 0x1c0);
-    if (0xf < *(ulonglong *)(*(longlong *)(param_1 + 0x20) + 0x1d8)) {
-      puVar6 = (undefined8 *)*puVar6;
+  if ((((pHVar4->render_node_gate != '\x01') || (param_1->enable_flag != '\x01')) ||
+      (param_1->context == (void *)0x0)) || (param_1->fire_rate_weight <= 0.0)) goto LAB_140387148;
+  if (param_1->cached_bone_idx < 0) {
+    lVar3 = FUN_140385cf0(param_1);
+    if (lVar3 == 0) goto LAB_140387148;
+    puVar5 = &param_1->owner_record[3].field_0x28;
+    if (0xf < *(ulonglong *)&param_1->owner_record[3].field_0x40) {
+      puVar5 = *(undefined1 **)puVar5;
     }
-    iVar3 = FUN_14012d2a0(lVar5,puVar6);
-    if (iVar3 < 0) goto LAB_140387148;
-    *(int *)(param_1 + 0x94) = iVar3;
-    FUN_14012d430(lVar5,iVar3,1);
-    lVar1 = *(longlong *)(param_1 + 0x20);
-    if (*(longlong *)(lVar1 + 0x1f0) != 0) {
-      puVar6 = (undefined8 *)(lVar1 + 0x1e0);
-      if (0xf < *(ulonglong *)(lVar1 + 0x1f8)) {
-        puVar6 = (undefined8 *)*puVar6;
+    iVar2 = FUN_14012d2a0(lVar3,puVar5);
+    if (iVar2 < 0) goto LAB_140387148;
+    param_1->cached_bone_idx = iVar2;
+    FUN_14012d430(lVar3,iVar2,1);
+    pHVar4 = param_1->owner_record;
+    if (*(longlong *)&pHVar4[3].field_0x58 != 0) {
+      piVar6 = &pHVar4[3].motion_state;
+      if (0xf < *(ulonglong *)pHVar4[3].node_name._Bx) {
+        piVar6 = *(int **)piVar6;
       }
-      uVar4 = FUN_14012d2a0(lVar5,puVar6);
-      *(undefined4 *)(param_1 + 0x98) = uVar4;
-      FUN_14012d430(lVar5,uVar4,1);
+      iVar2 = FUN_14012d2a0(lVar3,piVar6);
+      param_1->cached_bone_idx2 = iVar2;
+      FUN_14012d430(lVar3,iVar2,1);
     }
   }
   FUN_140381ff0(param_1);
 LAB_140387148:
-  if (*(char *)(param_1 + 0x6f) == '\x01') {
-    FUN_140387170(param_1,iVar7);
+  if (param_1->field_0x6f == '\x01') {
+    FUN_140387170(param_1,uVar7);
   }
   return;
 }

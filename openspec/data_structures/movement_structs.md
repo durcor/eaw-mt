@@ -13,6 +13,34 @@ vtable ptr at `this+0` and initializes fields).
 
 ---
 
+## ✅ Ghidra types APPLIED 2026-05-30 (`tools/ghidra_scripts/Phase2ApplyStructs.java`)
+
+The confirmed layouts below are now **persistent Ghidra `StructureDataType`s** under category `/EawMT`,
+saved into the project `.rep`, so every downstream decompile renders named fields
+(`entity->pos_x`, `gom->master_update_list.head`, `hp->owner_record->active`) instead of raw
+`*(float *)(p + 0x78)` casts. Re-apply / extend with `just ghidra-script Phase2ApplyStructs` (write
+mode — note this is the non-`-readOnly` recipe). Types created: `GameObjectClass`, `HardPointClass`,
+`HardPointOwnerRecord`, `LocomotorBehaviorClass`, `GameObjectManagerClass`, plus helpers
+`ReferenceListClass` and `eaw_std_string`. The first parameter of the 7 key sim-tick functions was
+retyped (signature recovered from the decompiler, storage/arity preserved): `FUN_1403a6b80`,
+`FUN_1402be640`, `FUN_1403a76b0`, `FUN_140387400`, `FUN_140387010`, and the Starship/Walk
+locomotor `vfunc_6` bodies. Verified in-decompile (`decomp/2be640.c`, `3a6b80.c`, `6236b0.c`,
+`387400.c`) — fields propagate cleanly across calls.
+
+### ⚠ Disambiguation encoded (resolves a real contradiction in the field tables below)
+The empirical Phase-2 field union attributed BOTH a `std::string` node-name at `GameObjectClass+0x60`
+AND the position floats at `+0x78/+0x7c/+0x80` to GameObjectClass. These **cannot coexist**: an MSVC
+`std::string` at `+0x60` is 0x20 bytes, putting its capacity word at `+0x78` — colliding with `pos_x`.
+Resolution (structural, not arbitrary): `GameObjectClass` has its **vtable at `+0x0`**, whereas
+`*(HardPointClass+0x20)` is **non-polymorphic** (no vtable). The position at `+0x78` is confirmed by
+four readers + in-game DIFFTRACE. So the `+0x48` motion-state / `+0x4d` active / `+0x4e` render-node /
+`+0x60` node-name cluster belongs to a **separate** owner/render component — encoded as the distinct
+struct **`HardPointOwnerRecord`** (class name TBD), pointed to by `HardPointClass.owner_record` (+0x20).
+GameObjectClass keeps `pos_x/y/z` at `+0x78`. The tables below still list those offsets where they were
+first observed; the applied Ghidra types reflect this split.
+
+---
+
 ## GameObjectClass — the entity
 
 - **Vtables (multiple inheritance):** primary `0x8661b8` + `0x8661d8`, plus `0x866200/210/228`.
