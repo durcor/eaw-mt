@@ -243,11 +243,18 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
   So **`vfunc_6` (slot 6) is the generic `BehaviorClass::Update(entity, tick)`** — every behavior on the
   entity implements it; the *locomotor* behavior's override is the movement integrator (position at
   `entity+0x78`). `FUN_1403a6b80` ticks ALL of an entity's behaviors, then services its hardpoints
-  (`FUN_1403a76b0`, `decomp/3a6b80.c:358`), and recurses into contained/child units. It is the real
-  per-entity sim-tick body. **The arg order is `(behavior, entity, tick)` — 3 register args** (rcx/rdx/r8;
-  the capture hook had to forward r8 to avoid dropping the tick delta).
-  - **Above the driver:** `FUN_1403a6b80` is invoked per root entity by the battle/GOM tick (recursive
-    for children); identifying that top-level iterator is the **GOM entity-list** task (Phase-2 #3).
+  (`FUN_1403a76b0`, `decomp/3a6b80.c:358`). It is the real per-entity sim-tick body. **The arg order is
+  `(behavior, entity, tick)` — 3 register args** (rcx/rdx/r8; the capture hook had to forward r8 to
+  avoid dropping the tick delta).
+  - **⚠ CORRECTION (2026-05-30, spine lift):** `FUN_1403a6b80` does **NOT** self-recurse into child
+    units — there is no `FUN_1403a6b80` call inside its body. The GOM master list is **flat**; every
+    unit (including contained ones) is a separate list entry, iterated independently. The behavior loop
+    iterates the `+0x278` array **in reverse** (count `+0x290` − 1 → 0, index masked to a byte). Also
+    confirmed here: `entity+0x60/+0x68` is a `DynamicVector` of 0x38-stride **timed-action** records
+    (countdown `+0xc`), **not** a `std::string` — corroborating the disambiguation above (the `+0x60`
+    std::string is the HardPoint owner record's, not GameObjectClass's).
+  - **Above the driver:** `FUN_1403a6b80` is invoked per entity by the GOM update `FUN_1402be640`
+    (flat list walk, no recursion); the sim frame `FUN_1403639d0` runs it over **two** GOMs.
   - **Not the driver:** the Land/Space `MovementCoordinatorClass` (`0x86b080`/`0x8a6520`) are
     `SignalListenerClass`-derived spatial-coherence/formation systems (registered-unit vector at
     `coordinator+0x28..+0x30`; `vfunc_3` `0x4f6b60` = add-unit, `vfunc_1` `0x4f77e0` = signal callback);

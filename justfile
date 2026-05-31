@@ -32,8 +32,11 @@ build-winmm-profile:
 # Compile + run the lifted sim-core host validation tests (sim/). No game needed.
 sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
-    sim/tests/tick_clock_test.cpp sim/tick_clock.cpp -o /tmp/eaw_sim_test
-  /tmp/eaw_sim_test
+    sim/tests/tick_clock_test.cpp sim/tick_clock.cpp -o /tmp/eaw_tick_clock_test
+  /tmp/eaw_tick_clock_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/entity_spine_test.cpp sim/entity_spine.cpp -o /tmp/eaw_entity_spine_test
+  /tmp/eaw_entity_spine_test
 
 ghidra-script script:
   nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \

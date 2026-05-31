@@ -1,7 +1,8 @@
 # Engine Source Decompilation Plan
 
-**Status:** Phases 0–2 EXECUTED (2026-05-30); Phase 3 **LIFTING STARTED** — unit 1 (tick clock)
-DONE (2026-05-30, `sim/tick_clock.{h,cpp}`, host-validated). Companion to
+**Status:** Phases 0–2 EXECUTED (2026-05-30); Phase 3 **LIFTING** — unit 1 (tick clock) +
+unit 2 (entity-update spine) DONE (2026-05-30, `sim/`, host-validated via `just sim-test`).
+Companion to
 `threading_model.md` → *Engine-Source Sim-Parallel Rewrite — Boundary Scope*, which defines
 *what the rewrite needs*; this defines *how we'd obtain the source it needs*. Phase 0 (RTTI gate)
 passed; Phase 1 (infra: RTTI applied, batch decompiler, call-graph attribution, diff harness) and
@@ -251,11 +252,33 @@ depends on it):
      it lets the loop spin so the scheduler's cadence governs tick rate.
    - The tick clock stays **serial** in the rewrite (parallelism is *within* a tick); lifting it
      first pins the tick every later unit is diffed against.
-2. **Entity-update spine.** `FUN_1403639d0` → `FUN_1402be640` → `FUN_1403a6b80` (minus the
-   per-behavior bodies): the `ReferenceListClass<GameObject>` traversal (`node+0x8` next, `node+0x18`
-   ref, `entity=*ref-0x18`), the behavior-dispatch loop (`entity+0x278` array / `+0x290` count,
-   schedule + enable gates), and the child-unit recursion. **This is the loop the rewrite
-   parallelizes over entities.**
+2. **Entity-update spine.** ✅ **LIFTED 2026-05-30** → `sim/entity_spine.{h,cpp}` (+
+   `sim/tests/entity_spine_test.cpp`, all green). `FUN_1403639d0` → `FUN_1402be640` →
+   `FUN_1403a6b80`, the dispatch *skeleton* with per-unit bodies as `EntityUpdateHooks`:
+   - `FUN_1403639d0` → `sim_frame_update` — the sim frame updates **two** GameObjectManagers
+     (`param_1[3]`, `param_1[4]`) with the same tick.
+   - `FUN_1402be640` → `gom_update` — the master-list (`GOM+0xe8`) per-entity pass. ReferenceList
+     walk `node+0x8` next, `entity = *(node+0x18) - 0x18`, head→sentinel; iteration ORDER preserved
+     (modeled as an ordered list). The full function's second per-entity post-pass, the
+     `second_update_list` transform pass (run with the sim tick saved/restored so it does *not*
+     advance the clock), the deferred-spawn drain, and game-mode housekeeping are documented
+     ordering anchors, lifted with their owning units.
+   - `FUN_1403a6b80` → `update_game_object` — the per-GameObject driver. `mode_flag` (param_3) fast
+     path: when set, skip blocks 1 & 4, run only the tail regen. The **behavior-dispatch loop**
+     iterates `entity+0x278[]` **in reverse** (count `+0x290` − 1 → 0, index masked to a byte),
+     gating each on schedule (`behavior+0x30 <= tick`) and enabled (`FUN_1404c3700` = `+0x3c == 0`),
+     calling vtable slot 6. Intra-tick order pinned: locomotor pre-step → per-entity timed-action
+     drain → behaviors → hardpoint fire-control → tail regen roll. **This loop is the Phase-A body
+     the rewrite parallelizes over entities.**
+   - **CORRECTION:** `FUN_1403a6b80` does **not** self-recurse — there is no child-unit recursion
+     (earlier notes were wrong). The GOM master list is flat; contained units are separate entries,
+     iterated independently. (Better for parallelization — no nested-update ordering to preserve.)
+   - **CONFIRMATION:** `entity+0x60/+0x68` is a `DynamicVector` of 0x38-stride timed-action records
+     (countdown `+0xc`), **not** a `std::string` — independently confirming the Phase-2
+     disambiguation that the `+0x60` std::string belongs to the HardPoint owner record, not
+     `GameObjectClass`.
+   - **Determinism notes:** behavior reverse-order + GOM list order + timed-action fire-on-zero
+     ordering are all preserved; the tail regen roll draws RNG (Phase-4 pin).
 3. **Locomotor movement integrators (the Phase-A body).** `LocomotorBehaviorClass::vfunc_6` per
    concrete type (Starship `0x6236b0`, Walk `0x61e930`, Fighter, Fleet, SimpleSpace, LandTeam*…) +
    the shared `LocomotorCommonClass::vfunc_6` pre-step + each one's `entity+0xa8`-state-machine
@@ -398,11 +421,14 @@ yields **~3–4× faster fast-forward** (Amdahl, s≈0.15, N=4→2.9×, N=8→4�
 
 Phases 0–2 done; Phase 3 scoped **and its gate task (behavior census) complete** — the in-slice set
 is the 13 sim behaviors + locomotor + hardpoint fire-control + spine tabulated above (~180–280 fns).
-**Unit 1 (tick clock) is LIFTED** (`sim/tick_clock.{h,cpp}`, host-validated via `just sim-test`).
-The next concrete action is **unit 2 — the entity-update spine** (`FUN_1403639d0` →
-`FUN_1402be640` [GOM+0xe8 iterator] → `FUN_1403a6b80` minus the per-behavior bodies): lift the
-`ReferenceListClass<GameObject>` traversal + the behavior-dispatch loop + child recursion (the loop
-the rewrite parallelizes over entities). Continue diffing each unit against the DIFFTRACE oracle. Two
+**Units 1 (tick clock) + 2 (entity-update spine) are LIFTED** (`sim/`, host-validated via
+`just sim-test`). The next concrete action is **unit 3 — the locomotor movement integrators**
+(`LocomotorBehaviorClass::vfunc_6` per type: Starship `0x6236b0`, Walk `0x61e930`, … + the shared
+`LocomotorCommonClass::vfunc_6` pre-step + each one's `entity+0xa8`-state-machine helpers): the
+Phase-A body that reads `entity+0x78` position & `+0xa8` state and writes `entity+0x78`. This is the
+first unit **directly oracle-validated** (DIFFTRACE already folds `entity+0x78` + motion state), so
+it closes the loop from host test → in-game differential trace. It plugs into the spine as the
+locomotor behavior's `update()` / the `locomotor_prestep` hook. Two
 front-loads: (a) the determinism pins (Phase 4) — the `a76b0` order-sensitive float sum + RNG draws —
 since they are *rewrite* risk surfaced early; (b) classify each IN behavior's writes as Phase-A
 (own-entity, parallel) vs Phase-B (cross-entity, deferred-command) as it is lifted, since that split
