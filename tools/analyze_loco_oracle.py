@@ -232,6 +232,137 @@ def check_simplespace_straight(pos, vel):
     ok = par_n > 0 and par / par_n >= 0.95 and len(facing) > 0
     return par_n, (par if ok else 0)
 
+def wrap180(d):
+    while d > 180.0:   d -= 360.0
+    while d <= -180.0: d += 360.0
+    return d
+
+def wrap360(d):
+    while d >= 360.0: d -= 360.0
+    while d < 0.0:    d += 360.0
+    return d
+
+def fighter_turn_angle(cur, delta, budget):
+    """Mirror of sim/locomotor.cpp fighter_turn_angle (== FUN_1405c8fb0 core)."""
+    cur = wrap180(cur)
+    if budget < abs(delta):
+        if delta > 0.0:   cur += budget
+        elif delta < 0.0: cur -= budget
+    else:
+        cur += delta
+    return wrap360(cur)
+
+def steer_local_target(pitch_deg, yaw_deg, owner, target):
+    """Replicate FUN_1405caaf0's inverse-orientation transform: build M (identity, then the in-place
+    Ry(-pitch)=FUN_1402cf9e0 and Rz(-yaw)=FUN_1400480f0 rotations), return M·(target-owner;1) =
+    the target offset in the entity LOCAL frame (local_d8/d4/d0)."""
+    import math
+    M = [1.0,0,0,0, 0,1.0,0,0, 0,0,1.0,0]   # 3x4 row-major identity
+    a = -pitch_deg * DEG2RAD                  # FUN_1402cf9e0: rotate cols 0,2 (X-Z, pitch)
+    c, s = math.cos(a), math.sin(a)
+    for r in range(3):
+        x, z = M[r*4+0], M[r*4+2]
+        M[r*4+0] = x*c - z*s
+        M[r*4+2] = z*c + x*s
+    b = -yaw_deg * DEG2RAD                     # FUN_1400480f0: rotate cols 0,1 (X-Y, yaw)
+    c, s = math.cos(b), math.sin(b)
+    for r in range(3):
+        x, y = M[r*4+0], M[r*4+1]
+        M[r*4+0] = x*c + y*s
+        M[r*4+1] = y*c - x*s
+    dx, dy, dz = target[0]-owner[0], target[1]-owner[1], target[2]-owner[2]
+    lx = M[0]*dx + M[1]*dy + M[2]*dz + M[3]
+    ly = M[4]*dx + M[5]*dy + M[6]*dz + M[7]
+    lz = M[8]*dx + M[9]*dy + M[10]*dz + M[11]
+    return lx, ly, lz
+
+def target_bearing(local):
+    """Mirror of FUN_14020acd0 / fighter_target_bearing: (azimuth, elevation) in degrees."""
+    import math
+    lx, ly, lz = local
+    az = 0.0 if (lx == 0.0 and ly == 0.0) else math.degrees(math.atan2(ly, lx))
+    if az < 0.0: az += 360.0
+    el = 0.0 if (lz == 0.0 and lx == 0.0) else -math.degrees(math.atan2(lz, math.hypot(lx, ly)))
+    return az, el
+
+
+def parse_steer(path):
+    """tick -> dict of the FUN_1405caaf0 controller I/O captured by the DTSTEER hook."""
+    steer = {}
+    rs = re.compile(
+        r"DTSTEER\ttick=(\d+)\tent=([0-9a-f]+)\tstate=(-?\d+)\tht=(-?\d+)\t"
+        r"ox=(-?[\d.]+)\toy=(-?[\d.]+)\toz=(-?[\d.]+)\ttx=(-?[\d.]+)\tty=(-?[\d.]+)\ttz=(-?[\d.]+)\t"
+        r"r0=(-?[\d.]+)\tp0=(-?[\d.]+)\ty0=(-?[\d.]+)\tr1=(-?[\d.]+)\tp1=(-?[\d.]+)\ty1=(-?[\d.]+)\t"
+        r"yb=(-?[\d.]+)\tpb=(-?[\d.]+)\tsb=(-?[\d.]+)\tms=(-?[\d.]+)")
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = rs.match(line)
+            if not m:
+                continue
+            g = m.groups()
+            t = int(g[0])
+            steer[t] = dict(ent=int(g[1], 16), state=int(g[2]), ht=int(g[3]),
+                            owner=(float(g[4]), float(g[5]), float(g[6])),
+                            target=(float(g[7]), float(g[8]), float(g[9])),
+                            r0=float(g[10]), p0=float(g[11]), y0=float(g[12]),
+                            r1=float(g[13]), p1=float(g[14]), y1=float(g[15]),
+                            yb=float(g[16]), pb=float(g[17]), sb=float(g[18]), ms=float(g[19]))
+    return steer
+
+
+def check_steer(path):
+    """Validate the lifted Fighter steering primitives against the DTSTEER controller capture:
+      (A) continuity — the latched entity's post-tick angles == next tick's pre-tick angles
+          (confirms the capture tracks one ship coherently);
+      (B) PITCH channel — the clean FUN_1405c8fb0 path: predict p1 from p0 with the lifted
+          inverse-transform -> bearing(elevation) -> fighter_turn_angle(p0, elevation_err, pitch_budget).
+          (Yaw is roll-coupled / hard-turn-snapped in FUN_1405caaf0 and is reported, not asserted.)"""
+    steer = parse_steer(path)
+    if not steer:
+        print("\n[Fighter steering oracle] no DTSTEER lines — skipped "
+              "(need a fighter battle captured with the DTSTEER hook)")
+        return None
+    ticks = sorted(steer)
+    # (A) continuity across consecutive same-entity ticks.
+    cont_n = cont_ok = 0
+    for a, b in zip(ticks, ticks[1:]):
+        if steer[a]["ent"] != steer[b]["ent"]:
+            continue
+        cont_n += 1
+        if (abs(wrap180(steer[a]["p1"] - steer[b]["p0"])) <= 0.01 and
+                abs(wrap180(steer[a]["y1"] - steer[b]["y0"])) <= 0.01):
+            cont_ok += 1
+    # (B) pitch reproduction (skip ht!=0: those are mid-hard-turn, where 5caaf0 overrides the error).
+    p_n = p_ok = 0
+    y_close = y_n = 0
+    fails = []
+    for t in ticks:
+        s = steer[t]
+        lx, ly, lz = steer_local_target(s["p0"], s["y0"], s["owner"], s["target"])
+        az, el = target_bearing((lx, ly, lz))
+        # pitch (clean path only)
+        if s["ht"] == 0:
+            pred_p = fighter_turn_angle(s["p0"], wrap180(el), s["pb"])
+            p_n += 1
+            if abs(wrap180(pred_p - s["p1"])) <= 0.05:
+                p_ok += 1
+            elif len(fails) < 8:
+                fails.append((t, "pitch", s["p0"], wrap180(el), s["pb"], pred_p, s["p1"]))
+        # yaw (informational — coupled): is the actual step at least toward the bearing & within budget?
+        pred_y = fighter_turn_angle(s["y0"], wrap180(az), s["yb"])
+        y_n += 1
+        if abs(wrap180(pred_y - s["y1"])) <= 0.05:
+            y_close += 1
+    print(f"\n[Fighter steering oracle]  (DTSTEER, {len(ticks)} controller ticks, "
+          f"ent=0x{steer[ticks[0]]['ent']:x})")
+    print(f"  (A) angle continuity  after[t]==before[t+1]: {cont_ok}/{cont_n}")
+    print(f"  (B) PITCH reproduced  turn(p0, elev_err, pb)==p1: {p_ok}/{p_n} clean (ht==0) ticks")
+    print(f"      yaw (roll-coupled, informational) simple-model match: {y_close}/{y_n}")
+    for t, ch, cur, err, bud, pred, act in fails:
+        print(f"  MISS t={t} {ch} cur={cur:.3f} err={err:.3f} budget={bud:.3f} pred={pred:.3f} act={act:.3f}")
+    return (p_n, p_ok, cont_n, cont_ok)
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
     pos, vel, families, table = parse(path)
@@ -266,6 +397,15 @@ def main():
     if fgt is not None and fgt[0] > 0:
         print(f"  [fighter] {'PASS' if fgt[1]/fgt[0] >= 0.95 else 'FAIL'} "
               f"({100.0*fgt[1]/fgt[0]:.1f}%)")
+
+    # Oracle 5 (Fighter steering): the lifted bearing + pitch integrator vs the DTSTEER controller I/O.
+    st = check_steer(path)
+    if st is not None:
+        p_n, p_ok, c_n, c_ok = st
+        if c_n > 0:
+            print(f"  [steer continuity] {'PASS' if c_ok/c_n >= 0.99 else 'FAIL'} ({100.0*c_ok/c_n:.1f}%)")
+        if p_n > 0:
+            print(f"  [steer pitch]      {'PASS' if p_ok/p_n >= 0.95 else 'FAIL'} ({100.0*p_ok/p_n:.1f}%)")
 
     if dir_ok and mag_ok:
         print("\nORACLE PASS (FULL POSITION) — direction (cos/sin) AND magnitude (table[timer]) of the"

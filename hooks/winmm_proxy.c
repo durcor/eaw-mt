@@ -3282,6 +3282,130 @@ static void dt_fold_coordinator(int64_t coord) {
 }
 
 /* =========================================================================
+ * DTSTEER — Fighter steering controller (FUN_1405caaf0) input/output capture.
+ *
+ * The full FighterLocomotorBehaviorClass orientation controller can't be
+ * validated from the read-only per-tick fold: its STEERING TARGET is a stack
+ * local the mover (e.g. FUN_1405cc220) computes and passes as param_2 — it is
+ * NOT at any fixed entity/order offset (decomp/5cc220.c:180-223). So we wrap
+ * FUN_1405caaf0 itself with an inline trampoline, latch ONE maneuvering fighter,
+ * and emit one DTSTEER line per tick carrying the controller's COMPLETE input
+ * set plus the before/after orientation:
+ *   owner pos (entity+0x78/7c/80), target (param_2[0..2]),
+ *   roll/pitch/yaw before & after (entity+0x84/88/8c),
+ *   yaw budget (*param_4), pitch budget (*param_6), speed budget (*param_5),
+ *   commanded max speed (param_3, float), locomotor state (state+0x48),
+ *   hard-turn flag (state+0x1d4).
+ * Offline this lets the lifted controller be checked: predict(before, target,
+ * budgets) == after, and after[t] == before[t+1] (continuity across ticks).
+ *
+ * arg count = 7 (counted from the call site decomp/5cc220.c:223 — under-counting
+ * corrupts the stack). Calling convention: param_3 is a FLOAT (3rd positional
+ * arg) -> xmm2 under win64; the typedef MUST declare it `float` so the compiler
+ * marshals it correctly on the forward call.
+ *
+ * Prologue (objdump): 48 8b c4 / 48 89 58 18 / 48 89 70 20 / 55 / 41 56 = 14
+ * bytes ending cleanly before `push r15` — exactly the FF25 trampoline width.
+ * Profile-build only; runtime-gated by EAW_DIFFTRACE=1.
+ * ========================================================================= */
+#define STEER_CAAF0_RVA   0x5caaf0ULL
+#define STEER_STALE_TICKS 240u
+static const BYTE steer_caaf0_prologue[14] = {
+    0x48, 0x8b, 0xc4,              /* mov rax, rsp        */
+    0x48, 0x89, 0x58, 0x18,        /* mov [rax+0x18], rbx */
+    0x48, 0x89, 0x70, 0x20,        /* mov [rax+0x20], rsi */
+    0x55,                          /* push rbp            */
+    0x41, 0x56,                    /* push r14            */
+};
+typedef void (*Caaf0Fn)(int64_t behavior, float *target, float maxspeed,
+                        float *yaw_budget, float *speed_budget, float *pitch_budget,
+                        int32_t flag);
+static Caaf0Fn  g_caaf0_trampoline = NULL;
+static int64_t  g_steer_ent      = 0;             /* latched fighter entity */
+static uint32_t g_steer_lasttick = 0xFFFFFFFFu;   /* last tick a line was emitted for it */
+static uint32_t g_steer_seentick = 0;             /* last tick the latch was serviced */
+
+static void b5caaf0_hook(int64_t behavior, float *target, float maxspeed,
+                         float *yaw_budget, float *speed_budget, float *pitch_budget,
+                         int32_t flag)
+{
+    int64_t  entity = behavior ? *(int64_t *)(behavior + 0x28) : 0;
+    int      do_capture = 0;
+    uint32_t tick = 0;
+
+    if (entity && g_dt_frame_ctr && dt_on()) {
+        tick = *g_dt_frame_ctr;
+        if (!g_steer_ent) {
+            g_steer_ent = entity; g_steer_seentick = tick;
+        } else if (entity != g_steer_ent &&
+                   (uint32_t)(tick - g_steer_seentick) > STEER_STALE_TICKS) {
+            g_steer_ent = entity; g_steer_seentick = tick;   /* old fighter died/idled */
+        }
+        if (entity == g_steer_ent && tick != g_steer_lasttick) do_capture = 1;
+    }
+
+    if (!do_capture) {
+        g_caaf0_trampoline(behavior, target, maxspeed,
+                           yaw_budget, speed_budget, pitch_budget, flag);
+        return;
+    }
+
+    /* --- inputs, sampled BEFORE the controller mutates angles/budgets --- */
+    float ox = *(float *)(entity + 0x78), oy = *(float *)(entity + 0x7c), oz = *(float *)(entity + 0x80);
+    float r0 = *(float *)(entity + 0x84), p0 = *(float *)(entity + 0x88), y0 = *(float *)(entity + 0x8c);
+    float tx = target ? target[0] : 0.0f, ty = target ? target[1] : 0.0f, tz = target ? target[2] : 0.0f;
+    float yb = yaw_budget   ? *yaw_budget   : 0.0f;
+    float pb = pitch_budget ? *pitch_budget : 0.0f;
+    float sb = speed_budget ? *speed_budget : 0.0f;
+    int32_t state = -1, ht = -1;
+    int64_t lst = *(int64_t *)(entity + 0xa8);
+    if (lst) { state = *(int32_t *)(lst + 0x48); ht = *(uint8_t *)(lst + 0x1d4); }
+
+    g_caaf0_trampoline(behavior, target, maxspeed,
+                       yaw_budget, speed_budget, pitch_budget, flag);
+
+    /* --- outputs: the new orientation the controller committed --- */
+    float r1 = *(float *)(entity + 0x84), p1 = *(float *)(entity + 0x88), y1 = *(float *)(entity + 0x8c);
+
+    char s[448];
+    snprintf(s, sizeof s,
+        "DTSTEER\ttick=%u\tent=%llx\tstate=%d\tht=%d\tox=%.6f\toy=%.6f\toz=%.6f\t"
+        "tx=%.6f\tty=%.6f\ttz=%.6f\tr0=%.6f\tp0=%.6f\ty0=%.6f\tr1=%.6f\tp1=%.6f\ty1=%.6f\t"
+        "yb=%.6f\tpb=%.6f\tsb=%.6f\tms=%.6f\n",
+        tick, (unsigned long long)entity, state, ht, ox, oy, oz, tx, ty, tz,
+        r0, p0, y0, r1, p1, y1, yb, pb, sb, maxspeed);
+    log_write(s);
+    g_steer_lasttick = tick; g_steer_seentick = tick;
+}
+
+static BOOL install_b5caaf0_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + STEER_CAAF0_RVA;
+    if (memcmp(fn, steer_caaf0_prologue, 14) != 0) {
+        log_write("[eaw-mt] WARN: FUN_1405caaf0 prologue mismatch — DTSTEER not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTSTEER trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, steer_caaf0_prologue, 14);
+    write_abs_jmp(tramp + 14, (uint64_t)(fn + 14));
+    g_caaf0_trampoline = (Caaf0Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b5caaf0_hook);
+    VirtualProtect(fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 14);
+    log_write("[eaw-mt] DTSTEER: FUN_1405caaf0 fighter-steering hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -6754,6 +6878,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b375380_subcallee_hooks();
         install_ga4d0_hook();
         install_galactic_slot22_hook();
+        install_b5caaf0_hook();   /* DTSTEER: Fighter steering controller I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
 #endif
 

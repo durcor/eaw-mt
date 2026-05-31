@@ -450,6 +450,23 @@ depends on it):
      template (`order+0x38c/0x394/0x3a0` via `FUN_140372560/3724d0/372440`, scaled by the
      `DAT_140b16dbc/dc0/dc4` speed-mode multipliers). Validating those needs the target + budgets +
      pitch in the DIFFTRACE harness (it logs only heading `+0x8c`) — a further harness-gated sub-lift.
+   - **✅ DIFFTRACE extended with the steering-controller capture (DTSTEER, 2026-05-31).** The
+     controller's true input — the steering TARGET — is a stack local the mover computes and passes
+     as `FUN_1405caaf0` param_2 (`decomp/5cc220.c:180-223`), so it's invisible to the read-only fold.
+     Added an inline-trampoline wrapper on `FUN_1405caaf0` (14-byte prologue, FF25; profile-build only,
+     `EAW_DIFFTRACE=1`) that latches one maneuvering fighter and emits a **DTSTEER** line per tick with
+     the controller's complete I/O: owner pos, target (param_2), roll/pitch/yaw **before & after**
+     (`entity+0x84/88/8c`), yaw budget (`*param_4`), pitch budget (`*param_6`), speed budget
+     (`*param_5`), commanded max speed (param_3 float→xmm2), locomotor state (`state+0x48`), hard-turn
+     flag (`state+0x1d4`). Decompiled the inverse-orientation transform it relies on: `FUN_1402cf9e0`
+     = in-place Ry(−pitch) (rotates the X–Z matrix columns), `FUN_1400480f0` = Rz(−yaw) (X–Y columns),
+     both with the IEEE small-angle fast path (`FUN_140776650/776150` = sin/cos); so the local target
+     = `Rz(−yaw)·Ry(−pitch)·(target−owner)`, then `fighter_target_bearing`. `tools/analyze_loco_oracle.py`
+     gained `check_steer`: (A) continuity (`after[t]==before[t+1]`, capture coherence) and (B) the
+     **pitch channel** — the clean `FUN_1405c8fb0` path — reproduced offline as `fighter_turn_angle(p0,
+     wrap180(elevation), pitch_budget) == p1` (yaw stays informational, being roll-coupled). Hook
+     installs clean in-game (prologue matched, no regression); awaiting a fighter-battle capture to run
+     the offline validation. Decompiled `decomp/{2cf9e0,480f0}.c`.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
