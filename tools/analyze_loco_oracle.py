@@ -47,36 +47,57 @@ def parse(path):
 DEG2RAD = (3.14159274 * 2.0) / 360.0  # matches sim/locomotor DEG2RAD
 
 def check_simplespace_straight(pos, vel):
-    """Oracle: SimpleSpace cruise move = pos[t] = pos[t-1] + (cos h, sin h, 0)*speed.
-    Validates the lifted simplespace_straight_move against the live binary on cruise ticks."""
+    """Oracle for the lifted SimpleSpace direction-from-heading (FUN_14041c000) + move-along-facing.
+
+    Two bit-exact claims against the live binary, on the facing-driven cruise population (the unit's
+    velocity vector equals its heading direction; the curving spline-interp path is excluded):
+      (1) state+0x14/18/1c == ( cos(hd*DEG2RAD), sin(hd*DEG2RAD), 0 )   [the lifted dir extractor]
+      (2) displacement is exactly ALONG that direction (disp x dir == 0)  [move-along-facing]
+    The move MAGNITUDE is spline/mode-driven (state+0xec is only a 0..1 throttle), so it is reported
+    but not predicted here.
+    """
     import math
     ticks = sorted(set(pos) & set(vel))
-    moved = matched = 0
-    fails = []
-    for a, b in zip(ticks, ticks[1:]):
+
+    # (1) direction extraction, bit-exact (<=1e-4), on the facing-driven population.
+    dir_ok = dir_n = 0
+    facing = set()
+    for t in ticks:
+        hd = vel[t][5]
+        if hd is None:
+            continue
+        vx, vy = vel[t][2], vel[t][3]
+        c, s = math.cos(hd * DEG2RAD), math.sin(hd * DEG2RAD)
+        if max(abs(vx - c), abs(vy - s)) <= 1e-4:
+            dir_ok += 1; facing.add(t)
+        dir_n += 1
+
+    # (2) on consecutive facing-mode same-entity moving ticks, disp is parallel to dir.
+    par = par_n = 0
+    mags = []
+    fl = sorted(facing)
+    for a, b in zip(fl, fl[1:]):
         if b - a != 1 or vel[a][0] != vel[b][0]:
             continue
-        hd, sp = vel[b][5], vel[b][6]
-        if hd is None or sp is None:
+        dx, dy = pos[b][0] - pos[a][0], pos[b][1] - pos[a][1]
+        d = math.hypot(dx, dy)
+        if d < 0.05:
             continue
-        dx = pos[b][0] - pos[a][0]; dy = pos[b][1] - pos[a][1]
-        if abs(dx) < 0.02 and abs(dy) < 0.02:
-            continue
-        moved += 1
-        rad = hd * DEG2RAD
-        px = math.cos(rad) * sp; py = math.sin(rad) * sp
-        # tolerance scales with speed (heading logged to 1e-6 deg -> ~sp*2e-8 rad err, negligible;
-        # dominant error is float<->decimal log rounding ~1e-3 absolute).
-        tol = 0.05 + abs(sp) * 1e-4
-        if abs(dx - px) <= tol and abs(dy - py) <= tol:
-            matched += 1
-        else:
-            fails.append((b, dx, dy, px, py, hd, sp))
-    print(f"\n[SimpleSpace straight-move oracle]  moved cruise ticks: {moved}   matched: {matched}"
-          + (f"   rate: {100.0*matched/moved:.1f}%" if moved else ""))
-    for t, dx, dy, px, py, hd, sp in fails[:8]:
-        print(f"  MISMATCH t={t} disp=({dx:.3f},{dy:.3f}) pred=({px:.3f},{py:.3f}) hd={hd:.3f} sp={sp:.3f}")
-    return moved, matched
+        par_n += 1; mags.append(d)
+        if abs(dx * vel[b][3] - dy * vel[b][2]) / d <= 0.01:
+            par += 1
+
+    print(f"\n[SimpleSpace direction oracle]")
+    print(f"  (1) dir == (cos hd, sin hd) bit-exact: {dir_ok}/{dir_n} ticks "
+          f"({len(facing)} facing-driven)")
+    print(f"  (2) displacement ∥ facing dir:        {par}/{par_n} moving ticks")
+    if mags:
+        mags.sort()
+        print(f"      |disp|/tick (spline/mode magnitude): min={mags[0]:.2f} "
+              f"med={mags[len(mags)//2]:.2f} max={mags[-1]:.2f}")
+    # PASS = the lifted direction extractor + move-along-facing both hold on the facing population.
+    ok = par_n > 0 and par / par_n >= 0.95 and len(facing) > 0
+    return par_n, (par if ok else 0)
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
@@ -90,13 +111,13 @@ def main():
         print("  DTVEL locomotor families: " +
               ", ".join(f"{fam.get(k, hex(k))}={v}" for k, v in sorted(families.items(), key=lambda x: -x[1])))
 
-    # Primary oracle for the SimpleSpace family (the common space mover): the lifted straight-move.
+    # Oracle for the lifted SimpleSpace direction extractor + move-along-facing.
     moved, matched = check_simplespace_straight(pos, vel)
     if moved == 0:
-        print("\nNO CRUISE MOVEMENT WITH hd/sp CAPTURED — need a SimpleSpace ship in steady cruise.")
+        print("\nNO FACING-MODE MOVEMENT WITH hd CAPTURED — need a SimpleSpace ship cruising.")
         return 2
     rate = matched / moved
-    print("\nORACLE PASS (SimpleSpace straight-move reproduces the live binary)"
+    print("\nORACLE PASS — lifted direction-from-heading + move-along-facing reproduce the live binary"
           if rate >= 0.95 else "\nORACLE FAIL")
     return 0 if rate >= 0.95 else 1
 

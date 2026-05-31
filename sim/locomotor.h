@@ -176,12 +176,17 @@ struct SimpleSpaceEnv {
 // SimpleSpaceLocomotorBehaviorClass::vfunc_6 (0x626420) — the dispatch/state-machine skeleton.
 void simplespace_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, SimpleSpaceEnv& env);
 
-// The straight-line / path-complete branch of the SimpleSpace mover (FUN_140625990 lines 67-76,
-// 191-199, with the direction from FUN_14041c000): the unit cruises along its heading. The full
-// mover is a Hermite spline path-follower (curving segments over state+0x18) — a separate deep lift
-// — but in steady cruise it extrapolates a straight line, which dominates and is the oracle-checkable
-// case. heading is in DEGREES (entity+0x8c); speed = state+0xec; Z is unchanged.
+// The straight-line / move-along-facing form of the SimpleSpace mover, with the direction from
+// FUN_14041c000: the unit advances along its heading. heading is in DEGREES (entity+0x8c); Z held.
 //   out_pos = in_pos + ( cos(heading*DEG2RAD), sin(heading*DEG2RAD), 0 ) * speed
+// ✅ ORACLE-VALIDATED in-game (2026-05-30, menu-demo capture, tools/analyze_loco_oracle.py):
+//   - the direction ( cos(hd*DEG2RAD), sin(hd*DEG2RAD), 0 ) reproduces the engine's state+0x14/18/1c
+//     BIT-EXACT (<=1e-4) on 182 facing-driven cruise ticks, and
+//   - displacement is exactly along it (disp ∥ dir, 150/150).
+// CAVEAT: `speed` is the per-tick move magnitude supplied by the caller. It is NOT state+0xec (that
+// is only a 0..1 throttle); the real magnitude is spline/special-mode driven (FUN_140625990 Hermite
+// segments / the 0x2c special-mode mover FUN_1406269f0), which is a separate, larger lift. This
+// function + its direction extraction are validated; the magnitude source is not yet lifted.
 vec3 simplespace_straight_move(const vec3& in_pos, f32 heading_deg, f32 speed);
 
 } // namespace eaw

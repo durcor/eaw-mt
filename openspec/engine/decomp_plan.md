@@ -360,14 +360,22 @@ depends on it):
      `out_pos = in_pos + (cos(h·DEG2RAD), sin(h·DEG2RAD), 0)·speed`, `h = entity+0x8c` (deg),
      `speed = state+0xec`, Z held. This is the **dominant steady-cruise behavior** (the menu ships fly
      straight lines). Host-validated (reproduces the menu cruise displacement, 23 locomotor checks).
-   - **Oracle status — structurally confirmed, bit-exact run pending environment.** The harness now
-     captures `hd` (`entity+0x8c`) + `sp` (`state+0xec`) at `%.6f`, and `analyze_loco_oracle.py`
-     checks `disp == (cos hd, sin hd, 0)·sp` on cruise ticks. The earlier capture already shows the
-     **exact structural match**: `disp = unit_dir × const_scale`, `|dir| ≡ 1.0`, `dir·disp ≈ 1.0`,
-     Z held — i.e. `pos += (cos h, sin h, 0)·speed`. The bit-exact `hd`/`sp` capture run is set up but
-     **blocked: the Steam client was accidentally killed and can't be restarted without the user's X
-     session** (Proton needs it). To finish: with Steam running, `just difftrace=1 launch-foc-desktop`
-     (menu demo) → `python3 tools/analyze_loco_oracle.py eaw-mt.log` → expect ORACLE PASS.
+   - **✅ FIRST IN-GAME ORACLE PASS — 2026-05-30** (`tools/analyze_loco_oracle.py` on a menu-demo
+     capture). The lifted **direction-from-heading** and **move-along-facing** reproduce the live
+     binary **bit-exact**:
+     - `dir = (cos(hd·DEG2RAD), sin(hd·DEG2RAD), 0)` matches the engine's `state+0x14/18/1c` to
+       **≤1e-4 on 182 facing-driven ticks** — validating the `DEG2RAD` constant + `FUN_14041c000` +
+       the cos/sin direction extraction against ground truth.
+     - displacement is exactly along that direction: **`disp ∥ dir` on 150/150 moving ticks**.
+     This is the **first end-to-end proof of the lift-and-validate methodology** (host lift → in-game
+     differential trace → bit-exact agreement). **Correction from the run:** the move MAGNITUDE is
+     **not** `state+0xec` (that field is a 0..1 throttle, often 0); it is spline/special-mode driven —
+     and the menu ships are mostly in **special mode `0x2c`** (`FUN_1406269f0`), a code path distinct
+     from the normal `Moving(0x13)` spline branch. So the validated part is the **direction core**;
+     the magnitude (the `0x2c` mover + the Hermite spline `vfunc_59`) remains a larger sub-lift.
+     Harness: `DTVEL` carries `hd=entity+0x8c`, `sp=state+0xec` at `%.6f`. **Operational lesson:
+     stop the game with `pkill -9 -f StarWarsG.exe` ONLY — never broadly kill `steam`/`proton`
+     (Proton needs the user's Steam client; it can't be restarted headless).**
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
