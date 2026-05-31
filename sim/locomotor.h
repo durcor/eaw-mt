@@ -41,6 +41,18 @@ struct LocomotorState {
     f32  vert_step = 0.0f;// +0x60 — terrain-follow vertical step (cleared each tick)
     vec3 anchor_a;        // +0x88/+0x8c/+0x90 — docking interpolation start
     vec3 anchor_b;        // +0xa0/+0xa4/+0xa8 — docking interpolation target
+    f32  speed = 0.0f;    // +0xec — speed/throttle scalar (SimpleSpace: drives engine glow + decel)
+    u8   special_flag = 0;// +0x260 — SimpleSpace "special mode" gate (vfunc_66)
+};
+
+// SimpleSpaceLocomotorBehaviorClass state codes (LocomotorState+0x48) — a DIFFERENT enum from the
+// Starship LocoState. Normal path: Init -> Moving -> Arrived. Special modes are gated by vfunc_66.
+enum class SsState : u32 {
+    Init    = 0x00,  // -> Moving on first tick
+    Moving  = 0x13,  // compute+apply the move via the mover virtual (vfunc_59 = 0x625990)
+    Arrived = 0x16,  // bleed off residual speed
+    // special modes (entered when vfunc_66 / state+0x260 is set):
+    SpApproach = 0x04, SpDock = 0x05, Sp28 = 0x28, Sp2c = 0x2c,
 };
 
 // GameObjectType locomotor tuning block (entity+0x298) — the per-unit-type physics parameters the
@@ -142,5 +154,26 @@ void integrate_velocity(LocomotorState& st, const GameObject& e, const Locomotor
 
 // StarshipLocomotorBehaviorClass::vfunc_6 — advance one unit's movement by one tick.
 void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, LocomotorEnv& env);
+
+// The deep callouts of the SimpleSpace dispatcher. Unlike Starship (whose integrator is lifted),
+// SimpleSpace delegates the whole move to a 2354-byte mover virtual (vfunc_59 = 0x625990) that this
+// first cut leaves as `compute_move`. SimpleSpace is the COMMON space mover (the behavior census's
+// representative space unit, and 100% of the menu-demo space ships). It stores a UNIT direction at
+// state+0x14/18/1c with the speed scalar at state+0xec (≠ Starship's raw velocity).
+struct SimpleSpaceEnv {
+    virtual ~SimpleSpaceEnv() = default;
+    virtual bool special_mode(const LocomotorState&) { return false; }          // vfunc_66 (state+0x260)
+    virtual void special_state(u32 /*code*/, LocomotorState&, GameObject&) {}    // states 4/5/0x28/0x2c
+    // vfunc_59 (0x625990): compute the unit's new position + velocity; return true when the move is
+    // complete / the unit has arrived (FUN_1405c5910). LIFTING THIS is the bit-exact oracle step.
+    virtual bool compute_move(LocomotorState&, GameObject&, u32 /*tick*/, vec3& out_pos, vec3& out_vel) {
+        out_pos = {}; out_vel = {}; return true;
+    }
+    virtual void decel_residual(LocomotorState&, GameObject&) {}                 // Arrived residual decel
+    virtual void engine_effects(GameObject&, LocomotorState&) {}                 // banking + engine glow/sound
+};
+
+// SimpleSpaceLocomotorBehaviorClass::vfunc_6 (0x626420) — the dispatch/state-machine skeleton.
+void simplespace_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, SimpleSpaceEnv& env);
 
 } // namespace eaw

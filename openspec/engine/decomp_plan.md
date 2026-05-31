@@ -337,13 +337,21 @@ depends on it):
      auto-targets the right units. `analyze_loco_oracle.py` reports families and prefers `DTVELS`.
      Verified in-game (no fault): the menu-demo space ships are 100% `SimpleSpaceLocomotorBehaviorClass`
      (`0x8aeaf8`), `DTVELS`=0.
-   - **⚠ Steer for next: SimpleSpace is the *common* space mover, not Starship.** The behavior census
-     already had `SimpleSpaceLocomotorBehaviorClass::vfunc_6` (`0x626420`) as the representative space
-     unit's mover, and the menu demo confirms it (100% SimpleSpace). It uses a **unit-direction**
-     velocity at `state+0x14/18/1c` with speed stored separately (≠ Starship's raw velocity). Lifting
-     SimpleSpace (`0x626420`) next would match the most common space units **and** be immediately
-     oracle-checkable against the always-available menu-demo capture — the fastest path to a first
-     true in-game differential pass.
+   - **SimpleSpace dispatch skeleton LIFTED 2026-05-30** → `sim/locomotor` `simplespace_tick`
+     (`FUN_140626420` + `SimpleSpaceEnv`; 6 host checks). SimpleSpace is the **common space mover**
+     (behavior census's representative space unit; 100% of menu-demo ships). Its `vfunc_6` is a thin
+     dispatcher: a special-mode gate (`vfunc_66` = `state+0x260`) routing states `4/5/0x28/0x2c` to
+     handlers, else the normal state machine `Init(0) → Moving(0x13) → Arrived(0x16)`. Moving calls
+     the **mover virtual** (`vfunc_59` = `0x625990`, **2354 B**) to compute the new pos/vel, writes
+     position via the shared `set_position` (`FUN_1403a8f90`), and transitions to Arrived on
+     completion or no-motion; Arrived bleeds residual speed and clears `state+0xec`. Velocity model:
+     **unit direction at `state+0x14/18/1c` + speed scalar at `state+0xec`** (≠ Starship's raw
+     velocity — the two families differ). The 2354-B mover (`vfunc_59`) is the deep callout; **lifting
+     it is the bit-exact oracle step** (the menu capture already confirms displacement is *along* the
+     `state+0x14/18/1c` direction, `dir·disp ≈ 1.0`).
+   - **Locomotor structure is uniform:** every type = a thin `vfunc_6` dispatcher over a large
+     per-type mover (Starship integrator `6224b0`; SimpleSpace mover `625990`). The dispatcher
+     skeletons + shared model/primitives are lifted; each mover is its own sizable sub-lift.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release

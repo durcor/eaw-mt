@@ -131,6 +131,50 @@ void LocomotorEnv::integrate_accel(LocomotorState& st, GameObject& e) {
         integrate_velocity(st, e, *e.locomotor_template, heading_scale, steer_gain);
 }
 
+// SimpleSpaceLocomotorBehaviorClass::vfunc_6 (0x626420)
+void simplespace_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, SimpleSpaceEnv& env) {
+    reschedule(b, tick);                        // LocomotorCommonClass::vfunc_6 pre-step
+    LocomotorState& st = b.state;
+
+    // Special mode (vfunc_66 = state+0x260): hand off to the per-special-state handlers and return.
+    if (env.special_mode(st)) {
+        switch (static_cast<SsState>(st.state)) {
+            case SsState::SpApproach:           // FUN_140626c80
+            case SsState::SpDock:               // FUN_140627590
+            case SsState::Sp28:                 // FUN_1405cd680
+            case SsState::Sp2c:                 // FUN_1406269f0
+                env.special_state(st.state, st, entity);
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    // Normal path accepts only {Init, Moving, Arrived} (the 0x480001 state mask in the original).
+    const SsState s = static_cast<SsState>(st.state);
+    if (s != SsState::Init && s != SsState::Moving && s != SsState::Arrived)
+        return;
+
+    if (st.state == static_cast<u32>(SsState::Init))
+        st.state = static_cast<u32>(SsState::Moving);
+
+    if (st.state == static_cast<u32>(SsState::Moving)) {
+        const vec3 oldpos = entity.position;
+        vec3 newpos{}, newvel{};
+        const bool complete = env.compute_move(st, entity, tick, newpos, newvel); // vfunc_59 (mover)
+        set_position(entity, newpos);           // FUN_1403a8f90 — writes entity+0x78
+        // Arrived when the move reports complete OR the position did not change this tick.
+        if (complete || newpos == oldpos)
+            st.state = static_cast<u32>(SsState::Arrived);
+    } else { // Arrived
+        env.decel_residual(st, entity);         // bleed residual heading speed toward 0
+        st.speed = 0.0f;                        // *(state+0xec) = 0
+    }
+
+    env.engine_effects(entity, st);             // banking roll + engine glow/sound (presentation)
+}
+
 // StarshipLocomotorBehaviorClass::vfunc_6
 void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, LocomotorEnv& env) {
     reschedule(b, tick);                       // LocomotorCommonClass::vfunc_6 pre-step

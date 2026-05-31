@@ -249,6 +249,86 @@ static void test_integrate_through_starship_tick() {
     CHECK(e.position == (vec3{2, 0, 5}));       // position advanced by velocity
 }
 
+// --- SimpleSpace dispatcher (FUN_140626420) ---
+
+struct SsEnv : SimpleSpaceEnv {
+    bool special = false;
+    u32 special_seen = 0;
+    bool move_complete = false;
+    vec3 move_to{};
+    int decel_calls = 0, effect_calls = 0;
+    bool special_mode(const LocomotorState&) override { return special; }
+    void special_state(u32 code, LocomotorState&, GameObject&) override { special_seen = code; }
+    bool compute_move(LocomotorState&, GameObject&, u32, vec3& out_pos, vec3& out_vel) override {
+        out_pos = move_to; out_vel = {}; return move_complete;
+    }
+    void decel_residual(LocomotorState&, GameObject&) override { ++decel_calls; }
+    void engine_effects(GameObject&, LocomotorState&) override { ++effect_calls; }
+};
+
+static void test_ss_init_to_moving_and_apply() {
+    std::printf("test_ss_init_to_moving_and_apply\n");
+    LocomotorBehavior b; b.base_interval = 5; b.state.state = (u32)SsState::Init;
+    GameObject e; e.position = {1, 2, 3};
+    SsEnv env; env.move_complete = false; env.move_to = {4, 2, 3};
+    simplespace_tick(b, e, 100, env);
+    CHECK(b.next_service_tick == 105);                 // reschedule pre-step
+    CHECK(b.state.state == (u32)SsState::Moving);       // Init -> Moving, stays Moving (not complete)
+    CHECK(e.position == (vec3{4, 2, 3}));               // mover output applied
+    CHECK((e.flags & GO_FLAG_HAS_TRANSFORM) != 0);
+    CHECK(env.effect_calls == 1);
+}
+
+static void test_ss_arrives_on_complete() {
+    std::printf("test_ss_arrives_on_complete\n");
+    LocomotorBehavior b; b.state.state = (u32)SsState::Moving;
+    GameObject e; e.position = {0, 0, 0};
+    SsEnv env; env.move_complete = true; env.move_to = {9, 9, 9};
+    simplespace_tick(b, e, 1, env);
+    CHECK(e.position == (vec3{9, 9, 9}));
+    CHECK(b.state.state == (u32)SsState::Arrived);
+}
+
+static void test_ss_arrives_on_no_motion() {
+    std::printf("test_ss_arrives_on_no_motion\n");
+    LocomotorBehavior b; b.state.state = (u32)SsState::Moving;
+    GameObject e; e.position = {5, 5, 5};
+    SsEnv env; env.move_complete = false; env.move_to = {5, 5, 5};  // mover returns same position
+    simplespace_tick(b, e, 1, env);
+    CHECK(b.state.state == (u32)SsState::Arrived);      // no displacement -> arrived
+}
+
+static void test_ss_arrived_decel() {
+    std::printf("test_ss_arrived_decel\n");
+    LocomotorBehavior b; b.state.state = (u32)SsState::Arrived; b.state.speed = 12.0f;
+    GameObject e;
+    SsEnv env;
+    simplespace_tick(b, e, 1, env);
+    CHECK(env.decel_calls == 1);
+    CHECK(approx(b.state.speed, 0.0f));                 // *(state+0xec) cleared
+}
+
+static void test_ss_special_mode() {
+    std::printf("test_ss_special_mode\n");
+    LocomotorBehavior b; b.state.state = (u32)SsState::SpDock;
+    GameObject e; e.position = {1, 1, 1};
+    SsEnv env; env.special = true;
+    simplespace_tick(b, e, 1, env);
+    CHECK(env.special_seen == (u32)SsState::SpDock);    // dispatched to special handler
+    CHECK(e.position == (vec3{1, 1, 1}));               // normal move path skipped
+    CHECK(env.effect_calls == 0);
+}
+
+static void test_ss_invalid_state_noop() {
+    std::printf("test_ss_invalid_state_noop\n");
+    LocomotorBehavior b; b.state.state = 0x44;          // not in {0,0x13,0x16}, not special
+    GameObject e; e.position = {2, 2, 2};
+    SsEnv env; env.special = false;
+    simplespace_tick(b, e, 1, env);
+    CHECK(e.position == (vec3{2, 2, 2}));               // rejected -> no move, no effects
+    CHECK(env.effect_calls == 0);
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -267,6 +347,12 @@ int main() {
     test_integrate_heading_rotation();
     test_integrate_steer_damp_aligned_noop();
     test_integrate_through_starship_tick();
+    test_ss_init_to_moving_and_apply();
+    test_ss_arrives_on_complete();
+    test_ss_arrives_on_no_motion();
+    test_ss_arrived_decel();
+    test_ss_special_mode();
+    test_ss_invalid_state_noop();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;
