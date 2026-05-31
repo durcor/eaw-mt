@@ -310,6 +310,105 @@ def parse_steer(path):
     return steer
 
 
+def fighter_steer_yaw(roll0, yaw0, yaw_err, budget, a, b, cap):
+    """Mirror of sim/locomotor.cpp fighter_steer_yaw (== FUN_1405c95a0). Returns (roll1, yaw1,
+    budget1, yaw_stepped). a/b enter only as the ratio b/a; cap is the raw template+0x39c."""
+    we = wrap180(yaw_err)
+    clamped = we
+    if clamped < -cap:  clamped = -cap
+    elif clamped > cap: clamped = cap
+    cy = -clamped
+    roll0w  = wrap180(roll0)
+    roll_err = wrap180(cy - roll0w)
+    roll_step = b * (budget / a)
+    if roll_step >= 0.0:
+        if roll_step > 180.0: roll_step = 180.0
+    else:
+        roll_step = 0.0
+    new_roll = roll0w
+    if roll_step < abs(roll_err):
+        if roll_err > 0.0:   new_roll += roll_step
+        elif roll_err < 0.0: new_roll -= roll_step
+    else:
+        new_roll += roll_err
+    new_yaw = yaw0
+    stepped = True
+    skip = False
+    if new_roll != 0.0:
+        s1 = -1.0 if cy < 0.0 else 1.0
+        s2 = 1.0 if new_roll >= 0.0 else -1.0
+        if s1 != s2:
+            budget = 0.0; skip = True; stepped = False
+    if not skip:
+        bud = budget
+        if bud < abs(we):
+            budget = 0.0
+            if we <= 0.0: new_yaw -= bud
+            else:         new_yaw += bud
+        else:
+            new_yaw += we
+            budget -= abs(we)
+    return wrap360(new_roll), wrap360(new_yaw), budget, stepped
+
+
+def parse_yaw(path):
+    """tick -> dict of the FUN_1405c95a0 yaw/roll integrator I/O captured by the DTYAW hook."""
+    yaw = {}
+    rs = re.compile(
+        r"DTYAW\ttick=(\d+)\tent=([0-9a-f]+)\t"
+        r"r0=(-?[\d.]+)\tp0=(-?[\d.]+)\ty0=(-?[\d.]+)\tye=(-?[\d.]+)\tbud0=(-?[\d.]+)\t"
+        r"a=(-?[\d.]+)\tb=(-?[\d.]+)\tcap=(-?[\d.]+)\tr1=(-?[\d.]+)\ty1=(-?[\d.]+)\tbud1=(-?[\d.]+)")
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = rs.match(line)
+            if not m:
+                continue
+            g = m.groups()
+            yaw[int(g[0])] = dict(ent=int(g[1], 16),
+                                  r0=float(g[2]), p0=float(g[3]), y0=float(g[4]),
+                                  ye=float(g[5]), bud0=float(g[6]), a=float(g[7]),
+                                  b=float(g[8]), cap=float(g[9]),
+                                  r1=float(g[10]), y1=float(g[11]), bud1=float(g[12]))
+    return yaw
+
+
+def check_yaw(path):
+    """Validate the lifted fighter_steer_yaw (FUN_1405c95a0 bank-to-turn integrator) against the
+    DTYAW capture of its EXACT I/O: predict (roll1, yaw1, budget1) from (roll0, yaw0, yaw_err,
+    budget0, a, b, cap). This isolates the yaw channel completely — no caaf0 pipeline to rebuild."""
+    yaw = parse_yaw(path)
+    if not yaw:
+        print("\n[Fighter yaw-integrator oracle] no DTYAW lines — skipped "
+              "(need a fighter battle captured with the DTYAW hook)")
+        return None
+    ticks = sorted(yaw)
+    r_n = r_ok = yw_n = yw_ok = 0
+    fails = []
+    for t in ticks:
+        s = yaw[t]
+        if s["a"] == 0.0:            # template not resolved (defensive); skip
+            continue
+        pr, py, pbud, _ = fighter_steer_yaw(s["r0"], s["y0"], s["ye"], s["bud0"],
+                                            s["a"], s["b"], s["cap"])
+        r_n += 1
+        if abs(wrap180(pr - s["r1"])) <= 0.05:
+            r_ok += 1
+        elif len(fails) < 8:
+            fails.append((t, "roll", s["r0"], s["ye"], s["bud0"], pr, s["r1"]))
+        yw_n += 1
+        if abs(wrap180(py - s["y1"])) <= 0.05:
+            yw_ok += 1
+        elif len(fails) < 8:
+            fails.append((t, "yaw", s["y0"], s["ye"], s["bud0"], py, s["y1"]))
+    print(f"\n[Fighter yaw-integrator oracle]  (DTYAW, {len(ticks)} integrator ticks, "
+          f"ent=0x{yaw[ticks[0]]['ent']:x})")
+    print(f"  ROLL reproduced  steer_yaw(...).roll==r1: {r_ok}/{r_n}")
+    print(f"  YAW  reproduced  steer_yaw(...).yaw ==y1: {yw_ok}/{yw_n}")
+    for t, ch, cur, err, bud, pred, act in fails:
+        print(f"  MISS t={t} {ch} cur={cur:.3f} yaw_err={err:.3f} budget={bud:.3f} pred={pred:.3f} act={act:.3f}")
+    return (r_n, r_ok, yw_n, yw_ok)
+
+
 def check_steer(path):
     """Validate the lifted Fighter steering primitives against the DTSTEER controller capture:
       (A) continuity — the latched entity's post-tick angles == next tick's pre-tick angles
@@ -406,6 +505,15 @@ def main():
             print(f"  [steer continuity] {'PASS' if c_ok/c_n >= 0.99 else 'FAIL'} ({100.0*c_ok/c_n:.1f}%)")
         if p_n > 0:
             print(f"  [steer pitch]      {'PASS' if p_ok/p_n >= 0.95 else 'FAIL'} ({100.0*p_ok/p_n:.1f}%)")
+
+    # Oracle 6 (Fighter yaw channel): the lifted fighter_steer_yaw vs the DTYAW integrator I/O.
+    yw = check_yaw(path)
+    if yw is not None:
+        r_n, r_ok, y_n, y_ok = yw
+        if r_n > 0:
+            print(f"  [yaw-int roll]     {'PASS' if r_ok/r_n >= 0.95 else 'FAIL'} ({100.0*r_ok/r_n:.1f}%)")
+        if y_n > 0:
+            print(f"  [yaw-int yaw]      {'PASS' if y_ok/y_n >= 0.95 else 'FAIL'} ({100.0*y_ok/y_n:.1f}%)")
 
     if dir_ok and mag_ok:
         print("\nORACLE PASS (FULL POSITION) — direction (cos/sin) AND magnitude (table[timer]) of the"

@@ -508,6 +508,38 @@ static void test_fighter_turn_angle() {
     { f32 b = 5.0f;   CHECK(approx(fighter_turn_angle(42.0f, 0.0f, b), 42.0f));  CHECK(approx(b, 5.0f)); }
 }
 
+// Yaw/roll bank-to-turn integrator (FUN_1405c95a0). a_rate/b_rate enter only as the ratio b/a;
+// the cases below use a=3, b=6 (ratio 2) so roll_step = 2·budget. Goldens hand-derived.
+static void test_fighter_steer_yaw() {
+    const f32 a = 3.0f, b = 6.0f;
+    // (A) bank already aligned to the commanded angle, budget covers the yaw error -> full yaw step.
+    {   f32 bud = 50.0f;
+        fighter_yaw_result r = fighter_steer_yaw(350.0f, 100.0f, 10.0f, bud, a, b, 180.0f);
+        CHECK(approx(r.roll, 350.0f) && approx(r.yaw, 110.0f) && r.yaw_stepped);
+        CHECK(approx(bud, 40.0f)); }
+    // (B) sign-flip guard: bank not yet on the turn side -> yaw SKIPPED, budget zeroed, roll still moves.
+    {   f32 bud = 5.0f;   // roll_step = 10; roll 30 -> 20 (toward cy=-20), but sign(cy)!=sign(20)
+        fighter_yaw_result r = fighter_steer_yaw(30.0f, 100.0f, 20.0f, bud, a, b, 180.0f);
+        CHECK(approx(r.roll, 20.0f) && approx(r.yaw, 100.0f) && !r.yaw_stepped);
+        CHECK(approx(bud, 0.0f)); }
+    // (C) cap clamps only the BANK command, not the yaw step: cap=5 -> cy=-5, but yaw still turns 40.
+    {   f32 bud = 100.0f;
+        fighter_yaw_result r = fighter_steer_yaw(355.0f, 0.0f, 40.0f, bud, a, b, 5.0f);
+        CHECK(approx(r.roll, 355.0f) && approx(r.yaw, 40.0f) && r.yaw_stepped);
+        CHECK(approx(bud, 60.0f)); }
+    // (D) budget shorter than the yaw error -> step by budget, exhaust it. Roll banks too:
+    // roll0=wrap180(350)=-10, roll_err=wrap180(-30-(-10))=-20, step 16 -> -26 -> wrap360 334.
+    {   f32 bud = 8.0f;
+        fighter_yaw_result r = fighter_steer_yaw(350.0f, 100.0f, 30.0f, bud, a, b, 180.0f);
+        CHECK(approx(r.roll, 334.0f) && approx(r.yaw, 108.0f) && r.yaw_stepped);
+        CHECK(approx(bud, 0.0f)); }
+    // (E) roll moves toward the bank, sign already aligned -> yaw proceeds (negative error).
+    {   f32 bud = 4.0f;   // roll_step = 8; roll 5 -> 13 (toward cy=+20); sign aligned -> yaw -4
+        fighter_yaw_result r = fighter_steer_yaw(5.0f, 100.0f, -20.0f, bud, a, b, 180.0f);
+        CHECK(approx(r.roll, 13.0f) && approx(r.yaw, 96.0f) && r.yaw_stepped);
+        CHECK(approx(bud, 0.0f)); }
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -540,6 +572,7 @@ int main() {
     test_fighter_angle_wraps();
     test_fighter_target_bearing();
     test_fighter_turn_angle();
+    test_fighter_steer_yaw();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

@@ -3406,6 +3406,111 @@ static BOOL install_b5caaf0_hook(void)
 }
 
 /* =========================================================================
+ * DTYAW — isolated capture of the yaw/roll bank-to-turn integrator (FUN_1405c95a0).
+ *
+ * DTSTEER captures the WHOLE controller (FUN_1405caaf0); its pitch channel was
+ * validated, but the yaw channel is the bank-to-turn integrator FUN_1405c95a0,
+ * which needs the EXACT yaw-error and turn-rate constants the controller hands it.
+ * Rather than reconstruct that error offline through the full caaf0 pipeline, we
+ * wrap FUN_1405c95a0 DIRECTLY and capture its complete I/O:
+ *   roll/pitch/yaw before & after (entity+0x84/88/8c),
+ *   ye  = the signed yaw error (param_2, the float in xmm1),
+ *   bud0/bud1 = the turn budget (*param_3) before & after,
+ *   a/b = the raw unit-template turn rates (template+0x38c/+0x394) — c95a0 uses
+ *         only their ratio so the game-speed scale cancels; capture them RAW,
+ *   cap = the yaw clamp (template+0x39c), read RAW.
+ * Offline: fighter_steer_yaw(roll0,yaw0,ye,bud0,a,b,cap) == {roll1,yaw1,bud1}.
+ *
+ * arg count = 3 (decomp/5c95a0.c): param_1=rcx, param_2=FLOAT (xmm1, 2nd
+ * positional), param_3=float* (r8). The typedef MUST declare param_2 `float`.
+ *
+ * Prologue (objdump): 48 89 5c 24 10 / 57 / 48 81 ec 80 00 00 00 / 0f 29 74 24 70
+ * = 5+1+7+5 = 18 bytes (first instruction boundary >= the 14-byte FF25 width; none
+ * are RIP-relative -> relocatable). Own latch, independent of DTSTEER.
+ * Profile-build only; runtime-gated by EAW_DIFFTRACE=1.
+ * ========================================================================= */
+#define STEER_C95A0_RVA   0x5c95a0ULL
+static const BYTE steer_c95a0_prologue[18] = {
+    0x48, 0x89, 0x5c, 0x24, 0x10,  /* mov [rsp+0x10], rbx */
+    0x57,                          /* push rdi            */
+    0x48, 0x81, 0xec, 0x80, 0x00, 0x00, 0x00,  /* sub rsp, 0x80 */
+    0x0f, 0x29, 0x74, 0x24, 0x70,  /* movaps [rsp+0x70], xmm6 */
+};
+typedef void (*C95a0Fn)(int64_t behavior, float yaw_err, float *yaw_budget);
+static C95a0Fn  g_c95a0_trampoline = NULL;
+static int64_t  g_yaw_ent      = 0;
+static uint32_t g_yaw_lasttick = 0xFFFFFFFFu;
+static uint32_t g_yaw_seentick = 0;
+
+static void b5c95a0_hook(int64_t behavior, float yaw_err, float *yaw_budget)
+{
+    int64_t  entity = behavior ? *(int64_t *)(behavior + 0x28) : 0;
+    int      do_capture = 0;
+    uint32_t tick = 0;
+
+    if (entity && g_dt_frame_ctr && dt_on()) {
+        tick = *g_dt_frame_ctr;
+        if (!g_yaw_ent) {
+            g_yaw_ent = entity; g_yaw_seentick = tick;
+        } else if (entity != g_yaw_ent &&
+                   (uint32_t)(tick - g_yaw_seentick) > STEER_STALE_TICKS) {
+            g_yaw_ent = entity; g_yaw_seentick = tick;
+        }
+        if (entity == g_yaw_ent && tick != g_yaw_lasttick) do_capture = 1;
+    }
+
+    if (!do_capture) { g_c95a0_trampoline(behavior, yaw_err, yaw_budget); return; }
+
+    /* --- inputs, sampled BEFORE the integrator mutates angles/budget --- */
+    float r0 = *(float *)(entity + 0x84), p0 = *(float *)(entity + 0x88), y0 = *(float *)(entity + 0x8c);
+    float bud0 = yaw_budget ? *yaw_budget : 0.0f;
+    int64_t tmpl = *(int64_t *)(entity + 0x298);
+    float a = 0.0f, bb = 0.0f, cap = 0.0f;
+    if (tmpl) { a = *(float *)(tmpl + 0x38c); bb = *(float *)(tmpl + 0x394); cap = *(float *)(tmpl + 0x39c); }
+
+    g_c95a0_trampoline(behavior, yaw_err, yaw_budget);
+
+    /* --- outputs --- */
+    float r1 = *(float *)(entity + 0x84), y1 = *(float *)(entity + 0x8c);
+    float bud1 = yaw_budget ? *yaw_budget : 0.0f;
+
+    char s[384];
+    snprintf(s, sizeof s,
+        "DTYAW\ttick=%u\tent=%llx\tr0=%.6f\tp0=%.6f\ty0=%.6f\tye=%.6f\tbud0=%.6f\t"
+        "a=%.6f\tb=%.6f\tcap=%.6f\tr1=%.6f\ty1=%.6f\tbud1=%.6f\n",
+        tick, (unsigned long long)entity, r0, p0, y0, yaw_err, bud0, a, bb, cap, r1, y1, bud1);
+    log_write(s);
+    g_yaw_lasttick = tick; g_yaw_seentick = tick;
+}
+
+static BOOL install_b5c95a0_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + STEER_C95A0_RVA;
+    if (memcmp(fn, steer_c95a0_prologue, 18) != 0) {
+        log_write("[eaw-mt] WARN: FUN_1405c95a0 prologue mismatch — DTYAW not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTYAW trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, steer_c95a0_prologue, 18);
+    write_abs_jmp(tramp + 18, (uint64_t)(fn + 18));
+    g_c95a0_trampoline = (C95a0Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b5c95a0_hook);
+    VirtualProtect(fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 14);
+    log_write("[eaw-mt] DTYAW: FUN_1405c95a0 yaw/roll-integrator hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -6879,6 +6984,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_ga4d0_hook();
         install_galactic_slot22_hook();
         install_b5caaf0_hook();   /* DTSTEER: Fighter steering controller I/O (EAW_DIFFTRACE=1) */
+        install_b5c95a0_hook();   /* DTYAW: Fighter yaw/roll bank-to-turn integrator I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
 #endif
 

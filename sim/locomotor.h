@@ -336,4 +336,36 @@ fighter_bearing fighter_target_bearing(const vec3& local_target);
 // both the angle and the budget unchanged.)
 f32 fighter_turn_angle(f32 cur_deg, f32 delta_deg, f32& turn_budget);
 
+// --- Yaw/roll integrator (FUN_1405c95a0) — the bank-to-turn heading channel ---
+//
+// FUN_1405caaf0 drives heading with this instead of the bare turn-step: it banks the fighter into
+// the turn (rolls toward a commanded bank angle) and only YAWS once the bank sign agrees with the
+// turn direction. It updates BOTH roll (+0x84) and yaw (+0x8c); pitch (+0x88) is left untouched.
+//
+// Inputs (all captured at the call boundary by the DTYAW harness):
+//   roll_deg, yaw_deg : the entity's current stored angles (+0x84, +0x8c)
+//   yaw_err           : the signed yaw bearing error FUN_1405caaf0 hands in (param_2, pre-wrap)
+//   yaw_budget        : the remaining per-tick turn allowance (*param_3); consumed in place
+//   a_rate, b_rate    : the unit-template turn rates (template+0x38c via FUN_140372560,
+//                       template+0x394 via FUN_1403724d0). c95a0 only ever uses them as the
+//                       ratio b_rate/a_rate (roll_step = (b/a)·budget), so the game-speed scale
+//                       both accessors apply CANCELS — the RAW template fields suffice.
+//   cap               : the yaw clamp (template+0x39c), read RAW (unscaled)
+//
+// Algorithm (exactly FUN_1405c95a0):
+//   1. cy       = −clamp(wrap180(yaw_err), −cap, +cap)            // commanded bank direction
+//   2. roll_err = wrap180(cy − wrap180(roll_deg))
+//      roll_step= clamp((b_rate/a_rate)·budget, 0, 180)          // 180 = DAT_1408524f8
+//      → step roll toward roll_err, capped by roll_step (budget NOT spent on roll)
+//   3. sign-flip guard: if new_roll ≠ 0 and sign(cy) ≠ sign(new_roll) → zero the budget and SKIP
+//      the yaw step this tick (let the bank catch up before turning).
+//   4. otherwise yaw is the SAME turn-step as the pitch channel, driven by wrap180(yaw_err) and the
+//      budget (here applied to the RAW stored yaw, no wrap180 of the current angle first — the only
+//      structural difference from FUN_1405c8fb0).
+//   5. roll and yaw are wrapped to [0, 360) before write-back.
+// `yaw_budget` is updated in place. `yaw_stepped` reports whether step 4 ran (false = guard skip).
+struct fighter_yaw_result { f32 roll; f32 yaw; bool yaw_stepped; };
+fighter_yaw_result fighter_steer_yaw(f32 roll_deg, f32 yaw_deg, f32 yaw_err,
+                                     f32& yaw_budget, f32 a_rate, f32 b_rate, f32 cap);
+
 } // namespace eaw

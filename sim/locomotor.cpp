@@ -408,4 +408,59 @@ f32 fighter_turn_angle(f32 cur_deg, f32 delta_deg, f32& turn_budget) {
     return wrap360(cur);                               // FUN_14020b710 before write-back
 }
 
+fighter_yaw_result fighter_steer_yaw(f32 roll_deg, f32 yaw_deg, f32 yaw_err,
+                                     f32& yaw_budget, f32 a_rate, f32 b_rate, f32 cap) {
+    // (1) commanded bank = −clamp(wrap180(yaw_err), −cap, +cap)   [decomp lines 20-27]
+    const f32 we = wrap180(yaw_err);                   // FUN_14020b6d0(param_2), reused for the yaw step
+    f32 clamped = we;
+    if (clamped < -cap)     clamped = -cap;
+    else if (clamped > cap) clamped = cap;
+    const f32 cy = -clamped;
+
+    // (2) roll channel — step the bank toward cy, capped by roll_step (budget untouched)
+    const f32 roll0    = wrap180(roll_deg);            // fVar4
+    const f32 roll_err = wrap180(cy - roll0);          // fVar5
+    f32 roll_step = b_rate * (yaw_budget / a_rate);    // fVar6 = B·(budget/A); game-speed scale cancels
+    if (roll_step >= 0.0f) { if (roll_step > 180.0f) roll_step = 180.0f; }  // clamp to [0, 180]
+    else roll_step = 0.0f;
+
+    f32 new_roll = roll0;
+    if (roll_step < std::fabs(roll_err)) {
+        if (roll_err > 0.0f)      new_roll += roll_step;
+        else if (roll_err < 0.0f) new_roll -= roll_step;
+        // roll_err == 0 → no step
+    } else {
+        new_roll += roll_err;                          // close the bank error exactly
+    }
+
+    // (3) sign-flip guard: don't yaw until the bank sign matches the commanded direction
+    fighter_yaw_result out{};
+    out.yaw_stepped = true;
+    f32 new_yaw = yaw_deg;                              // raw stored yaw — NOT wrap180'd (unlike pitch)
+    bool skip = false;
+    if (new_roll != 0.0f) {
+        const f32 s1 = (cy < 0.0f)       ? -1.0f : 1.0f;   // sign(cy)        [reads cy before reuse]
+        const f32 s2 = (new_roll >= 0.0f) ? 1.0f : -1.0f;  // sign(new_roll)
+        if (s1 != s2) { yaw_budget = 0.0f; skip = true; out.yaw_stepped = false; }
+    }
+
+    // (4) yaw step — identical turn-step to the pitch channel, on the raw yaw
+    if (!skip) {
+        const f32 b = yaw_budget;
+        if (b < std::fabs(we)) {
+            yaw_budget = 0.0f;
+            if (we <= 0.0f) new_yaw -= b;
+            else            new_yaw += b;
+        } else {
+            new_yaw += we;
+            yaw_budget -= std::fabs(we);
+        }
+    }
+
+    // (5) wrap both before write-back; pitch is preserved by the caller
+    out.roll = wrap360(new_roll);
+    out.yaw  = wrap360(new_yaw);
+    return out;
+}
+
 } // namespace eaw
