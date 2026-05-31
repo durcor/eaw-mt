@@ -75,6 +75,76 @@ def check_drift_magnitude(pos, vel, table):
     return n, ok
 
 
+def parse_spline(path):
+    """Parse the basis matrix (DTMAT) and per-tick control points (DTSPL n=0/n=1)."""
+    basis = {}
+    nodes = {}  # tick -> {0: node, 1: node};  node = (z, px, py, tx, ty, tz, w, a)
+    rm = re.compile(r"DTMAT\ti=(\d+)\tv=(-?[\d.]+)")
+    rs = re.compile(r"DTSPL\ttick=(\d+)\tn=(\d)\tidx=(-?\d+)\tz=(-?[\d.]+)\tpx=(-?[\d.]+)\tpy=(-?[\d.]+)"
+                    r"\ttx=(-?[\d.]+)\tty=(-?[\d.]+)\ttz=(-?[\d.]+)\tw=(-?[\d.]+)\ta=(-?[\d.]+)")
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = rm.match(line)
+            if m:
+                basis[int(m.group(1))] = float(m.group(2)); continue
+            m = rs.match(line)
+            if m:
+                t = int(m.group(1)); n = int(m.group(2))
+                nodes.setdefault(t, {})[n] = tuple(float(m.group(i)) for i in range(4, 12))
+    return basis, nodes
+
+
+def hermite_eval(p0, p1, tick, hold_z, B):
+    """Mirror of sim/locomotor.cpp hermite_spline_eval. node = (z,px,py,tx,ty,tz,w,a)."""
+    import math
+    _, p0x, p0y, t0x, t0y, t0z, w0, a0 = p0
+    _, p1x, p1y, t1x, t1y, t1z, w1, a1 = p1
+    arclen = a1 - a0
+    if not (arclen > 0):
+        return (p0x, p0y, hold_z)
+    t = max(0.0, min(1.0, (tick - a0) / arclen))
+    def norm(x, y, z):
+        L = math.sqrt(x * x + y * y + z * z)
+        return (x / L, y / L) if L > 0 else (0.0, 0.0)
+    m0x, m0y = norm(t0x, t0y, t0z); m1x, m1y = norm(t1x, t1y, t1z)
+    s0, s1 = w0 * arclen, w1 * arclen
+    m0x *= s0; m0y *= s0; m1x *= s1; m1y *= s1
+    t2, t3 = t * t, t * t * t
+    def ax(a, b, mm0, mm1):
+        v = (a, b, mm0, mm1)
+        c = [B[r * 4 + 0] * v[0] + B[r * 4 + 1] * v[1] + B[r * 4 + 2] * v[2] + B[r * 4 + 3] * v[3]
+             for r in range(4)]
+        return c[0] + c[1] * t + c[2] * t2 + c[3] * t3
+    return (ax(p0x, p1x, m0x, m1x), ax(p0y, p1y, m0y, m1y), hold_z)
+
+
+def check_spline(path, pos):
+    basis, nodes = parse_spline(path)
+    if len(basis) < 16 or not nodes:
+        print("\n[spline (0x13) oracle] no DTMAT/DTSPL captured — skipped "
+              f"(basis={len(basis)}, spline-ticks={len(nodes)})")
+        return None
+    B = [basis[i] for i in range(16)]
+    import math
+    n = ok = 0
+    fails = []
+    for t, nd in sorted(nodes.items()):
+        if 0 not in nd or 1 not in nd or t not in pos:
+            continue
+        hold_z = nd[0][0]
+        px, py, pz = hermite_eval(nd[0], nd[1], t, hold_z, B)
+        ax, ay, az = pos[t]
+        n += 1
+        if abs(px - ax) <= 0.05 and abs(py - ay) <= 0.05:
+            ok += 1
+        else:
+            fails.append((t, px, py, ax, ay))
+    print(f"\n[spline (0x13) oracle]  hermite_spline_eval == DTPOS: {ok}/{n} spline ticks")
+    for t, px, py, ax, ay in fails[:8]:
+        print(f"  MISMATCH t={t} pred=({px:.3f},{py:.3f}) actual=({ax:.3f},{ay:.3f})")
+    return n, ok
+
+
 DEG2RAD = (3.14159274 * 2.0) / 360.0  # matches sim/locomotor DEG2RAD
 
 def check_simplespace_straight(pos, vel):
@@ -152,6 +222,12 @@ def main():
     # Oracle 2 (full position): the lifted 0x2c drift mover's magnitude = table[timer].
     mag = check_drift_magnitude(pos, vel, table)
     mag_ok = mag is not None and mag[0] > 0 and mag[1] / mag[0] >= 0.95
+
+    # Oracle 3 (spline maneuvering): the lifted Hermite spline eval == DTPOS on 0x13 ticks.
+    spl = check_spline(path, pos)
+    if spl is not None and spl[0] > 0:
+        print(f"  [spline] {'PASS' if spl[1]/spl[0] >= 0.95 else 'FAIL'} "
+              f"({100.0*spl[1]/spl[0]:.1f}%)")
 
     if dir_ok and mag_ok:
         print("\nORACLE PASS (FULL POSITION) — direction (cos/sin) AND magnitude (table[timer]) of the"

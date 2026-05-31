@@ -203,4 +203,25 @@ vec3 simplespace_straight_move(const vec3& in_pos, f32 heading_deg, f32 speed);
 vec3 simplespace_drift_move(const vec3& owner_pos, const vec3& dir, int timer,
                             const std::vector<f32>& speed_table);
 
+// A spline control point — one 0x34-byte node of the SimpleSpace path (state+0x18 array, stride
+// 0x34, current index state+0x60). Fields used by the mover: pos [0..2], tangent [3..5] (a direction,
+// normalized at eval), weight [6], and arc-param [0xc] (the t-domain coordinate, compared to tick).
+struct SplineNode {
+    vec3 pos;
+    vec3 tangent;
+    f32  weight = 0.0f;
+    f32  arc    = 0.0f;
+};
+
+// The 2D cubic-Hermite segment evaluation inside SimpleSpaceLocomotorBehaviorClass::vfunc_59
+// (FUN_140625990): position along the curve between two control points at sim time `tick`. For each
+// of x,y:  out = c0 + c1*t + c2*t^2 + c3*t^3, where t = clamp((tick - p0.arc)/(p1.arc-p0.arc), 0, 1)
+// and c_r = basis_row_r · [p0.pos, p1.pos, m0, m1] with scaled endpoint tangents
+// m_i = normalize(p_i.tangent) * (p_i.weight * arclen). Z is held (out.z = owner's current z).
+// `basis` is the runtime 4x4 matrix DAT_140b2f1f0 (row r = the t^r coefficients; cols = p0,p1,m0,m1),
+// row-major [16]; it is loaded at runtime (static image is zero), so the caller supplies the live
+// matrix. Returns owner_pos unchanged for a degenerate (zero-length) segment.
+vec3 hermite_spline_eval(const SplineNode& p0, const SplineNode& p1, u32 tick, f32 hold_z,
+                         const f32 basis[16]);
+
 } // namespace eaw

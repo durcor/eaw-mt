@@ -175,6 +175,44 @@ void simplespace_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, Simple
     env.engine_effects(entity, st);             // banking roll + engine glow/sound (presentation)
 }
 
+// FUN_140139800 — normalize a vec3 in place, return original length.
+static f32 normalize3(vec3& v) {
+    const f32 len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (len > 0.0f) { const f32 inv = 1.0f / len; v.x *= inv; v.y *= inv; v.z *= inv; }
+    return len;
+}
+
+// The 2D cubic-Hermite segment eval inside FUN_140625990.
+vec3 hermite_spline_eval(const SplineNode& p0, const SplineNode& p1, u32 tick, f32 hold_z,
+                         const f32 basis[16]) {
+    const f32 arclen = p1.arc - p0.arc;
+    if (!(arclen > 0.0f))                       // degenerate segment: no curve
+        return { p0.pos.x, p0.pos.y, hold_z };
+
+    f32 t = (static_cast<f32>(tick) - p0.arc) / arclen;
+    if (t < 0.0f) t = 0.0f;
+    else if (t > 1.0f) t = 1.0f;                // clamp to [0,1]
+
+    // scaled endpoint tangents m_i = normalize(tangent_i) * (weight_i * arclen)
+    vec3 m0 = p0.tangent, m1 = p1.tangent;
+    normalize3(m0); normalize3(m1);
+    const f32 s0 = p0.weight * arclen, s1 = p1.weight * arclen;
+    m0.x *= s0; m0.y *= s0; m1.x *= s1; m1.y *= s1;
+
+    const f32 t2 = t * t, t3 = t2 * t;
+    auto axis = [&](f32 a0, f32 a1, f32 mm0, f32 mm1) -> f32 {
+        const f32 v[4] = { a0, a1, mm0, mm1 };
+        f32 c[4];
+        for (int r = 0; r < 4; ++r)
+            c[r] = basis[r * 4 + 0] * v[0] + basis[r * 4 + 1] * v[1]
+                 + basis[r * 4 + 2] * v[2] + basis[r * 4 + 3] * v[3];
+        return c[0] + c[1] * t + c[2] * t2 + c[3] * t3;
+    };
+    return { axis(p0.pos.x, p1.pos.x, m0.x, m1.x),
+             axis(p0.pos.y, p1.pos.y, m0.y, m1.y),
+             hold_z };                          // z held (out.z = owner's current z)
+}
+
 // FUN_1406269f0 — the 0x2c special-mode timed drift mover.
 vec3 simplespace_drift_move(const vec3& owner_pos, const vec3& dir, int timer,
                             const std::vector<f32>& speed_table) {

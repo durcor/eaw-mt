@@ -3058,6 +3058,15 @@ static float              g_dt_heading   = 0;      /* coord+0x8c heading angle (
 static float              g_dt_speed     = 0;      /* state+0xec speed scalar */
 static int32_t            g_dt_timer     = -1;     /* state+0x5c drift timer (0x2c mode magnitude index) */
 static int                g_dt_tab_done  = 0;      /* runtime speed table DAT_140b31440 dumped once */
+static int                g_dt_mat_done  = 0;      /* runtime Hermite basis DAT_140b2f1f0 dumped once */
+/* Spline-segment capture (0x13 Moving state): the two active control points node[idx], node[idx+1]
+ * from the state+0x18 array (stride 0x34, idx=state+0x60) for the FUN_140625990 spline oracle.
+ * Each node: pos[0..2], tangent[3..5], weight[6], arc[0xc]. */
+static int                g_dt_spl_have  = 0;
+static int32_t            g_dt_spl_idx   = -1;
+static float              g_dt_spl_n0[8];          /* px,py,pz,tx,ty,tz,w,arc */
+static float              g_dt_spl_n1[8];
+static float              g_dt_spl_z     = 0;      /* owner current z (held by the mover) */
 static uintptr_t          g_dt_imgbase   = 0;      /* StarWarsG.exe base, for vtable->RVA */
 static uint32_t           g_dt_loco_rva  = 0;      /* locomotor vtable RVA of the first-folded ship */
 /* Dedicated Starship latch: the first ship each tick whose locomotor is a
@@ -3104,6 +3113,20 @@ static void dt_emit(void) {
                  g_dt_tick, (unsigned long long)g_dt_ent, g_dt_loco_rva, g_dt_lstate,
                  g_dt_vel_xyz[0], g_dt_vel_xyz[1], g_dt_vel_xyz[2], g_dt_heading, g_dt_speed, g_dt_timer);
         log_write(buf);
+    }
+    /* Spline-segment control points (0x13 Moving) — oracle for the lifted hermite_spline_eval. */
+    if (g_dt_spl_have) {
+        char sb[224];
+        snprintf(sb, sizeof sb,
+                 "DTSPL\ttick=%u\tn=0\tidx=%d\tz=%.6f\tpx=%.6f\tpy=%.6f\ttx=%.6f\tty=%.6f\ttz=%.6f\tw=%.6f\ta=%.6f\n",
+                 g_dt_tick, g_dt_spl_idx, g_dt_spl_z, g_dt_spl_n0[0], g_dt_spl_n0[1],
+                 g_dt_spl_n0[3], g_dt_spl_n0[4], g_dt_spl_n0[5], g_dt_spl_n0[6], g_dt_spl_n0[7]);
+        log_write(sb);
+        snprintf(sb, sizeof sb,
+                 "DTSPL\ttick=%u\tn=1\tidx=%d\tz=%.6f\tpx=%.6f\tpy=%.6f\ttx=%.6f\tty=%.6f\ttz=%.6f\tw=%.6f\ta=%.6f\n",
+                 g_dt_tick, g_dt_spl_idx, g_dt_spl_z, g_dt_spl_n1[0], g_dt_spl_n1[1],
+                 g_dt_spl_n1[3], g_dt_spl_n1[4], g_dt_spl_n1[5], g_dt_spl_n1[6], g_dt_spl_n1[7]);
+        log_write(sb);
     }
     /* Starship-confirmed velocity — the oracle target for the lifted integrator. */
     if (g_dt_ss_have) {
@@ -3154,6 +3177,17 @@ static void dt_fold_coordinator(int64_t coord) {
         }
         g_dt_tab_done = 1;
     }
+    /* One-shot: dump the runtime Hermite basis matrix DAT_140b2f1f0[0..16) (row-major 4x4; rows =
+     * t^0..t^3 coefficients, cols = p0,p1,m0,m1). Static image is zero; loaded at runtime. */
+    if (!g_dt_mat_done && g_dt_imgbase) {
+        const float *mat = (const float *)(g_dt_imgbase + 0xb2f1f0);
+        char mb[64];
+        for (int i = 0; i < 16; i++) {
+            snprintf(mb, sizeof mb, "DTMAT\ti=%d\tv=%.6f\n", i, mat[i]);
+            log_write(mb);
+        }
+        g_dt_mat_done = 1;
+    }
     /* `coord` is the serviced GameObjectClass (a76b0's param). entity+0x78/+0x7c/+0x80 = the
      * unit's authoritative SIM world position (x/y/z floats, written each tick by the locomotor
      * vfunc_6 — deterministic, distinct from the render-side node transform). Fold it for
@@ -3178,6 +3212,27 @@ static void dt_fold_coordinator(int64_t coord) {
             memcpy(&g_dt_heading, (void *)(coord + 0x8c), 4);  /* heading angle (deg) */
             memcpy(&g_dt_speed,   (void *)(lst + 0xec), 4);    /* speed scalar */
             g_dt_timer = *(int32_t *)(lst + 0x5c);             /* 0x2c drift timer (table index) */
+            /* Spline-segment capture in 0x13 Moving state: the two active control points. */
+            if (g_dt_lstate == 0x13) {
+                int64_t base = *(int64_t *)(lst + 0x18);       /* node array begin (state+0x18) */
+                int64_t end  = *(int64_t *)(lst + 0x20);       /* end (state+0x20) */
+                int32_t idx  = *(int32_t *)(lst + 0x60);       /* current segment index */
+                if (base && end > base) {
+                    int32_t cnt = (int32_t)((end - base) / 0x34);
+                    if (idx >= 0 && idx + 1 < cnt) {
+                        const float *n0 = (const float *)(base + (int64_t)idx * 0x34);
+                        const float *n1 = (const float *)(base + (int64_t)(idx + 1) * 0x34);
+                        for (int k = 0; k < 6; k++) {          /* pos[0..2], tangent[3..5] */
+                            g_dt_spl_n0[k] = n0[k]; g_dt_spl_n1[k] = n1[k];
+                        }
+                        g_dt_spl_n0[6] = n0[6];  g_dt_spl_n1[6] = n1[6];   /* weight */
+                        g_dt_spl_n0[7] = n0[0xc]; g_dt_spl_n1[7] = n1[0xc]; /* arc-param */
+                        g_dt_spl_idx = idx;
+                        g_dt_spl_z = *(float *)(coord + 0x80);  /* held z */
+                        g_dt_spl_have = 1;
+                    }
+                }
+            }
             g_dt_ent = (uint64_t)coord;
             g_dt_loco_rva = g_dt_imgbase ? dt_loco_vtbl_rva(coord, g_dt_imgbase) : 0;
             g_dt_loco_have = 1;
@@ -3488,7 +3543,7 @@ static void a76b0_hook(int64_t a, int32_t b)
             g_dt_tick = g; g_dt_hash = DT_FNV_BASIS; g_dt_count = 0;
             g_dt_pos_n = 0; g_dt_pos_have = 0;
             g_dt_loco_have = 0; g_dt_lstate = -1; g_dt_loco_rva = 0; g_dt_timer = -1;
-            g_dt_ss_have = 0; g_dt_ss_state = -1;
+            g_dt_ss_have = 0; g_dt_ss_state = -1; g_dt_spl_have = 0; g_dt_spl_idx = -1;
         }
         dt_fold_coordinator(a);                            /* aggregate all coordinators/tick */
     }

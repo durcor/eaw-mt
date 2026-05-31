@@ -366,6 +366,39 @@ static void test_ss_drift_move() {
     CHECK(approx(e.x, 0.6f * 750) && approx(e.y, 0.8f * 750));
 }
 
+static void test_hermite_spline_eval() {
+    std::printf("test_hermite_spline_eval\n");
+    // Standard cubic-Hermite basis in c0+c1t+c2t^2+c3t^3 form, rows = t^0..t^3, cols = p0,p1,m0,m1:
+    //   p(t) = (2t^3-3t^2+1)p0 + (-2t^3+3t^2)p1 + (t^3-2t^2+t)m0 + (t^3-t^2)m1
+    const f32 H[16] = {
+        1.0f,  0.0f,  0.0f,  0.0f,   // t^0
+        0.0f,  0.0f,  1.0f,  0.0f,   // t^1
+       -3.0f,  3.0f, -2.0f, -1.0f,   // t^2
+        2.0f, -2.0f,  1.0f,  1.0f,   // t^3
+    };
+    SplineNode p0, p1;
+    p0.pos = {0, 0, 0};  p0.tangent = {1, 0, 0}; p0.weight = 1.0f; p0.arc = 100.0f;
+    p1.pos = {10, 4, 0}; p1.tangent = {1, 0, 0}; p1.weight = 1.0f; p1.arc = 110.0f;
+
+    // t=0 (tick == p0.arc) -> endpoint p0 (z held).
+    vec3 a = hermite_spline_eval(p0, p1, 100, -850.0f, H);
+    CHECK(approx(a.x, 0.0f) && approx(a.y, 0.0f) && approx(a.z, -850.0f));
+    // t=1 (tick == p1.arc) -> endpoint p1.
+    vec3 b = hermite_spline_eval(p0, p1, 110, -850.0f, H);
+    CHECK(approx(b.x, 10.0f) && approx(b.y, 4.0f));
+    // t=0.5 midpoint: with equal unit tangents (arclen 10, weight 1 -> m=±(10,0)).
+    // Hermite at t=0.5: 0.5*(p0+p1) + 0.125*(m0-m1). m0=m1=(10,0) -> m0-m1=0 -> exactly the midpoint.
+    vec3 c = hermite_spline_eval(p0, p1, 105, -850.0f, H);
+    CHECK(approx(c.x, 5.0f) && approx(c.y, 2.0f));
+    // clamp: tick beyond the segment clamps t to 1 (endpoint p1), not extrapolated.
+    vec3 d = hermite_spline_eval(p0, p1, 200, -850.0f, H);
+    CHECK(approx(d.x, 10.0f) && approx(d.y, 4.0f));
+    // degenerate (zero-length) segment -> p0 position, z held.
+    SplineNode q = p1; q.arc = p0.arc;
+    vec3 e = hermite_spline_eval(p0, q, 100, -850.0f, H);
+    CHECK(approx(e.x, 0.0f) && approx(e.y, 0.0f) && approx(e.z, -850.0f));
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -392,6 +425,7 @@ int main() {
     test_ss_invalid_state_noop();
     test_ss_straight_move();
     test_ss_drift_move();
+    test_hermite_spline_eval();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

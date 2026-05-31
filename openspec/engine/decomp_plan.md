@@ -382,10 +382,25 @@ depends on it):
      table is a plateau of `750.0` over the cruise timers then ramps. **This is the first
      full-position differential pass.** The setup (`<0x19`) and cleanup (`>=0x96`) phases don't move;
      the cross-entity events at `timer==0x2d`/`0x78` are presentation/command-side (out of slice).
-     The Hermite-spline `Moving(0x13)` mover (`vfunc_59`) remains a separate lift for non-drift
-     maneuvering. Harness: `DTVEL` carries `hd`/`sp`/`tm`; `DTTAB` dumps the runtime table.
+     Harness: `DTVEL` carries `hd`/`sp`/`tm`; `DTTAB` dumps the runtime table.
      **Operational lesson: stop the game with `pkill -9 -f StarWarsG.exe` ONLY — never broadly kill
      `steam`/`proton` (Proton needs the user's Steam client; it can't be restarted headless).**
+   - **Hermite spline mover (`vfunc_59` = `0x625990`) — algorithm LIFTED + basis matrix confirmed.**
+     `hermite_spline_eval`: the `Moving(0x13)` curved-path follower is a 2D cubic Hermite over the
+     control-point array at `state+0x18` (stride `0x34`, index `state+0x60`; node = `[0..2]`pos,
+     `[3..5]`tangent, `[6]`weight, `[0xc]`arc-param). For each of x,y: `out = c0 + c1·t + c2·t² + c3·t³`,
+     `t = clamp((tick−p0.arc)/(p1.arc−p0.arc),0,1)`, `cᵣ = basisRowᵣ · [p0, p1, m0, m1]` with scaled
+     endpoint tangents `mᵢ = normalize(tangentᵢ)·(weightᵢ·arclen)` (`FUN_140139800` = vec3-normalize);
+     **z held**. Helpers: `FUN_14054fc00` (node accessor, stride `0x34`), `FUN_1405c5910`
+     (path-complete = on last segment), `FUN_1405c4920` (advance segment). The 4×4 basis matrix
+     `DAT_140b2f1f0` is runtime-loaded (static zero) — **captured live (`DTMAT`) and it equals the
+     standard cubic-Hermite matrix EXACTLY** (`[1,0,0,0; 0,0,1,0; -3,3,-2,-1; 2,-2,1,1]`), matching the
+     lifted form. Host-validated (5 checks). **Full in-game spline-position oracle is NOT reachable
+     from the menu demo:** its `0x13` ships have no multi-segment spline (`DTSPL=0` over 2425 `0x13`
+     ticks — they use the straight/path-complete branch), so the Hermite interpolation only runs for
+     player-issued **curved** move orders. So the spline *algorithm* + its *runtime basis matrix* are
+     validated; the end-to-end position match for it awaits a curved-path capture (`DTMAT`+`DTSPL`
+     harness is ready). Decompiled helpers: `decomp/{625990,139800,54fc00,5c5910,5c4920,49d400,6269f0}.c`.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
