@@ -416,9 +416,23 @@ depends on it):
      7918/7918 flight-state ticks** (`tools/analyze_loco_oracle.py` `check_fighter`). The only 4
      non-matching fighter ticks were transient `0x2c` drift and match the already-lifted
      `simplespace_drift_move` (`|disp|==table[timer]==750`). This confirms the family identity, the
-     velocity representation, and the integrator; the steering layer that PRODUCES the velocity (base
-     vfunc_6 + `FUN_1405ca390/caaf0/c8b70` target/throttle/turn math) is a separate future lift.
-     Decompiled: `decomp/{5cb830,5cc220,5ce010,5cd8e0,5c9ca0,3a8710,20b6d0,20b710}.c`. NB: this same
+     velocity representation, and the integrator.
+   - **✅ Fighter steering VELOCITY PRODUCER lifted + validated (2026-05-31).** The per-state movers
+     call a 3D pursuit-steering controller `FUN_1405caaf0`: build the entity's inverse-orientation
+     matrix from its angles (climb `+0x88`, heading `+0x8c`, DEG2RAD), transform `target−owner_pos`
+     into the LOCAL frame, take yaw/pitch bearing errors (`FUN_14020acd0`), integrate the heading
+     angles toward the target turn-rate-limited (`FUN_1405c95a0` yaw / `FUN_1405c8fb0` pitch, rates
+     from `FUN_1403724d0/372560`), then throttle speed and recompute velocity (`FUN_1405c9360`);
+     max-speed cap = `FUN_1405ca390`→`FUN_140370f00` (template+0x37c, same as Starship). **Lifted the
+     deterministic velocity producer `FUN_1405c9360`** → `fighter_heading_dir` + `fighter_throttle_velocity`:
+     `velocity = speed · (cosα·cosβ, cosα·sinβ, −sinα)` (α=climb `+0x88`, β=heading `+0x8c`, deg), with
+     `speed` rate-limited toward max each tick. For level flight (α=0) this collapses to the SimpleSpace
+     planar form `(cosβ,sinβ,0)`. **In-game validation:** XY heading `atan2(vy,vx)==β==hd` on 7948/7965
+     flight ticks, and the full 3D decomposition (α from vz) reproduces vx,vy on 7952/7974 — the ~0.3%
+     residual is the `cosα<0` (|α|>90°) branch, consistent with the formula. Host test: 3 golden
+     velocity samples + throttle stepping. The bearing-error + heading-angle integrators (steps 1-3)
+     are documented but not yet lifted (need the local-frame transform + template turn-rate block).
+     Decompiled: `decomp/{5cb830,5cc220,5ce010,5cd8e0,5c9ca0,5caaf0,5ca390,5cb750,5c8b70,5c9360,5c95a0,5c8fb0,20acd0,3a8710,20b6d0,20b710,3724d0,372560}.c`. NB: this same
      capture re-confirmed the prior two oracles at 100% (SimpleSpace direction 848/848, 0x2c drift
      790/790). New tool: `tools/ghidra_scripts/DumpVtable.java` (vtable-slot dumper).
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint

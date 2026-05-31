@@ -420,6 +420,40 @@ static void test_fighter_integrate() {
     }
 }
 
+// FighterLocomotorBehaviorClass velocity PRODUCER (FUN_1405c9360). Golden (speed, climb α, head β,
+// velocity) samples from the battle capture — level, climbing, and steep-dive — confirm the lifted
+// direction basis velocity = speed·(cosα cosβ, cosα sinβ, −sinα). Also exercises the throttle step.
+static void test_fighter_velocity() {
+    struct VTri { f32 speed, climb_deg, head_deg; vec3 v; };
+    const VTri golden[] = {
+        { 13.41350f,   0.00006f,  40.30302f, {10.22959f,  8.67625f, -0.00001f} }, // near-level
+        {  8.79000f,  -8.78998f, 213.46562f, {-7.24664f, -4.79020f,  1.34323f} }, // shallow dive
+        {  4.44175f, -54.99178f, 110.06250f, {-0.87415f,  2.39358f,  3.63810f} }, // steep dive (|α|<90)
+    };
+    for (const auto& g : golden) {
+        vec3 d = fighter_heading_dir(g.climb_deg, g.head_deg);
+        CHECK(approx(d.x * g.speed, g.v.x, 2e-2f) &&
+              approx(d.y * g.speed, g.v.y, 2e-2f) &&
+              approx(d.z * g.speed, g.v.z, 2e-2f));
+    }
+    // throttle: from rest, budget >= error -> reach max_speed exactly along heading; budget consumed.
+    {
+        f32 budget = 100.0f;
+        vec3 v = fighter_throttle_velocity({0, 0, 0}, 0.0f, 90.0f, 12.0f, budget);
+        // heading 90deg, level: dir=(0,1,0) -> v=(0,12,0); budget 100-12=88 left.
+        CHECK(approx(v.x, 0.0f) && approx(v.y, 12.0f) && approx(v.z, 0.0f));
+        CHECK(approx(budget, 88.0f));
+    }
+    // throttle: budget < error -> step by budget only, budget hits 0.
+    {
+        f32 budget = 3.0f;
+        vec3 v = fighter_throttle_velocity({0, 0, 0}, 0.0f, 0.0f, 50.0f, budget);
+        // heading 0, level: dir=(1,0,0); speed steps 0 -> 0+3 = 3; budget -> 0.
+        CHECK(approx(v.x, 3.0f) && approx(v.y, 0.0f) && approx(v.z, 0.0f));
+        CHECK(approx(budget, 0.0f));
+    }
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -448,6 +482,7 @@ int main() {
     test_ss_drift_move();
     test_hermite_spline_eval();
     test_fighter_integrate();
+    test_fighter_velocity();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

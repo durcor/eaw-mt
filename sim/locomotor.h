@@ -262,4 +262,36 @@ inline vec3 fighter_integrate(const vec3& owner_pos, const vec3& velocity) {
     return { owner_pos.x + velocity.x, owner_pos.y + velocity.y, owner_pos.z + velocity.z };
 }
 
+// --- Fighter steering layer: how the velocity is PRODUCED each tick ---
+//
+// The per-state movers call a 3D pursuit-steering controller, FUN_1405caaf0, which:
+//   1. builds the entity's inverse-orientation matrix from its angles (climb +0x88, heading +0x8c,
+//      negated; DEG2RAD), transforms (target_pos − owner_pos) into the entity LOCAL frame, and
+//   2. takes the yaw/pitch BEARING ERRORS to the target (FUN_14020acd0 = local-dir → angles), then
+//   3. integrates the heading angles toward the target, turn-rate-limited:
+//        FUN_1405c95a0 (yaw/+0x88), FUN_1405c8fb0 (pitch/+0x8c)  — rate from the unit template
+//        (FUN_1403724d0/372560/372440), and
+//   4. throttles the SPEED toward the commanded max and recomputes the velocity (FUN_1405c9360).
+// The max-speed cap is FUN_1405ca390 → FUN_140370f00 (template+0x37c, same as Starship).
+// LIFTED HERE: the deterministic velocity PRODUCER (step 4, FUN_1405c9360) + its direction basis.
+// The bearing-error + heading-angle integrators (steps 1-3) are documented but not yet lifted (they
+// need the local-frame transform + template turn-rate block) — a further sub-lift.
+
+// FUN_1405c9360 direction basis — the unit velocity direction from the two orientation angles.
+// climb α = entity+0x88, heading β = entity+0x8c, both in DEGREES. From the commit in 0x5c9360:
+//   dir = ( cos α · cos β,  cos α · sin β,  −sin α )
+// For level flight (α=0) this is exactly the SimpleSpace planar form (cos β, sin β, 0). The binary
+// uses an IEEE small-angle fast path (cos≈1, sin≈θ below exponent 0x1d000000); std::cos/sin here is
+// functionally equivalent. ✅ Validated in-game: the XY heading atan2(vy,vx)==β==hd on 7948/7965
+// flight ticks, and the full 3D decomposition (α recovered from vz) reproduces vx,vy on 7952/7974;
+// the ~0.3% residual is the cos α<0 (|α|>90°) branch (asin can't represent it) — consistent, not a miss.
+vec3 fighter_heading_dir(f32 climb_deg, f32 heading_deg);
+
+// FUN_1405c9360 — throttle the current speed toward `max_speed`, rate-limited by `accel_budget`
+// (the remaining per-tick speed-change allowance, *param_3; consumed and returned via the ref), then
+// set velocity = new_speed · fighter_heading_dir(climb, heading). Returns the new velocity that the
+// mover commits to state+0x14/18/1c (and which fighter_integrate then adds to position).
+vec3 fighter_throttle_velocity(const vec3& cur_velocity, f32 climb_deg, f32 heading_deg,
+                               f32 max_speed, f32& accel_budget);
+
 } // namespace eaw

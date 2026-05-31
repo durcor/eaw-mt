@@ -340,4 +340,31 @@ void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, Locomotor
     }
 }
 
+// --- Fighter steering velocity producer (FUN_1405c9360) ---
+
+vec3 fighter_heading_dir(f32 climb_deg, f32 heading_deg) {
+    const f32 a = climb_deg   * DEG2RAD;   // entity+0x88 (binary negates then takes cos/sin: cos even,
+    const f32 b = heading_deg * DEG2RAD;   // sin odd → +cos(a), −sin(a)); entity+0x8c not negated.
+    const f32 ca = std::cos(a), sa = std::sin(a);
+    const f32 cb = std::cos(b), sb = std::sin(b);
+    return { ca * cb, ca * sb, -sa };
+}
+
+vec3 fighter_throttle_velocity(const vec3& cur_velocity, f32 climb_deg, f32 heading_deg,
+                               f32 max_speed, f32& accel_budget) {
+    // current speed magnitude (FUN_140776d48 = sqrtf)
+    f32 speed = std::sqrt(cur_velocity.x * cur_velocity.x + cur_velocity.y * cur_velocity.y +
+                          cur_velocity.z * cur_velocity.z);
+    const f32 err = max_speed - speed;            // speed error toward the commanded max
+    if (accel_budget <= std::fabs(err)) {         // can't close it this tick: step by the budget
+        speed += (err >= 0.0f) ? accel_budget : -accel_budget;
+        accel_budget = 0.0f;
+    } else {                                      // reach the target exactly; consume |err| of budget
+        speed += err;
+        accel_budget -= std::fabs(err);
+    }
+    const vec3 d = fighter_heading_dir(climb_deg, heading_deg);
+    return { d.x * speed, d.y * speed, d.z * speed };
+}
+
 } // namespace eaw
