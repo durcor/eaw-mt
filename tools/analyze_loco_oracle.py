@@ -462,6 +462,63 @@ def check_steer(path):
     return (p_n, p_ok, cont_n, cont_ok)
 
 
+HARDTURN_RELEASE, HARDTURN_ENGAGE = 90.0, 170.0   # DAT_1408007ec / DAT_1408a650c
+
+def fighter_hard_turn(latched, yaw_err, pitch_err, state, gate_ok=True):
+    """Mirror of sim/locomotor.cpp fighter_hard_turn (== FUN_1405caaf0 lines 82-98). Returns
+    (snapped, pitch_cmd, yaw_cmd). yaw_err is already wrap180'd."""
+    ye = abs(yaw_err)
+    entry = (state != 0x1c) and (ye > HARDTURN_ENGAGE) and gate_ok
+    snap = (latched or entry) if ye >= HARDTURN_RELEASE else entry
+    if snap:
+        return True, (180.0 if pitch_err > 0.0 else -180.0), 0.0
+    return False, pitch_err, yaw_err
+
+
+def check_snap(path):
+    """Validate the lifted hard-turn snap (FUN_1405caaf0 lines 82-98) against the DTSTEER capture:
+      (A) LATCH — predict state+0x1d4 for tick t+1 from (ht[t], |yaw_err|, state) and compare to the
+          latch the controller actually wrote (ht captured at t+1 for the same entity);
+      (B) PITCH OVERRIDE — on every snap tick (ht[t+1]==1), the controller forces pitch to ±180°:
+          predict p1 = fighter_turn_angle(p0, sign(pitch_err)*180, pitch_budget) and compare to p1.
+    gate_ok (FUN_140372440 > 0) held for every fighter tick in the capture, so it's modeled True."""
+    steer = parse_steer(path)
+    if not steer:
+        print("\n[Fighter hard-turn oracle] no DTSTEER lines — skipped")
+        return None
+    ticks = sorted(steer)
+    latch_n = latch_ok = 0
+    pit_n = pit_ok = 0
+    fails = []
+    for t in ticks:
+        if (t + 1) not in steer:
+            continue
+        a, b = steer[t], steer[t + 1]
+        if a["ent"] != b["ent"]:
+            continue
+        lx, ly, lz = steer_local_target(a["p0"], a["y0"], a["owner"], a["target"])
+        az, el = target_bearing((lx, ly, lz))
+        ye = wrap180(az)
+        pe = wrap180(el)
+        snap, pcmd, _ = fighter_hard_turn(a["ht"] == 1, ye, pe, a["state"])
+        latch_n += 1
+        if int(snap) == b["ht"]:
+            latch_ok += 1
+        elif len(fails) < 8:
+            fails.append((t, "latch", a["ht"], b["ht"], int(snap), abs(ye), a["state"]))
+        if b["ht"] == 1:                      # snap body ran this tick -> pitch forced to ±180
+            pred = fighter_turn_angle(a["p0"], pcmd, a["pb"])
+            pit_n += 1
+            if abs(wrap180(pred - a["p1"])) <= 0.05:
+                pit_ok += 1
+    print(f"\n[Fighter hard-turn oracle]  (DTSTEER, {latch_n} transitions, ent=0x{steer[ticks[0]]['ent']:x})")
+    print(f"  (A) LATCH reproduced  state+0x1d4[t+1]: {latch_ok}/{latch_n}")
+    print(f"  (B) PITCH override    turn(p0, sign(pe)*180, pb)==p1 on snap ticks: {pit_ok}/{pit_n}")
+    for t, ch, hi, ho, pr, ye, st in fails:
+        print(f"  MISS t={t} {ch} ht_in={hi} ht_out={ho} pred={pr} |ye|={ye:.3f} state={st}")
+    return (latch_n, latch_ok, pit_n, pit_ok)
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
     pos, vel, families, table = parse(path)
@@ -514,6 +571,15 @@ def main():
             print(f"  [yaw-int roll]     {'PASS' if r_ok/r_n >= 0.95 else 'FAIL'} ({100.0*r_ok/r_n:.1f}%)")
         if y_n > 0:
             print(f"  [yaw-int yaw]      {'PASS' if y_ok/y_n >= 0.95 else 'FAIL'} ({100.0*y_ok/y_n:.1f}%)")
+
+    # Oracle 7 (Fighter hard-turn snap): the lifted fighter_hard_turn latch + pitch override.
+    sn = check_snap(path)
+    if sn is not None:
+        l_n, l_ok, pi_n, pi_ok = sn
+        if l_n > 0:
+            print(f"  [hard-turn latch]  {'PASS' if l_ok/l_n >= 0.99 else 'FAIL'} ({100.0*l_ok/l_n:.1f}%)")
+        if pi_n > 0:
+            print(f"  [hard-turn pitch]  {'PASS' if pi_ok/pi_n >= 0.95 else 'FAIL'} ({100.0*pi_ok/pi_n:.1f}%)")
 
     if dir_ok and mag_ok:
         print("\nORACLE PASS (FULL POSITION) — direction (cos/sin) AND magnitude (table[timer]) of the"

@@ -497,6 +497,31 @@ depends on it):
      Host goldens pass via `just sim-test`. **`FUN_1405caaf0` heading channels (pitch + yaw/roll) now
      fully lifted and dual-validated.** Remaining caaf0 tail: ±180° hard-turn snap (`state+0x1d4`) and
      the near-target degenerate branch.
+   - **✅ HARD-TURN SNAP ORACLE PASS — bank-to-turn override validated in-game (2026-05-31).** Lifted
+     `FUN_1405caaf0` lines 82-98 as `fighter_hard_turn` (`sim/locomotor.{h,cpp}`): the latched override
+     the controller applies before dispatching to the integrators when the target sits nearly **dead
+     astern**, where bank-to-turn can't pick a turn direction. While engaged it forces **pitch to full
+     ±180°** (`sign(pitch_err)·180` = `DAT_1408524f8/fc`, into `FUN_1405c8fb0`) and **zeroes the yaw
+     command** — the fighter pitches over (loop/split-S) to bring the target back into its forward arc
+     instead of yawing onto something behind it. The latch (`state+0x1d4`) is **hysteretic**: engage
+     when `|yaw_err| > 170°` (within 10° of dead astern) AND `state != 0x1c` AND
+     `FUN_140372440(template+0x298) > 0`; once engaged, **hold while `|yaw_err| ≥ 90°`** (the hold path
+     bypasses the state/gate test); release when `|yaw_err| < 90°`. Both thresholds were **recovered
+     empirically** from the existing DTSTEER capture — `tools/recover_snap_thresholds.py` mines the
+     latch transitions vs `|yaw_err|`: release `DAT_1408007ec` brackets `(89.671, 90.264] → 90.0`,
+     engage `DAT_1408a650c` brackets `(169.852, 170.139] → 170.0`. No new harness needed: DTSTEER
+     already captures `ht` (`state+0x1d4`) before each tick, so `ht[t+1]` is the latch the controller
+     wrote at `t`. Oracle 7 (`check_snap`) over a fighter battle (ent `0x2dc2ff00`, **762 hard-turn
+     ticks**): **(A) LATCH reproduced = 10578/10578 (100%)**, **(B) PITCH override
+     `turn(p0, sign(pe)·180, pb) == p1` on snap ticks = 759/760 (99.9%)** — the lone miss is the
+     **elevation≈0 sign degeneracy** at exactly dead astern (target co-planar, `|elev| < 1e-4`, where
+     the engine's float `atan2` and the offline double disagree on `±0`), the same near-target
+     singularity as the 9 pitch misses, not a model fault. Host goldens pass via `just sim-test`
+     (`test_fighter_hard_turn`: engage/hold/release/gate cases). `gate_ok` (`FUN_140372440 > 0`) held
+     for every fighter tick in the capture, so it's modeled True; the only un-lifted caaf0 piece left
+     is the roll-coupling yaw wrap (`decomp/5caaf0.c:100-109`, needs A/B/cap not in DTSTEER and rarely
+     fires) — the snap branch and both heading integrators are now done. **`FUN_1405caaf0` is fully
+     lifted bar the roll-comp yaw wrap.**
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
