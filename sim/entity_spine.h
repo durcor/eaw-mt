@@ -28,6 +28,7 @@
 namespace eaw {
 
 struct GameObject;
+struct LocomotorTemplate; // GameObjectType locomotor tuning block (entity+0x298); see locomotor.h
 
 // GameObjectClass.flags (+0x3a0) bits the spine branches on.
 enum : u32 {
@@ -71,6 +72,9 @@ struct EntityUpdateHooks {
 struct GameObject {
     u32 flags = 0;                         // +0x3a0  (bit 0x100 = transform dirty; see set_position)
     vec3 position;                         // +0x78/+0x7c/+0x80  world position (locomotor writes this)
+    f32 heading_yaw = 0.0f;                // +0x88  facing yaw (rotates the accel vector, X-Z)
+    f32 heading_pitch = 0.0f;              // +0x8c  facing pitch (rotates the accel vector, X-Y)
+    const LocomotorTemplate* locomotor_template = nullptr; // +0x298  GameObjectType locomotor tuning
     std::vector<Behavior*> behaviors;      // +0x278 array / +0x290 count
     std::vector<TimedAction> timed_actions;// +0x60..+0x68 (per-entity delayed-action queue)
     bool has_locomotor = false;            // +0xa8 (locomotor_state) != 0

@@ -78,7 +78,7 @@ static void test_idle_departs_on_displacement() {
     FakeEnv env; env.dest = {10, 0, 0};         // destination != position
     starship_tick(b, e, 1, env);
     CHECK(b.state.state == (u32)LocoState::Accelerate);
-    CHECK(approx(b.state.turn_rate, 0.05f));
+    CHECK(approx(b.state.accel_factor, 0.05f));
 
     LocomotorBehavior b2; b2.state.state = (u32)LocoState::Idle;
     GameObject e2; e2.position = {5, 5, 5};
@@ -180,6 +180,75 @@ static void test_arrival_fsm() {
     CHECK(env2.events.empty());
 }
 
+// --- integrate_velocity (FUN_1406224b0) ---
+
+static void test_integrate_accel_add() {
+    std::printf("test_integrate_accel_add\n");
+    LocomotorState st; st.accel_factor = 1.0f; st.steer_blend = 0.0f;
+    GameObject e; e.heading_yaw = 0; e.heading_pitch = 0;
+    LocomotorTemplate tpl; tpl.accel = 2.0f; tpl.max_speed = 10.0f; tpl.drag = 1.0f;
+    integrate_velocity(st, e, tpl, /*gamespeed=*/1.0f, /*steer_gain=*/0.0f);
+    CHECK(approx(st.velocity.x, 2.0f) && approx(st.velocity.y, 0) && approx(st.velocity.z, 0));
+}
+
+static void test_integrate_speed_cap() {
+    std::printf("test_integrate_speed_cap\n");
+    LocomotorState st; st.accel_factor = 1.0f;
+    GameObject e;
+    LocomotorTemplate tpl; tpl.accel = 20.0f; tpl.max_speed = 5.0f; tpl.drag = 1.0f;
+    integrate_velocity(st, e, tpl, 1.0f, 0.0f);
+    // |vel| starts 20; cap scales by max^2/speed^2 = 25/400 -> vel.x = 20 * 0.0625 = 1.25.
+    CHECK(approx(st.velocity.x, 1.25f));
+}
+
+static void test_integrate_drag() {
+    std::printf("test_integrate_drag\n");
+    LocomotorState st; st.accel_factor = 1.0f;
+    GameObject e;
+    LocomotorTemplate tpl; tpl.accel = 2.0f; tpl.max_speed = 100.0f; tpl.drag = 0.5f;
+    integrate_velocity(st, e, tpl, 1.0f, 0.0f);
+    CHECK(approx(st.velocity.x, 1.0f));   // (0 + 2) * 0.5
+
+    // accel_factor == 0: no accel added, drag still applies.
+    LocomotorState st2; st2.accel_factor = 0.0f; st2.velocity = {4, 0, 0};
+    integrate_velocity(st2, e, tpl, 1.0f, 0.0f);
+    CHECK(approx(st2.velocity.x, 2.0f));  // 4 * 0.5
+}
+
+static void test_integrate_heading_rotation() {
+    std::printf("test_integrate_heading_rotation\n");
+    LocomotorState st; st.accel_factor = 1.0f;
+    GameObject e; e.heading_yaw = 1.57079637f;  // +90deg yaw rotates accel +x -> -z
+    LocomotorTemplate tpl; tpl.accel = 2.0f; tpl.max_speed = 100.0f; tpl.drag = 1.0f;
+    integrate_velocity(st, e, tpl, 1.0f, 0.0f);
+    CHECK(approx(st.velocity.x, 0.0f) && approx(st.velocity.z, -2.0f));
+}
+
+static void test_integrate_steer_damp_aligned_noop() {
+    std::printf("test_integrate_steer_damp_aligned_noop\n");
+    // Velocity already aligned with the accel direction -> steering force zero -> no damping change.
+    LocomotorState st; st.accel_factor = 1.0f; st.steer_blend = 0.5f; st.velocity = {3, 0, 0};
+    GameObject e;
+    LocomotorTemplate tpl; tpl.accel = 2.0f; tpl.max_speed = 100.0f; tpl.drag = 1.0f;
+    integrate_velocity(st, e, tpl, 1.0f, /*steer_gain=*/1.0f);
+    CHECK(approx(st.velocity.x, 5.0f));   // 3 + 2, undamped (aligned), drag 1
+}
+
+static void test_integrate_through_starship_tick() {
+    std::printf("test_integrate_through_starship_tick\n");
+    // End-to-end: a templated entity in Cruise produces velocity via the lifted integrator, which
+    // the core integration then applies to entity+0x78.
+    LocomotorTemplate tpl; tpl.accel = 2.0f; tpl.max_speed = 100.0f; tpl.drag = 1.0f;
+    LocomotorBehavior b; b.state.state = (u32)LocoState::Cruise;
+    b.state.accel_factor = 1.0f; b.state.substate = 0;
+    GameObject e; e.position = {0, 0, 5}; e.locomotor_template = &tpl;
+    FakeEnv env; env.dest = {0, 0, 5};   // dest.z == z, terrain 0 -> no vertical step
+    // FakeEnv does NOT override integrate_accel, so the base lifted integrator runs.
+    starship_tick(b, e, 1, env);
+    CHECK(approx(b.state.velocity.x, 2.0f));    // integrator produced vx = accel
+    CHECK(e.position == (vec3{2, 0, 5}));       // position advanced by velocity
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -192,6 +261,12 @@ int main() {
     test_horizontal_integration();
     test_terrain_climb_clamp();
     test_arrival_fsm();
+    test_integrate_accel_add();
+    test_integrate_speed_cap();
+    test_integrate_drag();
+    test_integrate_heading_rotation();
+    test_integrate_steer_damp_aligned_noop();
+    test_integrate_through_starship_tick();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

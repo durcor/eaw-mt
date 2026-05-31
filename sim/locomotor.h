@@ -35,12 +35,22 @@ struct LocomotorState {
     vec3 prev_position;   // +0x2c/+0x30/+0x34 — position snapshot before the move
     u32  state = 0;       // +0x48 — LocomotorStateType
     u32  substate = 0;    // +0x50 — arrival sub-FSM (9 / 0xa / 0xb) + listener-event gating
-    f32  turn_rate = 0.0f;// +0x54 — turn/blend factor (0.05f seeded on departure)
-    f32  scratch58 = 0.0f;// +0x58 — cleared each tick
+    f32  accel_factor = 0.0f; // +0x54 — throttle (0..1) scaling acceleration; set by the state bodies
+    f32  steer_blend = 0.0f;  // +0x58 — steering-damping blend; cleared each tick, set by accelerate
     i32  countdown = 0;   // +0x5c — per-state timer (states 4/5/8)
     f32  vert_step = 0.0f;// +0x60 — terrain-follow vertical step (cleared each tick)
     vec3 anchor_a;        // +0x88/+0x8c/+0x90 — docking interpolation start
     vec3 anchor_b;        // +0xa0/+0xa4/+0xa8 — docking interpolation target
+};
+
+// GameObjectType locomotor tuning block (entity+0x298) — the per-unit-type physics parameters the
+// integrators read. Offsets recovered from FUN_1406224b0 / FUN_140370f00 / the state bodies.
+struct LocomotorTemplate {
+    f32 accel = 0.0f;            // +0x384 — base acceleration magnitude
+    f32 drag = 1.0f;             // +0x398 — per-tick velocity multiplier (<=1)
+    f32 max_speed = 1e30f;       // +0x37c — speed cap (FUN_140370f00 base path)
+    f32 cruise_altitude = 0.0f;  // +0xdfc — preferred altitude (terrain follow / arrival)
+    f32 turn_rate = 1e30f;       // +0x39c — max heading change per tick (used by turn/accel bodies)
 };
 
 // LocomotorStateType (LocomotorState+0x48). Names are best-effort from the Starship state machine.
@@ -58,16 +68,25 @@ enum class LocoState : u32 {
 
 struct LocomotorBehavior; // fwd
 
-// The deep per-state physics + world queries the Starship state machine calls into. Each is its own
-// future lift; defaults are inert so the control skeleton + the test can run in isolation.
+// The deep per-state physics + world queries the Starship state machine calls into. The
+// accel->velocity integrator (integrate_accel) is now lifted (calls integrate_velocity below); the
+// remaining steering-decision bodies (accelerate/turn/burst/docking) are still future lifts and
+// default to inert so the skeleton + tests run in isolation.
 struct LocomotorEnv {
     virtual ~LocomotorEnv() = default;
+    // Game-speed scale (DAT_1408007dc*DAT_1408007d4/DAT_1408007f4) and the steering gain
+    // (DAT_1408754bc). TODO(oracle): source the real float values from the binary before the
+    // in-game DIFFTRACE/DTPOS differential check; the host tests pass them explicitly.
+    f32 gamespeed_scale = 1.0f;
+    f32 steer_gain = 0.0f;
     // Per-state physics (mutate LocomotorState; may read/write entity position).
     virtual void accelerate(LocomotorState&, GameObject&) {}        // state 1  (FUN_140622b80)
     virtual void turn(LocomotorState&, GameObject&) {}              // states 2,3 (FUN_140622e90)
     virtual void burst(LocomotorState&, GameObject&) {}             // state 5  (inline impulse)
     virtual void docking(LocomotorState&, GameObject&) {}           // state 8  (dock/land)
-    virtual void integrate_accel(LocomotorState&, GameObject&) {}   // accel->velocity (FUN_1406224b0)
+    // accel->velocity integrator (FUN_1406224b0) — LIFTED. Default applies it when the entity has a
+    // locomotor template; tests override to inject a velocity directly.
+    virtual void integrate_accel(LocomotorState& st, GameObject& e);
     // World queries.
     virtual vec3 destination(const LocomotorBehavior&) { return {}; }    // FUN_140623340
     virtual f32  terrain_height(f32 /*x*/, f32 /*y*/) { return 0.0f; }   // FUN_140135140
@@ -106,6 +125,14 @@ void rotate_xz(vec3& v, f32 angle);
 void rotate_xy(vec3& v, f32 angle);
 
 // --- the integrator ---
+
+// FUN_1406224b0 — the accel->velocity integrator. Rotates the template's base acceleration
+// (scaled by state.turn_rate) by the entity heading, adds it to the velocity (state+0x14/18/1c),
+// clamps to max_speed, applies the steering-alignment damping (when state.scratch58 blend > 0), and
+// applies drag. `gamespeed` scales the heading angles; `steer_gain` scales the damping. This is the
+// deterministic producer of the per-tick velocity that drives entity+0x78.
+void integrate_velocity(LocomotorState& st, const GameObject& e, const LocomotorTemplate& tpl,
+                        f32 gamespeed, f32 steer_gain);
 
 // StarshipLocomotorBehaviorClass::vfunc_6 — advance one unit's movement by one tick.
 void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, LocomotorEnv& env);

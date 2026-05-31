@@ -55,11 +55,86 @@ static bool velocity_is_zero(const LocomotorState& st) {
     return st.velocity.x == 0.0f && st.velocity.y == 0.0f && st.velocity.z == 0.0f;
 }
 
+static f32 vlen(const vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+
+// Per-axis steering damp toward `target`, moved by `force` without overshoot (FUN_1406224b0
+// lines 79-123, identical logic for x/y/z).
+static f32 damp_axis(f32 cur, f32 target, f32 force) {
+    if (cur < 0.0f || cur <= target) {
+        if (cur < 0.0f && cur < target) {
+            if (force <= cur - target) force = cur - target;
+            return cur - force;
+        }
+        return cur;                 // current already at/above target on this side: no change
+    }
+    if (cur - target <= force) force = cur - target;
+    return cur - force;
+}
+
+// FUN_1406224b0
+void integrate_velocity(LocomotorState& st, const GameObject& e, const LocomotorTemplate& tpl,
+                        f32 gamespeed, f32 steer_gain) {
+    const f32 max_speed = tpl.max_speed;        // FUN_140370f00 base path (template+0x37c)
+
+    if (st.accel_factor != 0.0f) {
+        // Base acceleration along local +x, scaled by throttle, rotated into world by heading.
+        vec3 accel{ tpl.accel * st.accel_factor, 0.0f, 0.0f };  // template+0x384 * state+0x54
+        rotate_xz(accel, gamespeed * e.heading_yaw);            // entity+0x88
+        rotate_xy(accel, gamespeed * e.heading_pitch);          // entity+0x8c
+
+        // velocity += accel
+        st.velocity.x += accel.x;
+        st.velocity.y += accel.y;
+        st.velocity.z += accel.z;
+
+        // Speed cap: when over max_speed, scale velocity by (max^2 / speed^2).
+        const f32 speed = vlen(st.velocity);
+        if (max_speed * max_speed < speed * speed) {
+            const f32 f = (max_speed * max_speed) / (speed * speed);
+            st.velocity.x *= f;
+            st.velocity.y *= f;
+            st.velocity.z *= f;
+        }
+
+        // Steering-alignment damping (only when the accelerate body set a positive blend).
+        if (st.steer_blend > 0.0f) {
+            const f32 vmag = vlen(st.velocity);
+            vec3 uvel = st.velocity;
+            if (vmag != 0.0f) { uvel.x /= vmag; uvel.y /= vmag; uvel.z /= vmag; }
+
+            const f32 amag = vlen(accel);
+            vec3 uacc = accel;
+            if (amag > 0.0f) { const f32 inv = 1.0f / amag; uacc.x *= inv; uacc.y *= inv; uacc.z *= inv; }
+
+            const f32 g = steer_gain * st.steer_blend;          // DAT_1408754bc * state+0x58
+            const f32 fx = (uvel.x - uacc.x) * g;
+            const f32 fy = (uvel.y - uacc.y) * g;
+            const f32 fz = (uvel.z - uacc.z) * g;
+            // target component = |vel| * unit-accel (the velocity projected onto the accel direction)
+            st.velocity.x = damp_axis(st.velocity.x, vmag * uacc.x, fx);
+            st.velocity.y = damp_axis(st.velocity.y, vmag * uacc.y, fy);
+            st.velocity.z = damp_axis(st.velocity.z, vmag * uacc.z, fz);
+        }
+    }
+
+    // Drag (template+0x398): applied every tick, even when not accelerating.
+    st.velocity.x *= tpl.drag;
+    st.velocity.y *= tpl.drag;
+    st.velocity.z *= tpl.drag;
+}
+
+// Default integrator hook: run the lifted integrate_velocity when the entity carries a locomotor
+// template. Tests override this to inject a velocity directly.
+void LocomotorEnv::integrate_accel(LocomotorState& st, GameObject& e) {
+    if (e.locomotor_template)
+        integrate_velocity(st, e, *e.locomotor_template, gamespeed_scale, steer_gain);
+}
+
 // StarshipLocomotorBehaviorClass::vfunc_6
 void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, LocomotorEnv& env) {
     reschedule(b, tick);                       // LocomotorCommonClass::vfunc_6 pre-step
     LocomotorState& st = b.state;
-    st.scratch58 = 0.0f;                       // state+0x58 cleared each tick
+    st.steer_blend = 0.0f;                     // state+0x58 cleared each tick (set by accelerate body)
     st.vert_step = 0.0f;                       // state+0x60 cleared each tick
 
     const vec3 p0 = entity.position;           // read entity+0x78
@@ -69,7 +144,7 @@ void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, Locomotor
     case LocoState::Idle: {                     // case 0 — arrived check / depart
         const vec3 dest = env.destination(b);
         if (dest != p0) {                       // displaced from destination -> start moving
-            st.turn_rate = 0.05f;               // 0x3d4ccccd
+            st.accel_factor = 0.05f;            // 0x3d4ccccd
             set_state(st, LocoState::Accelerate);
         }
         break;
@@ -93,12 +168,12 @@ void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, Locomotor
         env.burst(st, entity);
         return;                                 // original returns after the burst impulse
     case LocoState::Decelerate:                 // case 6
-        st.turn_rate = 0.0f;
+        st.accel_factor = 0.0f;
         if (velocity_is_zero(st))
             set_state(st, LocoState::Stopped);
         break;
     case LocoState::Stopped:                    // case 7
-        st.turn_rate = 0.0f;
+        st.accel_factor = 0.0f;
         break;
     case LocoState::Docking:                    // case 8
         env.docking(st, entity);

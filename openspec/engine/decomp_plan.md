@@ -296,12 +296,22 @@ depends on it):
      `destination.z + terrain` at `max_climb_rate`) → write `entity+0x78` → **arrival FSM**
      (substate `0xa → fire "arriving"(9) → 0xb`; within `arrival_threshold` → fire "arrived"(10) →
      `9`). The arrival events are **cross-entity listener writes = Phase-B commands** in the rewrite.
-   - **Behind `LocomotorEnv` (each its own future sub-unit):** per-state physics (accelerate
-     `622b80`, turn `622e90`, burst, docking, accel→velocity integrator `6224b0`) + world queries
-     (destination `623340`, terrain height `135140`, max climb `372440`, arrival threshold, listener
-     events). Host test validates the lifted logic; the in-game DIFFTRACE stream is the end-to-end
-     oracle. **TODO:** lift Walk `0x61e930` + the other ~13 subclasses (same vfunc_6 contract) and
-     the `LocomotorEnv` physics bodies.
+   - **accel→velocity integrator LIFTED (`FUN_1406224b0` → `integrate_velocity`, 2026-05-30):** the
+     deterministic producer of the per-tick velocity that drives `entity+0x78`. Rotates the
+     template's base accel (`LocomotorTemplate+0x384` × `state.accel_factor+0x54`) by the entity
+     heading (`+0x88/+0x8c`), adds to velocity (`state+0x14/18/1c`), clamps to `max_speed+0x37c`
+     (scale by max²/speed²), applies steering-alignment damping when `state.steer_blend+0x58 > 0`
+     (per-axis `damp_axis` toward `|vel|·unit_accel`, gain `DAT_1408754bc·blend`), then drag
+     (`+0x398`). Introduced `LocomotorTemplate` (the `entity+0x298` tuning block). Default
+     `LocomotorEnv::integrate_accel` runs it when the entity has a template.
+   - **Still behind `LocomotorEnv` (each its own future sub-unit):** the steering-decision bodies
+     (accelerate `622b80`, turn `622e90` — set `accel_factor`/`steer_blend`/heading target), burst,
+     docking + world queries (destination `623340`, terrain height `135140`, max climb `372440`,
+     arrival threshold, listener events). **TODO:** lift Walk `0x61e930` + the other ~13 subclasses
+     (same vfunc_6 contract) and the steering bodies.
+   - **Oracle gap:** `integrate_velocity` is host-validated (16 checks) but the game-speed scale
+     (`DAT_1408007dc/d4/f4`) and steering gain (`DAT_1408754bc`) constants must be read from the
+     binary before the in-game DTPOS differential check can pass bit-for-bit.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
@@ -438,14 +448,18 @@ yields **~3–4× faster fast-forward** (Amdahl, s≈0.15, N=4→2.9×, N=8→4�
 
 Phases 0–2 done; Phase 3 scoped **and its gate task (behavior census) complete** — the in-slice set
 is the 13 sim behaviors + locomotor + hardpoint fire-control + spine tabulated above (~180–280 fns).
-**Units 1 (tick clock), 2 (entity-update spine), 3 (locomotor — Starship skeleton + model) are
-LIFTED** (`sim/`, host-validated via `just sim-test`). Two concrete continuations, either order:
-(a) **deepen unit 3** — lift the `LocomotorEnv` physics bodies (accel `622b80`, turn `622e90`,
-accel→velocity integrator `6224b0`) and the Walk `0x61e930` variant, then **close the in-game
-differential loop**: replay a fixed save and diff the lifted Starship integrator's `entity+0x78`
-output against the live DIFFTRACE `DTPOS` stream (the first true oracle check); or
-(b) **unit 4 — hardpoint fire-control** (`a76b0`/`387010`/`387400` …) to broaden the slice.
-Recommended: (a) — it converts the host-validated skeleton into an oracle-validated integrator and
+**Units 1 (tick clock), 2 (entity-update spine), 3 (locomotor — Starship skeleton + model +
+accel→velocity integrator) are LIFTED** (`sim/`, host-validated via `just sim-test`, 33 checks).
+Concrete continuations, any order:
+(a) **close the in-game differential loop** — read the 4 locomotor constants (`DAT_1408007dc/d4/f4`,
+`DAT_1408754bc`) from the binary (one Ghidra/objdump pass), then replay a fixed save and diff the
+lifted integrator's `entity+0x78` output vs the live DIFFTRACE `DTPOS` stream — the **first true
+oracle check** and the highest-value validation milestone;
+(b) **finish unit 3's steering bodies** — lift accelerate `622b80` + turn `622e90` (set
+`accel_factor`/`steer_blend`/heading from the destination + template) and the Walk `0x61e930`
+variant, replacing those `LocomotorEnv` callouts;
+(c) **unit 4 — hardpoint fire-control** (`a76b0`/`387010`/`387400` …) to broaden the slice.
+Recommended: (a) — it converts host-validated lifts into an oracle-validated integrator and
 exercises the differential-test methodology end-to-end for the first time. Two
 front-loads: (a) the determinism pins (Phase 4) — the `a76b0` order-sensitive float sum + RNG draws —
 since they are *rewrite* risk surfaced early; (b) classify each IN behavior's writes as Phase-A
