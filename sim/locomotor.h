@@ -176,4 +176,12 @@ struct SimpleSpaceEnv {
 // SimpleSpaceLocomotorBehaviorClass::vfunc_6 (0x626420) — the dispatch/state-machine skeleton.
 void simplespace_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, SimpleSpaceEnv& env);
 
+// The straight-line / path-complete branch of the SimpleSpace mover (FUN_140625990 lines 67-76,
+// 191-199, with the direction from FUN_14041c000): the unit cruises along its heading. The full
+// mover is a Hermite spline path-follower (curving segments over state+0x18) — a separate deep lift
+// — but in steady cruise it extrapolates a straight line, which dominates and is the oracle-checkable
+// case. heading is in DEGREES (entity+0x8c); speed = state+0xec; Z is unchanged.
+//   out_pos = in_pos + ( cos(heading*DEG2RAD), sin(heading*DEG2RAD), 0 ) * speed
+vec3 simplespace_straight_move(const vec3& in_pos, f32 heading_deg, f32 speed);
+
 } // namespace eaw

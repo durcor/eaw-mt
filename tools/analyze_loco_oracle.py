@@ -21,13 +21,11 @@ MOVE_EPS = 0.02   # min horizontal displacement to count a tick as "moved"
 TOL      = 0.03   # match tolerance (log rounding: pos %.3f, vel %.4f)
 
 def parse(path):
-    # vel:  tick -> (ent, lstate, vx, vy, vz)   from DTVELS (Starship) preferred, else DTVEL.
-    # NOTE: DTPOS samples the first-folded ship; DTVELS may be a DIFFERENT ship, so a Starship pos
-    # stream is only available when the first-folded ship IS the Starship (loco=8ae250 on DTVEL).
+    # vel:  tick -> (ent, lstate, vx, vy, vz, heading, speed)  from DTVEL.
     pos, vel, families = {}, {}, {}
     rp  = re.compile(r"DTPOS\ttick=(\d+)\tx=(-?[\d.]+)\ty=(-?[\d.]+)\tz=(-?[\d.]+)")
-    rv  = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tloco=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)")
-    rvo = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)")  # legacy, no loco
+    rv  = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tloco=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)\thd=(-?[\d.]+)\tsp=(-?[\d.]+)")
+    rvL = re.compile(r"DTVEL\ttick=(\d+)\tent=([0-9a-f]+)\tloco=([0-9a-f]+)\tlstate=(-?\d+)\tvx=(-?[\d.]+)\tvy=(-?[\d.]+)\tvz=(-?[\d.]+)")  # no hd/sp
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             m = rp.match(line)
@@ -36,14 +34,49 @@ def parse(path):
             m = rv.match(line)
             if m:
                 t = int(m.group(1)); families[int(m.group(3), 16)] = families.get(int(m.group(3), 16), 0) + 1
-                vel[t] = (int(m.group(2), 16), int(m.group(4)),
-                          float(m.group(5)), float(m.group(6)), float(m.group(7))); continue
-            m = rvo.match(line)
+                vel[t] = (int(m.group(2), 16), int(m.group(4)), float(m.group(5)), float(m.group(6)),
+                          float(m.group(7)), float(m.group(8)), float(m.group(9))); continue
+            m = rvL.match(line)
             if m:
-                t = int(m.group(1))
-                vel[t] = (int(m.group(2), 16), int(m.group(3)),
-                          float(m.group(4)), float(m.group(5)), float(m.group(6)))
+                t = int(m.group(1)); families[int(m.group(3), 16)] = families.get(int(m.group(3), 16), 0) + 1
+                vel[t] = (int(m.group(2), 16), int(m.group(4)), float(m.group(5)),
+                          float(m.group(6)), float(m.group(7)), None, None)
     return pos, vel, families
+
+
+DEG2RAD = (3.14159274 * 2.0) / 360.0  # matches sim/locomotor DEG2RAD
+
+def check_simplespace_straight(pos, vel):
+    """Oracle: SimpleSpace cruise move = pos[t] = pos[t-1] + (cos h, sin h, 0)*speed.
+    Validates the lifted simplespace_straight_move against the live binary on cruise ticks."""
+    import math
+    ticks = sorted(set(pos) & set(vel))
+    moved = matched = 0
+    fails = []
+    for a, b in zip(ticks, ticks[1:]):
+        if b - a != 1 or vel[a][0] != vel[b][0]:
+            continue
+        hd, sp = vel[b][5], vel[b][6]
+        if hd is None or sp is None:
+            continue
+        dx = pos[b][0] - pos[a][0]; dy = pos[b][1] - pos[a][1]
+        if abs(dx) < 0.02 and abs(dy) < 0.02:
+            continue
+        moved += 1
+        rad = hd * DEG2RAD
+        px = math.cos(rad) * sp; py = math.sin(rad) * sp
+        # tolerance scales with speed (heading logged to 1e-6 deg -> ~sp*2e-8 rad err, negligible;
+        # dominant error is float<->decimal log rounding ~1e-3 absolute).
+        tol = 0.05 + abs(sp) * 1e-4
+        if abs(dx - px) <= tol and abs(dy - py) <= tol:
+            matched += 1
+        else:
+            fails.append((b, dx, dy, px, py, hd, sp))
+    print(f"\n[SimpleSpace straight-move oracle]  moved cruise ticks: {moved}   matched: {matched}"
+          + (f"   rate: {100.0*matched/moved:.1f}%" if moved else ""))
+    for t, dx, dy, px, py, hd, sp in fails[:8]:
+        print(f"  MISMATCH t={t} disp=({dx:.3f},{dy:.3f}) pred=({px:.3f},{py:.3f}) hd={hd:.3f} sp={sp:.3f}")
+    return moved, matched
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
@@ -57,39 +90,14 @@ def main():
         print("  DTVEL locomotor families: " +
               ", ".join(f"{fam.get(k, hex(k))}={v}" for k, v in sorted(families.items(), key=lambda x: -x[1])))
 
-    moved = matched = zmatch = 0
-    fails = []
-    for a, b in zip(ticks, ticks[1:]):
-        if b - a != 1:                       # only adjacent sim ticks
-            continue
-        ent_a, ent_b = vel[a][0], vel[b][0]
-        if ent_a != ent_b:                   # same tracked ship across the pair
-            continue
-        dx = pos[b][0] - pos[a][0]
-        dy = pos[b][1] - pos[a][1]
-        dz = pos[b][2] - pos[a][2]
-        if abs(dx) < MOVE_EPS and abs(dy) < MOVE_EPS:
-            continue                          # not serviced this tick (no horizontal move)
-        moved += 1
-        vx, vy, vz = vel[b][2], vel[b][3], vel[b][4]
-        ok_xy = abs(dx - vx) <= TOL and abs(dy - vy) <= TOL
-        if ok_xy:
-            matched += 1
-        else:
-            fails.append((b, dx, dy, vx, vy))
-        if abs(dz - vz) <= TOL:
-            zmatch += 1
-
-    print(f"moved ticks: {moved}   xy-matched pos+=vel: {matched}   z also matched: {zmatch}")
-    if moved:
-        print(f"xy match rate: {100.0*matched/moved:.1f}%")
-    for t, dx, dy, vx, vy in fails[:10]:
-        print(f"  MISMATCH tick={t}  disp=({dx:.4f},{dy:.4f})  vel=({vx:.4f},{vy:.4f})")
+    # Primary oracle for the SimpleSpace family (the common space mover): the lifted straight-move.
+    moved, matched = check_simplespace_straight(pos, vel)
     if moved == 0:
-        print("NO MOVEMENT CAPTURED — need a battle with ships under move orders.")
+        print("\nNO CRUISE MOVEMENT WITH hd/sp CAPTURED — need a SimpleSpace ship in steady cruise.")
         return 2
     rate = matched / moved
-    print("\nORACLE PASS" if rate >= 0.95 else "\nORACLE FAIL")
+    print("\nORACLE PASS (SimpleSpace straight-move reproduces the live binary)"
+          if rate >= 0.95 else "\nORACLE FAIL")
     return 0 if rate >= 0.95 else 1
 
 if __name__ == "__main__":

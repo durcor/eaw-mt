@@ -3054,6 +3054,8 @@ static int                g_dt_loco_have = 0;
 static uint64_t           g_dt_ent       = 0;      /* coord ptr — only compare consecutive same-ent ticks */
 static float              g_dt_vel_xyz[3];
 static int32_t            g_dt_lstate    = -1;
+static float              g_dt_heading   = 0;      /* coord+0x8c heading angle (deg) — SimpleSpace straight move */
+static float              g_dt_speed     = 0;      /* state+0xec speed scalar */
 static uintptr_t          g_dt_imgbase   = 0;      /* StarWarsG.exe base, for vtable->RVA */
 static uint32_t           g_dt_loco_rva  = 0;      /* locomotor vtable RVA of the first-folded ship */
 /* Dedicated Starship latch: the first ship each tick whose locomotor is a
@@ -3088,16 +3090,17 @@ static void dt_emit(void) {
     /* Human-readable determinism check: one GameObject's sim position per tick.
      * Same save+orders replayed twice must reproduce it; a moving unit's must change smoothly. */
     if (g_dt_pos_have) {
-        snprintf(buf, sizeof buf, "DTPOS\ttick=%u\tx=%.3f\ty=%.3f\tz=%.3f\n",
+        snprintf(buf, sizeof buf, "DTPOS\ttick=%u\tx=%.6f\ty=%.6f\tz=%.6f\n",
                  g_dt_tick, g_dt_pos_xyz[0], g_dt_pos_xyz[1], g_dt_pos_xyz[2]);
         log_write(buf);
     }
-    /* Locomotor velocity of the same sampled ship (loco = its locomotor vtable RVA = family). */
+    /* Locomotor velocity + heading/speed of the same sampled ship (loco = vtable RVA = family).
+     * hd/sp feed the SimpleSpace straight-move oracle: pos += (cos hd, sin hd, 0) * sp. */
     if (g_dt_loco_have) {
         snprintf(buf, sizeof buf,
-                 "DTVEL\ttick=%u\tent=%llx\tloco=%x\tlstate=%d\tvx=%.4f\tvy=%.4f\tvz=%.4f\n",
+                 "DTVEL\ttick=%u\tent=%llx\tloco=%x\tlstate=%d\tvx=%.6f\tvy=%.6f\tvz=%.6f\thd=%.6f\tsp=%.6f\n",
                  g_dt_tick, (unsigned long long)g_dt_ent, g_dt_loco_rva, g_dt_lstate,
-                 g_dt_vel_xyz[0], g_dt_vel_xyz[1], g_dt_vel_xyz[2]);
+                 g_dt_vel_xyz[0], g_dt_vel_xyz[1], g_dt_vel_xyz[2], g_dt_heading, g_dt_speed);
         log_write(buf);
     }
     /* Starship-confirmed velocity — the oracle target for the lifted integrator. */
@@ -3159,6 +3162,8 @@ static void dt_fold_coordinator(int64_t coord) {
             memcpy(&g_dt_vel_xyz[1], (void *)(lst + 0x18), 4);
             memcpy(&g_dt_vel_xyz[2], (void *)(lst + 0x1c), 4);
             g_dt_lstate = *(int32_t *)(lst + 0x48);
+            memcpy(&g_dt_heading, (void *)(coord + 0x8c), 4);  /* heading angle (deg) */
+            memcpy(&g_dt_speed,   (void *)(lst + 0xec), 4);    /* speed scalar */
             g_dt_ent = (uint64_t)coord;
             g_dt_loco_rva = g_dt_imgbase ? dt_loco_vtbl_rva(coord, g_dt_imgbase) : 0;
             g_dt_loco_have = 1;

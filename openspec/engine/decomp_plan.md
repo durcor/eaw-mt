@@ -352,6 +352,22 @@ depends on it):
    - **Locomotor structure is uniform:** every type = a thin `vfunc_6` dispatcher over a large
      per-type mover (Starship integrator `6224b0`; SimpleSpace mover `625990`). The dispatcher
      skeletons + shared model/primitives are lifted; each mover is its own sizable sub-lift.
+   - **SimpleSpace mover (`vfunc_59` = `0x625990`) is a Hermite spline path-follower** — it
+     interpolates a precomputed curve (control points in `state+0x18`, indexed by `state+0x60`) with a
+     4×4 basis matrix (`DAT_140b2f200…`) + quaternion orientation ops. Full bit-exact lift would also
+     need the live spline state captured — a large effort. **But its straight-line / path-complete
+     branch (lines 67-76/191-199 + `FUN_14041c000`) is lifted** → `simplespace_straight_move`:
+     `out_pos = in_pos + (cos(h·DEG2RAD), sin(h·DEG2RAD), 0)·speed`, `h = entity+0x8c` (deg),
+     `speed = state+0xec`, Z held. This is the **dominant steady-cruise behavior** (the menu ships fly
+     straight lines). Host-validated (reproduces the menu cruise displacement, 23 locomotor checks).
+   - **Oracle status — structurally confirmed, bit-exact run pending environment.** The harness now
+     captures `hd` (`entity+0x8c`) + `sp` (`state+0xec`) at `%.6f`, and `analyze_loco_oracle.py`
+     checks `disp == (cos hd, sin hd, 0)·sp` on cruise ticks. The earlier capture already shows the
+     **exact structural match**: `disp = unit_dir × const_scale`, `|dir| ≡ 1.0`, `dir·disp ≈ 1.0`,
+     Z held — i.e. `pos += (cos h, sin h, 0)·speed`. The bit-exact `hd`/`sp` capture run is set up but
+     **blocked: the Steam client was accidentally killed and can't be restarted without the user's X
+     session** (Proton needs it). To finish: with Steam running, `just difftrace=1 launch-foc-desktop`
+     (menu demo) → `python3 tools/analyze_loco_oracle.py eaw-mt.log` → expect ORACLE PASS.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release

@@ -329,6 +329,20 @@ static void test_ss_invalid_state_noop() {
     CHECK(env.effect_calls == 0);
 }
 
+static void test_ss_straight_move() {
+    std::printf("test_ss_straight_move\n");
+    // heading 0deg -> +x; 90deg -> +y; z always unchanged.
+    vec3 a = simplespace_straight_move({10, 20, 30}, 0.0f, 5.0f);
+    CHECK(approx(a.x, 15.0f) && approx(a.y, 20.0f) && approx(a.z, 30.0f));
+    vec3 b = simplespace_straight_move({10, 20, 30}, 90.0f, 5.0f);
+    CHECK(approx(b.x, 10.0f) && approx(b.y, 25.0f) && approx(b.z, 30.0f));
+    // the menu-demo cruise heading (cos=0.7973, sin=-0.6036 => ~ -37.15deg) at speed 750.
+    vec3 c = simplespace_straight_move({-11941.301f, 8661.881f, -850.0f}, -37.1505f, 750.0f);
+    CHECK(approx(c.x, -11941.301f + 597.95f, 0.3f));   // ~ +597.96 in x
+    CHECK(approx(c.y, 8661.881f - 452.71f, 0.3f));     // ~ -452.71 in y
+    CHECK(approx(c.z, -850.0f));                        // z held
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -353,6 +367,7 @@ int main() {
     test_ss_arrived_decel();
     test_ss_special_mode();
     test_ss_invalid_state_noop();
+    test_ss_straight_move();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

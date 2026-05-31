@@ -175,6 +175,15 @@ void simplespace_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, Simple
     env.engine_effects(entity, st);             // banking roll + engine glow/sound (presentation)
 }
 
+// FUN_140625990 straight-line branch + FUN_14041c000 (direction from heading angle).
+vec3 simplespace_straight_move(const vec3& in_pos, f32 heading_deg, f32 speed) {
+    const f32 a = heading_deg * DEG2RAD;        // heading degrees -> radians (FUN_14041c000)
+    // cos/sin with the engine's small-angle fast path (FUN_140776150 cos / FUN_140776650 sin).
+    f32 c = 1.0f, s = a;
+    if (angle_needs_trig(a)) { c = std::cos(a); s = std::sin(a); }
+    return { in_pos.x + c * speed, in_pos.y + s * speed, in_pos.z };  // Z unchanged (param_4[2]+0)
+}
+
 // StarshipLocomotorBehaviorClass::vfunc_6
 void starship_tick(LocomotorBehavior& b, GameObject& entity, u32 tick, LocomotorEnv& env) {
     reschedule(b, tick);                       // LocomotorCommonClass::vfunc_6 pre-step
