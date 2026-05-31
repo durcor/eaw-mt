@@ -549,6 +549,28 @@ depends on it):
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
    `3846c0`, force integrator `387f50`, nav submit `29f810`. **Oracle-validated** (DIFFTRACE folds
    hardpoint `{target, weight +0x28, countdown +0x58}`).
+
+   **🟡 FIRST CUT LIFTED — fire-budget distribution (`sim/hardpoint.{h,cpp}`, host-validated).** Lifted
+   `FUN_1403a76b0` as `hardpoint_fire_budget`: pass-1 count active mounts (`present && owner_record &&
+   owner_record->active@+0x4d`), pass-2 sum the game-speed-scaled weight (`540070` = `hp+0x58 ×
+   {1, DAT_140b16dcc, DAT_140b16dc8}` by game-speed mode), pass-3 distribute `share_i =
+   (budget_i/total_w)·avail` and consume via `387f50`, pass-4 `387010` per-mount update over every
+   present mount. **KEY FINDING — `total_w` CANCELS:** `avail = (capacity−base)·total_w` then
+   `share_i = (budget_i/total_w)·avail = budget_i·(capacity−base)`, so the summed weight *and* the
+   `540070` game-speed weight scale are irrelevant to every share — weight only *gates* distribution
+   (`avail>0` needs `total_w>0`, i.e. ≥1 active weighted mount). `base = min(fire_fraction+bias, 1.0)`
+   (`396df0 + DAT_140b16d78`, clamp `DAT_1407ffaf8=1.0`); `avail` clamped `≥0`. `387f50` consume
+   guards (owner-record active, owner match `hp+0x10==ship`, `budget>0`, `share>0`), decrements
+   `hp+0x28`, fires (`386660`), and on depletion emits the station-level-lost command (Phase B).
+   `387010` dispatcher pins `delta = tick − last_serviced@+0x60` + the motion-state gate
+   (`(motion−5)<6 && enable` → `387400`). **Behind `HardpointEnv` (deferred sub-lifts):** the ship
+   scalars `fire_fraction`(`396df0`)/`fire_capacity`(`396070`), the shot `386660`, and the deep
+   opportunity-target acquisition `FUN_140387400` (1904 B — cross-entity target writes + player-table
+   RNG scan + command emission = Phase-A/B-entangled, the real next sub-lift). Host: 9 checks
+   (`sim/tests/hardpoint_test.cpp`, incl. the scale-cancellation test) via `just sim-test`. The
+   DIFFTRACE per-tick hash already folds `hp+0x28`/`+0x58`, so the distribution's effect is observed;
+   a dedicated **DTFIRE** capture (per-tick `total_w`/`avail`/`share`/budget deltas) is the precise
+   in-game oracle = the follow-on analysis step.
 5. **Cross-entity / global write sites → command emitters.** The compute→apply boundary: every write
    a per-entity update makes to *other* entities or globals — target listener-list registration on
    `target+0x38` (`220e90`/`ed0`/`eb0` via `058570`), the global event queue `DAT_140b27e60`
