@@ -518,10 +518,32 @@ depends on it):
      the engine's float `atan2` and the offline double disagree on `±0`), the same near-target
      singularity as the 9 pitch misses, not a model fault. Host goldens pass via `just sim-test`
      (`test_fighter_hard_turn`: engage/hold/release/gate cases). `gate_ok` (`FUN_140372440 > 0`) held
-     for every fighter tick in the capture, so it's modeled True; the only un-lifted caaf0 piece left
-     is the roll-coupling yaw wrap (`decomp/5caaf0.c:100-109`, needs A/B/cap not in DTSTEER and rarely
-     fires) — the snap branch and both heading integrators are now done. **`FUN_1405caaf0` is fully
-     lifted bar the roll-comp yaw wrap.**
+     for every fighter tick in the capture, so it's modeled True; the snap branch and both heading
+     integrators are now done.
+   - **✅ ROLL-COMP YAW WRAP ORACLE PASS — `FUN_1405caaf0` fully lifted (2026-05-31).** Lifted lines
+     100-109 (`LAB_1405cad66`) as `fighter_roll_comp_yaw` (`sim/locomotor.{h,cpp}`): the **last step
+     before the yaw integrator**. It adds the roll-induced yaw to the commanded yaw and, if the COMBINED
+     magnitude would exceed 180°, **wraps `yaw_cmd` toward zero by 360°** so the roll-coupled integrator
+     (`fighter_steer_yaw`) banks the short way around instead of unwinding the long way:
+     `term = a·(wrap180(roll)/b) + yaw_cmd`; `if |term| > 180: yaw_cmd −= sign(yaw_cmd)·360` (constants
+     `DAT_1408524f8`=180, `DAT_1407ffaf8`/`14080080c`=±1, `DAT_1408007f4`=360; `sign(0)=+1`). The
+     coefficients are `a = template+0x38c` (`FUN_140372560`) and `b = template+0x394` (`FUN_1403724d0`)
+     — the **same pair `fighter_steer_yaw` uses**; both accessors apply the identical game-speed scale so
+     it **cancels in the `a/b` ratio** (the wrap is difficulty-invariant; raw template fields suffice).
+     `roll` is the owner's stored roll (`entity+0x84`), `wrap180`'d. Since `yaw_cmd` is the post-hard-turn
+     command (`wrap180` bearing error, or 0 when snapped) with `|yaw_cmd| ≤ 180`, the wrap only fires when
+     the roll term pushes a large same-sign `yaw_cmd` past 180°. **Validation (negative oracle):** DTYAW's
+     captured `ye` is the yaw command AS HANDED to `FUN_1405c95a0` — i.e. the roll-comp OUTPUT — and the
+     wrap moves a value out of `(−180,180]`, so `|ye| > 180 ⟺ the wrap fired`. Across the capture (ent
+     `0x2fd020a0`, a=2 b=3, **8971 ticks**) every `|ye| ≤ 180`: **the wrap is dormant in normal flight**,
+     so each tick is a no-fire where `ye == pre-wrap command`. Oracle 8 (`check_roll_comp`) feeds each
+     `(roll0, ye)` back through the lifted condition and agrees **8971/8971** (engine fired 0, model fired
+     0); **closest approach `|term| = 164.2°/180°`** (at roll=228°→−132°, yaw_cmd=−76°) — the branch is
+     **reachable to within ~16°, a live edge-case guard, not dead code**. The positive (firing) path is
+     covered host-side (`test_fighter_roll_comp_yaw`: same-sign wrap up/down, opposite-sign cancel,
+     raw-roll wrap, `=180` boundary no-wrap, `sign(0)`). **`FUN_1405caaf0` is now FULLY LIFTED** — local-
+     frame bearing, hard-turn snap, roll-comp wrap, and both heading integrators (pitch + bank-to-turn
+     yaw) all validated in-game.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release

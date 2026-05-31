@@ -519,6 +519,62 @@ def check_snap(path):
     return (latch_n, latch_ok, pit_n, pit_ok)
 
 
+def fighter_roll_comp_yaw(yaw_cmd, roll_deg, a_rate, b_rate):
+    """Mirror of sim/locomotor.cpp fighter_roll_comp_yaw (== FUN_1405caaf0 lines 100-109)."""
+    roll = wrap180(roll_deg)
+    term = a_rate * (roll / b_rate) + yaw_cmd
+    if abs(term) > 180.0:
+        s = -1.0 if yaw_cmd < 0.0 else 1.0
+        yaw_cmd -= s * 360.0
+    return yaw_cmd
+
+
+def check_roll_comp(path):
+    """Validate the lifted roll-coupling yaw wrap (FUN_1405caaf0 lines 100-109) against the DTYAW
+    capture. DTYAW's `ye` is the controller's yaw command AS HANDED to FUN_1405c95a0 — i.e. the
+    roll-comp OUTPUT. The wrap subtracts sign*360 from a value in (-180,180], so it fires IFF the
+    output leaves that band: |ye|>180 <=> wrap fired. Across the capture every |ye|<=180 (the wrap is
+    dormant in normal flight), so each tick is a no-fire where ye == the pre-wrap command. The oracle
+    therefore feeds (roll0, ye) back through the lifted condition and confirms it ALSO predicts no-fire
+    every time (and reports the closest approach to the 180 threshold, proving the branch is reachable,
+    not dead). a_rate=template+0x38c (capture: 2), b_rate=template+0x394 (3); the ratio is
+    difficulty-invariant. The positive (firing) path is covered host-side (locomotor_test.cpp)."""
+    yaw = parse_yaw(path)
+    if not yaw:
+        print("\n[Fighter roll-comp oracle] no DTYAW lines — skipped")
+        return None
+    ticks = sorted(yaw)
+    n = agree = 0
+    engine_fired = model_fired = 0
+    max_margin = 0.0; max_at = None
+    for t in ticks:
+        s = yaw[t]
+        if s["a"] == 0.0:
+            continue
+        ye = s["ye"]
+        eng_fire = abs(ye) > 180.0                      # engine: output left (-180,180]
+        # offline: re-evaluate the fire condition on the captured (roll, command). For a no-fire tick
+        # ye == pre-wrap command, so this is the faithful input; |term| is the quantity compared to 180.
+        roll = wrap180(s["r0"])
+        term = s["a"] * (roll / s["b"]) + ye
+        mdl_fire = abs(term) > 180.0
+        n += 1
+        if eng_fire == mdl_fire:
+            agree += 1
+        engine_fired += int(eng_fire)
+        model_fired += int(mdl_fire)
+        if not eng_fire and abs(term) > max_margin:
+            max_margin = abs(term); max_at = (t, s["r0"], ye)
+    print(f"\n[Fighter roll-comp oracle]  (DTYAW, {n} ticks, ent=0x{yaw[ticks[0]]['ent']:x}, "
+          f"a={yaw[ticks[0]]['a']:g} b={yaw[ticks[0]]['b']:g})")
+    print(f"  FIRE/NO-FIRE agree  (|ye|>180 <=> |term|>180): {agree}/{n}  "
+          f"(engine fired {engine_fired}, model fired {model_fired})")
+    if max_at:
+        print(f"  closest no-fire approach: |term|={max_margin:.3f}/180  "
+              f"(t={max_at[0]} roll={max_at[1]:.3f} yaw_cmd={max_at[2]:.3f})")
+    return (n, agree)
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
     pos, vel, families, table = parse(path)
@@ -580,6 +636,13 @@ def main():
             print(f"  [hard-turn latch]  {'PASS' if l_ok/l_n >= 0.99 else 'FAIL'} ({100.0*l_ok/l_n:.1f}%)")
         if pi_n > 0:
             print(f"  [hard-turn pitch]  {'PASS' if pi_ok/pi_n >= 0.95 else 'FAIL'} ({100.0*pi_ok/pi_n:.1f}%)")
+
+    # Oracle 8 (Fighter roll-comp yaw wrap): the lifted fighter_roll_comp_yaw vs the DTYAW capture.
+    rc = check_roll_comp(path)
+    if rc is not None:
+        rc_n, rc_ok = rc
+        if rc_n > 0:
+            print(f"  [roll-comp wrap]   {'PASS' if rc_ok/rc_n >= 0.99 else 'FAIL'} ({100.0*rc_ok/rc_n:.1f}%)")
 
     if dir_ok and mag_ok:
         print("\nORACLE PASS (FULL POSITION) — direction (cos/sin) AND magnitude (table[timer]) of the"
