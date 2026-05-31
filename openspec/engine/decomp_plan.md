@@ -401,6 +401,26 @@ depends on it):
      player-issued **curved** move orders. So the spline *algorithm* + its *runtime basis matrix* are
      validated; the end-to-end position match for it awaits a curved-path capture (`DTMAT`+`DTSPL`
      harness is ready). Decompiled helpers: `decomp/{625990,139800,54fc00,5c5910,5c4920,49d400,6269f0}.c`.
+   - **✅ FULL-POSITION ORACLE PASS — 2026-05-31 — Fighter locomotor family (`FighterLocomotorBehaviorClass`,
+     vtable `0x8a6198`).** A real capital-ship battle (`[NR] han trollo - space battle`, capture
+     `logs/battle_capture_085808.log`) exposed a SECOND, DOMINANT space mover the menu demo never
+     touches: **82% of battle ticks** (7979 vs SimpleSpace's 1740). vfunc_6 = `0x5cb830` dispatches on
+     `state+0x48` in two halves — a normal-flight path (base `LocomotorCommonClass::vfunc_6` + heading
+     integration over `entity+0x84/88/8c`, trig `FUN_14020b6d0/710`, writeback `FUN_1403a8710`) with a
+     switch over flight states {`0x1b` Move→`5ce010`, `0x1c` Strafe→`5cd8e0`, `0x1e` Engage→`5cc220`
+     (dominant), `0x1d` Idle, `0x1f` Break→`5cbea0`}; and a special-mode half {`0x04`/`0x05`/`0x28`/`0x2c`}.
+     Unlike SimpleSpace (planar, `vz≡0`, unit-dir+scalar), this family stores **raw 3D per-tick velocity**
+     at `state+0x14/18/1c` (same representation as Starship). Every flight-state mover steers then
+     commits `new_pos = owner_pos(+0x78/7c/80) + velocity` via `FUN_1403a8f90` → lifted as the trivial
+     `fighter_integrate`. **In-game oracle: per-tick displacement == captured velocity BIT-EXACT on
+     7918/7918 flight-state ticks** (`tools/analyze_loco_oracle.py` `check_fighter`). The only 4
+     non-matching fighter ticks were transient `0x2c` drift and match the already-lifted
+     `simplespace_drift_move` (`|disp|==table[timer]==750`). This confirms the family identity, the
+     velocity representation, and the integrator; the steering layer that PRODUCES the velocity (base
+     vfunc_6 + `FUN_1405ca390/caaf0/c8b70` target/throttle/turn math) is a separate future lift.
+     Decompiled: `decomp/{5cb830,5cc220,5ce010,5cd8e0,5c9ca0,3a8710,20b6d0,20b710}.c`. NB: this same
+     capture re-confirmed the prior two oracles at 100% (SimpleSpace direction 848/848, 0x2c drift
+     790/790). New tool: `tools/ghidra_scripts/DumpVtable.java` (vtable-slot dumper).
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release

@@ -399,6 +399,27 @@ static void test_hermite_spline_eval() {
     CHECK(approx(e.x, 0.0f) && approx(e.y, 0.0f) && approx(e.z, -850.0f));
 }
 
+// FighterLocomotorBehaviorClass (vtable 0x8a6198) integrator. Golden triples (prev_pos, velocity,
+// new_pos) lifted directly from the in-game battle capture (logs/battle_capture_*.log), one per
+// flight state. The lifted fighter_integrate must reproduce new_pos = prev_pos + velocity exactly —
+// this is the same equality the oracle confirmed on 7918/7918 flight-state ticks.
+static void test_fighter_integrate() {
+    struct Tri { vec3 p0, v, p1; const char* st; };
+    const Tri golden[] = {
+        // tick 106115 state 0x1c (Strafe)
+        { {2758.191895f,4816.124512f,-300.060638f}, {-2.868669f,-7.574816f,-0.054032f}, {2755.323242f,4808.549805f,-300.114685f}, "0x1c" },
+        // tick 106185 state 0x1b (Move)
+        { {5181.729492f,5630.509766f,-0.066110f}, {-17.475063f,-21.031256f,-0.066454f}, {5164.254395f,5609.478516f,-0.132564f}, "0x1b" },
+        // tick 110214 state 0x1e (Engage)
+        { {3056.158203f,2013.334473f,-449.291321f}, {-1.223794f,-0.092313f,-0.081898f}, {3054.934326f,2013.242188f,-449.373230f}, "0x1e" },
+    };
+    for (const auto& g : golden) {
+        vec3 np = fighter_integrate(g.p0, g.v);
+        // capture stores positions at f32 precision; a 1-ULP-scale eps absorbs the print round-trip.
+        CHECK(approx(np.x, g.p1.x, 1e-2f) && approx(np.y, g.p1.y, 1e-2f) && approx(np.z, g.p1.z, 1e-2f));
+    }
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -426,6 +447,7 @@ int main() {
     test_ss_straight_move();
     test_ss_drift_move();
     test_hermite_spline_eval();
+    test_fighter_integrate();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

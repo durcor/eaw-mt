@@ -75,6 +75,38 @@ def check_drift_magnitude(pos, vel, table):
     return n, ok
 
 
+def check_fighter(pos, vel):
+    """Full-position oracle for the Fighter family (vtable 0x8a6198, FighterLocomotorBehaviorClass).
+    Every flight-state tick (state 0x1b/0x1c/0x1e) commits new_pos = owner_pos + velocity, i.e. the
+    per-tick displacement equals the captured velocity exactly. (State 0x2c is transient drift and is
+    covered by the drift-magnitude oracle, so it is excluded here.)"""
+    FLIGHT = (0x1b, 0x1c, 0x1e)
+    ticks = sorted(set(pos) & set(vel))
+    n = ok = 0
+    fails = []
+    for a, b in zip(ticks, ticks[1:]):
+        if b - a != 1 or vel[a][0] != vel[b][0]:
+            continue
+        ls, vx, vy, vz = vel[b][1], vel[b][2], vel[b][3], vel[b][4]
+        # loco family is not on the vel tuple; flight states 0x1b/1c/1e are Fighter-exclusive.
+        if ls not in FLIGHT:
+            continue
+        dx = pos[b][0] - pos[a][0]; dy = pos[b][1] - pos[a][1]; dz = pos[b][2] - pos[a][2]
+        n += 1
+        if abs(dx - vx) + abs(dy - vy) + abs(dz - vz) <= 0.03:
+            ok += 1
+        elif len(fails) < 8:
+            fails.append((b, ls, (dx, dy, dz), (vx, vy, vz)))
+    if n == 0:
+        print("\n[Fighter integrator oracle] no 0x1b/0x1c/0x1e flight ticks captured — skipped "
+              "(need a space battle with engaged fighters)")
+        return None
+    print(f"\n[Fighter integrator oracle]  disp == velocity (pos += vel): {ok}/{n} flight-state ticks")
+    for t, ls, d, v in fails:
+        print(f"  MISMATCH t={t} state=0x{ls:x} disp={tuple(round(x,2) for x in d)} vel={tuple(round(x,2) for x in v)}")
+    return n, ok
+
+
 def parse_spline(path):
     """Parse the basis matrix (DTMAT) and per-tick control points (DTSPL n=0/n=1)."""
     basis = {}
@@ -228,6 +260,12 @@ def main():
     if spl is not None and spl[0] > 0:
         print(f"  [spline] {'PASS' if spl[1]/spl[0] >= 0.95 else 'FAIL'} "
               f"({100.0*spl[1]/spl[0]:.1f}%)")
+
+    # Oracle 4 (Fighter family): the lifted fighter_integrate (pos += velocity) == DTPOS displacement.
+    fgt = check_fighter(pos, vel)
+    if fgt is not None and fgt[0] > 0:
+        print(f"  [fighter] {'PASS' if fgt[1]/fgt[0] >= 0.95 else 'FAIL'} "
+              f"({100.0*fgt[1]/fgt[0]:.1f}%)")
 
     if dir_ok and mag_ok:
         print("\nORACLE PASS (FULL POSITION) — direction (cos/sin) AND magnitude (table[timer]) of the"

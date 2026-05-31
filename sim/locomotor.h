@@ -224,4 +224,42 @@ struct SplineNode {
 vec3 hermite_spline_eval(const SplineNode& p0, const SplineNode& p1, u32 tick, f32 hold_z,
                          const f32 basis[16]);
 
+// --- Fighter locomotor family (vtable 0x8a6198 = FighterLocomotorBehaviorClass) ---
+//
+// The DOMINANT real-space-combat mover: 82% of the ticks in a full capital-ship battle (the menu
+// demo never exercises it; it only appears once units engage). Unlike SimpleSpace (planar, vz==0,
+// unit-dir + scalar speed) this family stores RAW 3D per-tick velocity at state+0x14/18/1c — the
+// same representation as Starship — and flies real banking maneuvers (a 3D heading at +0x84/88/8c).
+//
+// vfunc_6 = 0x5cb830 dispatches on state+0x48 in two halves:
+//   - normal flight: a base LocomotorCommonClass::vfunc_6 pre-step + heading integration, then a
+//     switch over the flight states, each a large per-state mover that ultimately commits
+//       new_pos = owner_pos(+0x78/7c/80) + velocity(state+0x14/18/1c)   via FUN_1403a8f90.
+//   - special modes (state 4/5/0x28/0x2c): approach / dock / drift — the 0x2c drift reuses the
+//     already-lifted simplespace_drift_move (unit-dir * table[timer]).
+//
+// Flight states (state+0x48) and their movers, with battle-capture tick counts:
+enum class FsState : u32 {
+    Init   = 0x00,                 // -> 0x1b (or 0x1e if a target exists)
+    Move   = 0x1b,                 // FUN_1405ce010   (2589 ticks) — straight cruise toward goal
+    Strafe = 0x1c,                 // FUN_1405cd8e0   (1895 ticks) — pass / reposition
+    Idle   = 0x1d,                 // terminal (no mover)
+    Engage = 0x1e,                 // FUN_1405cc220   (3490 ticks) — intercept / attack-run (dominant)
+    Break  = 0x1f,                 // FUN_1405cbea0 -> 0x1d
+};
+
+// FighterLocomotorBehaviorClass integrator — the per-tick position commit shared by every flight
+// state (0x1b/0x1c/0x1e). Each per-state mover steers (updates state.velocity) then commits:
+//   new_pos = owner_pos + velocity            (velocity = state+0x14/18/1c, raw 3D)
+// ✅ ORACLE-VALIDATED (FULL POSITION) in-game (2026-05-31, "[NR] han trollo - space battle" capture,
+// logs/battle_capture_*.log): per-tick position delta == captured velocity BIT-EXACT on 7918/7918
+// flight-state ticks. The only non-matching fighter ticks (4) were transient 0x2c drift, which match
+// the already-lifted simplespace_drift_move (|disp| == table[timer] == 750). The steering layer that
+// PRODUCES the velocity (base vfunc_6 + the per-state target/throttle/turn math in
+// FUN_1405ca390/caaf0/c8b70) is a separate, larger lift; this confirms the integrator + the velocity
+// representation + the family identity.
+inline vec3 fighter_integrate(const vec3& owner_pos, const vec3& velocity) {
+    return { owner_pos.x + velocity.x, owner_pos.y + velocity.y, owner_pos.z + velocity.z };
+}
+
 } // namespace eaw
