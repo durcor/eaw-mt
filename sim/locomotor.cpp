@@ -367,4 +367,45 @@ vec3 fighter_throttle_velocity(const vec3& cur_velocity, f32 climb_deg, f32 head
     return { d.x * speed, d.y * speed, d.z * speed };
 }
 
+// --- Heading-integrator primitives (FUN_14020acd0 / FUN_1405c8fb0) ---
+
+fighter_bearing fighter_target_bearing(const vec3& local_target) {
+    fighter_bearing b{};
+    b.roll = 0.0f;                                   // engine writes index 0 = 0
+
+    // azimuth: atan2(y, x) in degrees, folded to [0, 360). Degenerate (x==y==0) → 0.
+    if (local_target.x == 0.0f && local_target.y == 0.0f) {
+        b.azimuth = 0.0f;
+    } else {
+        f32 az = std::atan2(local_target.y, local_target.x) / DEG2RAD;  // FUN_14078437c = atan2f, →deg
+        if (az < 0.0f) az += 360.0f;
+        b.azimuth = az;
+    }
+
+    // elevation: −atan2(z, hypot(x, y)) in degrees. Guard matches the engine: skip only when the
+    // target is co-located on both the x and z axes (z==0 && x==0).
+    if (local_target.z != 0.0f || local_target.x != 0.0f) {
+        const f32 horiz = std::sqrt(local_target.y * local_target.y +   // FUN_140776d48 = sqrtf
+                                    local_target.x * local_target.x);
+        b.elevation = -(std::atan2(local_target.z, horiz) / DEG2RAD);
+    } else {
+        b.elevation = 0.0f;
+    }
+    return b;
+}
+
+f32 fighter_turn_angle(f32 cur_deg, f32 delta_deg, f32& turn_budget) {
+    f32 cur = wrap180(cur_deg);                       // FUN_14020b6d0 on the stored angle
+    if (turn_budget < std::fabs(delta_deg)) {         // budget can't cover the whole error
+        if (delta_deg > 0.0f)      cur += turn_budget;
+        else if (delta_deg < 0.0f) cur -= turn_budget;
+        // delta_deg == 0 → no step (engine skips straight to the wrap)
+        turn_budget = 0.0f;
+    } else {                                           // close the error exactly; spend |delta|
+        cur += delta_deg;
+        turn_budget -= std::fabs(delta_deg);
+    }
+    return wrap360(cur);                               // FUN_14020b710 before write-back
+}
+
 } // namespace eaw

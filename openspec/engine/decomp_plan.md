@@ -430,11 +430,26 @@ depends on it):
      planar form `(cosβ,sinβ,0)`. **In-game validation:** XY heading `atan2(vy,vx)==β==hd` on 7948/7965
      flight ticks, and the full 3D decomposition (α from vz) reproduces vx,vy on 7952/7974 — the ~0.3%
      residual is the `cosα<0` (|α|>90°) branch, consistent with the formula. Host test: 3 golden
-     velocity samples + throttle stepping. The bearing-error + heading-angle integrators (steps 1-3)
-     are documented but not yet lifted (need the local-frame transform + template turn-rate block).
+     velocity samples + throttle stepping.
      Decompiled: `decomp/{5cb830,5cc220,5ce010,5cd8e0,5c9ca0,5caaf0,5ca390,5cb750,5c8b70,5c9360,5c95a0,5c8fb0,20acd0,3a8710,20b6d0,20b710,3724d0,372560}.c`. NB: this same
      capture re-confirmed the prior two oracles at 100% (SimpleSpace direction 848/848, 0x2c drift
      790/790). New tool: `tools/ghidra_scripts/DumpVtable.java` (vtable-slot dumper).
+   - **✅ Fighter steering HEADING-INTEGRATOR primitives lifted (2026-05-31).** Lifted the deterministic
+     pieces of steps 1-3 of `FUN_1405caaf0`: (a) the engine angle wraps `wrap180`/`wrap360`
+     (`FUN_14020b6d0` → `(-180,180]`, the bearing-ERROR form; `FUN_14020b710` → `[0,360)`, the stored
+     form) using `DAT_1408524f8/fc=±180`, `DAT_1408007f4=360`; (b) the local-frame bearing
+     `fighter_target_bearing` (`FUN_14020acd0`): `azimuth=atan2(y,x)°∈[0,360)` (→ yaw `+0x8c`),
+     `elevation=−atan2(z,hypot(x,y))°` (→ pitch `+0x88`), roll=0; (c) the turn-rate-limited angle step
+     `fighter_turn_angle` = exactly `FUN_1405c8fb0` (the pitch integrator): `wrap180(cur)`, step by
+     min(|err|, budget) toward the error and consume it, `wrap360` the result; write-back gate is
+     `FUN_1403a8710` (skips when `entity+0x3a0 & 0x10`, mirrors `+0x84/88/8c` to `+0x90/94/98`).
+     Confirmed math runtimes: `FUN_1407760bc=fabsf`, `FUN_14078437c=atan2f`. Host test: angle wraps +
+     7 bearing goldens + turn-step branches (49 locomotor checks total). **NOT committed as lifted:**
+     the full `FUN_1405caaf0` orchestration on top — the yaw integrator's roll coupling (`FUN_1405c95a0`),
+     the ±180° hard-turn snap, and the game-speed-scaled per-tick turn budgets read from the unit
+     template (`order+0x38c/0x394/0x3a0` via `FUN_140372560/3724d0/372440`, scaled by the
+     `DAT_140b16dbc/dc0/dc4` speed-mode multipliers). Validating those needs the target + budgets +
+     pitch in the DIFFTRACE harness (it logs only heading `+0x8c`) — a further harness-gated sub-lift.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release

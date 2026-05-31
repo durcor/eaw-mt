@@ -273,9 +273,13 @@ inline vec3 fighter_integrate(const vec3& owner_pos, const vec3& velocity) {
 //        (FUN_1403724d0/372560/372440), and
 //   4. throttles the SPEED toward the commanded max and recomputes the velocity (FUN_1405c9360).
 // The max-speed cap is FUN_1405ca390 → FUN_140370f00 (template+0x37c, same as Starship).
-// LIFTED HERE: the deterministic velocity PRODUCER (step 4, FUN_1405c9360) + its direction basis.
-// The bearing-error + heading-angle integrators (steps 1-3) are documented but not yet lifted (they
-// need the local-frame transform + template turn-rate block) — a further sub-lift.
+// LIFTED HERE: the deterministic velocity PRODUCER (step 4, FUN_1405c9360) + its direction basis,
+// AND the deterministic primitives of steps 2-3 — the local-frame bearing math (FUN_14020acd0) and
+// the turn-rate-limited angle step (FUN_1405c8fb0, the pitch integrator). The full FUN_1405caaf0
+// orchestration on top (roll coupling, the ±180° hard-turn snap, and the game-speed-scaled per-tick
+// turn budgets read from the unit template at order+0x38c/0x394/0x3a0) is documented below but NOT
+// committed as lifted: those branches need the target + budgets + pitch captured in the DIFFTRACE
+// harness to validate (it currently logs only heading +0x8c), so they stay a further sub-lift.
 
 // FUN_1405c9360 direction basis — the unit velocity direction from the two orientation angles.
 // climb α = entity+0x88, heading β = entity+0x8c, both in DEGREES. From the commit in 0x5c9360:
@@ -293,5 +297,43 @@ vec3 fighter_heading_dir(f32 climb_deg, f32 heading_deg);
 // mover commits to state+0x14/18/1c (and which fighter_integrate then adds to position).
 vec3 fighter_throttle_velocity(const vec3& cur_velocity, f32 climb_deg, f32 heading_deg,
                                f32 max_speed, f32& accel_budget);
+
+// --- Heading-integrator primitives (FUN_14020acd0 / FUN_1405c8fb0 + the angle wraps) ---
+
+// Engine angle normalizers, both operating in DEGREES (the engine stores all orientation angles in
+// degrees; cf. the velocity producer). The constants 180/-180/360 are DAT_1408524f8/fc/DAT_1408007f4.
+//   wrap180 (FUN_14020b6d0): normalize to the half-open range (-180, 180] — the bearing-ERROR form.
+//   wrap360 (FUN_14020b710): normalize to [0, 360) — the stored-angle form written back to the entity.
+inline f32 wrap180(f32 deg) {
+    while (deg > 180.0f)   deg -= 360.0f;
+    while (deg <= -180.0f) deg += 360.0f;
+    return deg;
+}
+inline f32 wrap360(f32 deg) {
+    while (deg >= 360.0f) deg -= 360.0f;
+    while (deg < 0.0f)    deg += 360.0f;
+    return deg;
+}
+
+// Local-frame bearing to a target (FUN_14020acd0). Given the target offset already rotated into the
+// entity's LOCAL frame (FUN_1405caaf0 first transforms target_pos − owner_pos by the inverse of the
+// entity orientation), this returns the yaw/pitch bearing of that local direction:
+//   azimuth   = atan2(local.y, local.x)  in degrees, wrapped to [0, 360)   (→ drives heading +0x8c)
+//   elevation = −atan2(local.z, hypot(local.x, local.y))  in degrees       (→ drives climb   +0x88)
+//   roll      = 0 (the engine zeroes index 0)
+// FUN_1405caaf0 then takes wrap180(azimuth) / wrap180(elevation) as the signed yaw/pitch ERRORS it
+// feeds to the integrators. Degenerate axes match the engine: azimuth=0 when local.x==local.y==0;
+// elevation=0 when local.x==local.z==0.
+struct fighter_bearing { f32 roll; f32 elevation; f32 azimuth; };
+fighter_bearing fighter_target_bearing(const vec3& local_target);
+
+// Turn-rate-limited angle step — the deterministic core of the heading integrators (exactly
+// FUN_1405c8fb0, the pitch integrator; FUN_1405c95a0 is the same primitive plus roll coupling).
+// `delta_deg` is the signed bearing error toward the target; `turn_budget` is the remaining per-tick
+// turn allowance (degrees, *param_3). If the budget can't cover the whole error, step by the budget in
+// the error's direction and exhaust it; otherwise step by the full error and consume |error| from the
+// budget. The result is wrapped to [0, 360). `turn_budget` is updated in place. (A zero error leaves
+// both the angle and the budget unchanged.)
+f32 fighter_turn_angle(f32 cur_deg, f32 delta_deg, f32& turn_budget);
 
 } // namespace eaw

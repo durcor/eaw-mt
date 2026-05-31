@@ -454,6 +454,60 @@ static void test_fighter_velocity() {
     }
 }
 
+// Heading-integrator primitives — angle wraps, local-frame bearing (FUN_14020acd0), turn step
+// (FUN_1405c8fb0). All deterministic pure math; goldens hand-derived from the formulas.
+static void test_fighter_angle_wraps() {
+    // wrap180 -> (-180, 180]
+    CHECK(approx(wrap180(0.0f), 0.0f));
+    CHECK(approx(wrap180(180.0f), 180.0f));      // boundary stays
+    CHECK(approx(wrap180(-180.0f), 180.0f));     // -180 folds up to +180
+    CHECK(approx(wrap180(190.0f), -170.0f));
+    CHECK(approx(wrap180(360.0f), 0.0f));
+    CHECK(approx(wrap180(350.0f), -10.0f));      // stored angle -> signed error form
+    // wrap360 -> [0, 360)
+    CHECK(approx(wrap360(0.0f), 0.0f));
+    CHECK(approx(wrap360(360.0f), 0.0f));
+    CHECK(approx(wrap360(370.0f), 10.0f));
+    CHECK(approx(wrap360(-10.0f), 350.0f));
+}
+
+static void test_fighter_target_bearing() {
+    // azimuth = atan2(y,x) deg in [0,360); elevation = -atan2(z, hypot(x,y)) deg; roll = 0.
+    struct G { vec3 local; f32 az; f32 el; };
+    const G gs[] = {
+        { {1, 0, 0},  0.0f,   0.0f },   // straight ahead
+        { {0, 1, 0},  90.0f,  0.0f },   // +y
+        { {1, 1, 0},  45.0f,  0.0f },
+        { {-1, 0, 0}, 180.0f, 0.0f },
+        { {0, -1, 0}, 270.0f, 0.0f },   // -y folds to 270
+        { {1, 0, 1},  0.0f,  -45.0f },  // +z below -> negative elevation
+        { {1, 0, -1}, 0.0f,   45.0f },  // -z above -> positive elevation
+    };
+    for (const auto& g : gs) {
+        fighter_bearing b = fighter_target_bearing(g.local);
+        CHECK(approx(b.azimuth, g.az, 1e-3f));
+        CHECK(approx(b.elevation, g.el, 1e-3f));
+        CHECK(approx(b.roll, 0.0f));
+    }
+    // degenerate axes match the engine guards
+    CHECK(approx(fighter_target_bearing({0, 0, 5}).azimuth, 0.0f));   // x==y==0 -> az 0
+    CHECK(approx(fighter_target_bearing({0, 7, 0}).elevation, 0.0f)); // x==z==0 -> el 0
+}
+
+static void test_fighter_turn_angle() {
+    // budget covers the error -> full step, |error| spent.
+    { f32 b = 100.0f; CHECK(approx(fighter_turn_angle(0.0f, 10.0f, b), 10.0f));  CHECK(approx(b, 90.0f)); }
+    // budget short -> step by budget in the error's direction, budget exhausted.
+    { f32 b = 5.0f;   CHECK(approx(fighter_turn_angle(0.0f, 10.0f, b), 5.0f));   CHECK(approx(b, 0.0f)); }
+    { f32 b = 5.0f;   CHECK(approx(fighter_turn_angle(0.0f, -10.0f, b), 355.0f)); CHECK(approx(b, 0.0f)); } // wrap360
+    // stored angle wraps through 360.
+    { f32 b = 100.0f; CHECK(approx(fighter_turn_angle(350.0f, 20.0f, b), 10.0f)); CHECK(approx(b, 80.0f)); }
+    // stored 350 read as -10 (wrap180), exact-budget boundary uses the full-step branch.
+    { f32 b = 20.0f;  CHECK(approx(fighter_turn_angle(350.0f, 20.0f, b), 10.0f)); CHECK(approx(b, 0.0f)); }
+    // zero error -> no change, budget untouched.
+    { f32 b = 5.0f;   CHECK(approx(fighter_turn_angle(42.0f, 0.0f, b), 42.0f));  CHECK(approx(b, 5.0f)); }
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -483,6 +537,9 @@ int main() {
     test_hermite_spline_eval();
     test_fighter_integrate();
     test_fighter_velocity();
+    test_fighter_angle_wraps();
+    test_fighter_target_bearing();
+    test_fighter_turn_angle();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;
