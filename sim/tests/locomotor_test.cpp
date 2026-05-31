@@ -540,6 +540,34 @@ static void test_fighter_steer_yaw() {
         CHECK(approx(bud, 0.0f)); }
 }
 
+static void test_fighter_hard_turn() {
+    // (A) engage: target dead astern (|ye|=175 > 170), not latched, state ok, gate ok -> snap on.
+    //     pitch forced to +180 (pe>0), yaw zeroed.
+    {   fighter_steer_cmd c = fighter_hard_turn(false, 175.0f, 12.0f, 0x1b, true);
+        CHECK(c.snapped && approx(c.pitch_cmd, 180.0f) && approx(c.yaw_cmd, 0.0f)); }
+    // (A') sign of the pitch override follows the pitch error sign.
+    {   fighter_steer_cmd c = fighter_hard_turn(false, -175.0f, -3.0f, 0x1b, true);
+        CHECK(c.snapped && approx(c.pitch_cmd, -180.0f) && approx(c.yaw_cmd, 0.0f)); }
+    // (B) entry blocked: |ye|=175 but state==0x1c -> no snap, commands pass through raw.
+    {   fighter_steer_cmd c = fighter_hard_turn(false, 175.0f, 12.0f, 0x1c, true);
+        CHECK(!c.snapped && approx(c.pitch_cmd, 12.0f) && approx(c.yaw_cmd, 175.0f)); }
+    // (B') entry blocked: gate_ok false (FUN_140372440 <= 0) -> no snap.
+    {   fighter_steer_cmd c = fighter_hard_turn(false, 175.0f, 12.0f, 0x1b, false);
+        CHECK(!c.snapped && approx(c.yaw_cmd, 175.0f)); }
+    // (C) below the engage gate but above release (|ye|=120, in the hysteresis band): NOT latched
+    //     -> stays off (engage needs >170); latched -> HOLDS.
+    {   fighter_steer_cmd off = fighter_hard_turn(false, 120.0f, 1.0f, 0x1b, true);
+        CHECK(!off.snapped);
+        fighter_steer_cmd hold = fighter_hard_turn(true, 120.0f, 1.0f, 0x1b, true);
+        CHECK(hold.snapped && approx(hold.pitch_cmd, 180.0f)); }
+    // (C') hold bypasses the state/gate gate: latched + |ye|>=90 holds even with state==0x1c, gate off.
+    {   fighter_steer_cmd c = fighter_hard_turn(true, 90.0f, -1.0f, 0x1c, false);
+        CHECK(c.snapped && approx(c.pitch_cmd, -180.0f)); }
+    // (D) release: |ye| drops below 90 -> latch clears even if it was set, commands pass through.
+    {   fighter_steer_cmd c = fighter_hard_turn(true, 89.0f, 5.0f, 0x1b, true);
+        CHECK(!c.snapped && approx(c.pitch_cmd, 5.0f) && approx(c.yaw_cmd, 89.0f)); }
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -573,6 +601,7 @@ int main() {
     test_fighter_target_bearing();
     test_fighter_turn_angle();
     test_fighter_steer_yaw();
+    test_fighter_hard_turn();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

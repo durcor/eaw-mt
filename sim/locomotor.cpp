@@ -463,4 +463,28 @@ fighter_yaw_result fighter_steer_yaw(f32 roll_deg, f32 yaw_deg, f32 yaw_err,
     return out;
 }
 
+// --- Hard-turn snap (FUN_1405caaf0 lines 82-98) ---
+fighter_steer_cmd fighter_hard_turn(bool latched, f32 yaw_err, f32 pitch_err,
+                                    int state, bool gate_ok) {
+    fighter_steer_cmd out{};
+    const f32 ye = std::fabs(yaw_err);                 // |fVar11| — yaw_err is already wrap180'd
+    // entry test shared by the ht_in==0 (line 83→87) and |ye|<90 (line 85→87) paths:
+    const bool entry = (state != 0x1c) && (ye > FIGHTER_HARDTURN_ENGAGE) && gate_ok;  // lines 88-90
+    bool snap;
+    if (ye >= FIGHTER_HARDTURN_RELEASE) {              // line 82: DAT_1408007ec <= |ye|
+        snap = latched ? true : entry;                 // already latched → hold; else entry-check
+    } else {                                            // |ye| < 90 → latch cleared, then entry-check
+        snap = entry;                                   // ye<90 < 170 ⇒ entry always false here
+    }
+    out.snapped = snap;
+    if (snap) {                                         // lines 92-98: override both commands
+        out.pitch_cmd = (pitch_err > 0.0f) ? 180.0f : -180.0f;   // sign(pitch_err)·180 = DAT_1408524f8/fc
+        out.yaw_cmd   = 0.0f;
+    } else {                                            // pass the raw bearing errors through
+        out.pitch_cmd = pitch_err;
+        out.yaw_cmd   = yaw_err;
+    }
+    return out;
+}
+
 } // namespace eaw

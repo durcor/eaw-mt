@@ -368,4 +368,33 @@ struct fighter_yaw_result { f32 roll; f32 yaw; bool yaw_stepped; };
 fighter_yaw_result fighter_steer_yaw(f32 roll_deg, f32 yaw_deg, f32 yaw_err,
                                      f32& yaw_budget, f32 a_rate, f32 b_rate, f32 cap);
 
+// --- Hard-turn snap (FUN_1405caaf0 lines 82-98) — the bank-to-turn override -------------------
+//
+// Before dispatching to the integrators, FUN_1405caaf0 latches a "hard turn" maneuver whenever the
+// target sits nearly dead astern, where bank-to-turn can't resolve a turn direction. While latched it
+// OVERRIDES both heading commands: pitch is forced to full ±180° deflection (loop/split-S the nose
+// around) and yaw is zeroed — the fighter pitches over to bring the target back into its forward arc
+// instead of trying to yaw onto a target behind it. The latch (state+0x1d4) is HYSTERETIC:
+//   engage:  |yaw_err| > 170°  (within 10° of dead astern)  AND state != 0x1c AND gate_ok
+//   hold:    once engaged, stay while |yaw_err| >= 90°
+//   release: |yaw_err| < 90°   (nose has swung the target back inside the forward hemisphere)
+// The two thresholds (DAT_1408007ec = 90° release, DAT_1408a650c = 170° engage) were recovered from
+// the DTSTEER capture (tools/recover_snap_thresholds.py); `gate_ok` is FUN_140372440(template+0x298)
+// > 0 (a positive maneuver-template field, true for every fighter tick in the capture). `state` is
+// the locomotor flight state (state+0x48); state 0x1c is excluded from entry. The 0x1c exclusion,
+// engage gate, and hysteresis only matter on the ht_in==0 / |yaw_err|<90 entry paths; once latched at
+// |yaw_err|>=90 the snap holds unconditionally.
+//
+// Returns the latch state to write back plus the pitch/yaw commands to feed the integrators:
+//   snapped  : whether the snap body ran this tick (== the new latch value)
+//   pitch_cmd: → fighter_turn_angle (the pitch integrator, FUN_1405c8fb0). ±180° when snapped.
+//   yaw_cmd  : → fighter_steer_yaw  (the roll-coupled yaw integrator). 0 when snapped.
+// When NOT snapped the commands pass through the raw bearing errors unchanged (the caller still
+// applies the normal roll-coupling wrap before the yaw integrator — see decomp lines 100-109).
+constexpr f32 FIGHTER_HARDTURN_RELEASE = 90.0f;    // DAT_1408007ec — stay-engaged floor
+constexpr f32 FIGHTER_HARDTURN_ENGAGE  = 170.0f;   // DAT_1408a650c — entry gate (near dead-astern)
+struct fighter_steer_cmd { bool snapped; f32 pitch_cmd; f32 yaw_cmd; };
+fighter_steer_cmd fighter_hard_turn(bool latched, f32 yaw_err, f32 pitch_err,
+                                    int state, bool gate_ok);
+
 } // namespace eaw
