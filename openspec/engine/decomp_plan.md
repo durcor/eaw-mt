@@ -477,6 +477,26 @@ depends on it):
      bug. **Yaw = 88% on the simple model (roll-coupled / hard-turn-snapped, still unlifted).** First
      in-game confirmation of the lifted bearing + turn-step primitives. Remaining caaf0 lift = yaw
      integrator `FUN_1405c95a0` (roll coupling), ±180° hard-turn snap, near-target degenerate branch.
+   - **✅ DTYAW YAW/ROLL INTEGRATOR ORACLE PASS — bank-to-turn channel validated in-game (2026-05-31).**
+     Lifted `FUN_1405c95a0` as `fighter_steer_yaw` (`sim/locomotor.{h,cpp}`): the roll-coupled yaw
+     channel that `FUN_1405caaf0` calls for the heading axis. Algorithm: (1) commanded bank
+     `cy = −clamp(wrap180(yaw_err), ±cap)`; (2) step roll (`entity+0x84`) toward `wrap180(cy−roll0)`
+     by `roll_step = clamp((B/A)·budget, 0, 180)` — **budget is NOT spent on roll**; (3) sign-flip
+     guard: if `new_roll≠0` and `sign(cy)≠sign(new_roll)`, **zero the budget and skip the yaw step**
+     (hold heading until the bank aligns); (4) else step yaw (`entity+0x8c`) with the same turn-step
+     primitive as pitch but on the RAW stored angle (no `wrap180(cur)` first — the lone structural
+     difference from `FUN_1405c8fb0`); (5) `wrap360` both before write-back. **Key simplification:
+     A (`template+0x38c`) and B (`template+0x394`) appear only as the ratio B/A, so the game-speed
+     scale both accessors apply cancels — raw template fields suffice; cap (`template+0x39c`) read
+     raw.** Isolated via a dedicated **DTYAW** inline-trampoline directly on `FUN_1405c95a0` (18-byte
+     relocatable prologue, profile-build only) capturing exact param yaw_err / `*budget` / raw A,B,cap
+     and roll/yaw before & after — so the integrator is unit-tested in isolation, no need to rebuild
+     the yaw error through the caaf0 pipeline. Oracle 6 (`check_yaw`) reproduces `(roll1, yaw1)`:
+     **ROLL = 4006/4006 (100%), YAW = 4006/4006 (100%)** over a fighter battle, with real coverage —
+     961 ticks of nonzero yaw error, 917 ticks where roll stepped, 1331 ticks where budget was spent.
+     Host goldens pass via `just sim-test`. **`FUN_1405caaf0` heading channels (pitch + yaw/roll) now
+     fully lifted and dual-validated.** Remaining caaf0 tail: ±180° hard-turn snap (`state+0x1d4`) and
+     the near-target degenerate branch.
 4. **Hardpoint fire-control.** `FUN_1403a76b0` (per-ship fire-budget distribution over the hardpoint
    vector at `entity+0x2d0`, weighted by `hardpoint+0x58` via `540070`), `387010`, `387400`
    (opportunity-target acquisition), capped search `385190` (Fix B2), target set `382510` / release
