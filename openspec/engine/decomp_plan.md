@@ -1,6 +1,7 @@
 # Engine Source Decompilation Plan
 
-**Status:** Phases 0–2 EXECUTED (2026-05-30); Phase 3 SCOPED, not yet lifting. Companion to
+**Status:** Phases 0–2 EXECUTED (2026-05-30); Phase 3 **LIFTING STARTED** — unit 1 (tick clock)
+DONE (2026-05-30, `sim/tick_clock.{h,cpp}`, host-validated). Companion to
 `threading_model.md` → *Engine-Source Sim-Parallel Rewrite — Boundary Scope*, which defines
 *what the rewrite needs*; this defines *how we'd obtain the source it needs*. Phase 0 (RTTI gate)
 passed; Phase 1 (infra: RTTI applied, batch decompiler, call-graph attribution, diff harness) and
@@ -224,9 +225,32 @@ FUN_1403639d0                       sim-frame update   (advances tick DAT_140b0a
 **Lift order** (dependency order; each unit validated against the DIFFTRACE oracle before anything
 depends on it):
 
-1. **Tick clock / scheduler & determinism inputs.** `FUN_14027c360`, `DAT_140b0a320` (tick),
-   `DAT_140b0a340` (rate), FF gate `0x9cf314`, game-speed-mode accessor (`DAT_140b15418` vfunc
-   `0xe0` → 1/2). Smallest, no deps; establishes the tick.
+1. **Tick clock / scheduler & determinism inputs.** ✅ **LIFTED 2026-05-30** →
+   `sim/tick_clock.{h,cpp}` (+ `sim/tests/tick_clock_test.cpp`, `just sim-test`, all green).
+   Lifted the global frame-clock singleton at `&DAT_140b0a320` and its four driver functions, all
+   called once/loop-iteration from `FUN_14005d990` (WinMain):
+   - `FUN_14027c360` → `tick_advance` — `++DAT_140b0a320` (the authoritative sim tick) + a
+     ticks/sec meter. Struct: tick `+0x00`, ticked-flag `+0x14`, sim_fps `+0x1c`, meter anchors
+     `+0x38/+0x3c`.
+   - `FUN_14027c2f0` → `render_frame_advance` — a **separate** render-frame counter at `+0x04`
+     (+ its own fps meter `+0x40/+0x48/+0x4c`); sim-irrelevant (present path only).
+   - `FUN_14027c330` → `realtime_accumulate` — wall-clock seconds accumulator at `+0xb09c`.
+   - `FUN_14027c5f0` → `should_run_sim_tick` — **the per-frame scheduler**. Key result: it is a
+     **fixed-timestep scheduler with an MP lockstep frame-synchronizer**. SP/Replay (`DAT_140b153f8`
+     ∈ {0,3}): advance one tick every `1000/cap` ms where `cap = fps_cap (+0x18)`, clamped to 120
+     under fast-forward (`+0xb0b5`) or 30 under slow (`+0x37`); stamps `last_tick_time (+0x50)`;
+     also honors a hard pause (`+0x34`) and a pause-edge / single-step debug facility
+     (`+0xb0b0..b3`). MP (`{1,2,4}`): the `FrameSynchronizer` — refuse to advance past `MaxAhead`
+     (`+0x08`) or before every peer's commands for the target frame arrive (the "FrameSynchronizer
+     waiting for player…" path; per-player tables at `+0x54` / ptr `+0xc68`, player list
+     `DAT_140a16fd0`, command mgr `DAT_140b15690`).
+   - **Determinism note:** the MP lockstep gate IS the hardest Phase-4 constraint (lockstep MP /
+     replay). It is encapsulated behind `IFrameSynchronizer` and deferred to Phase 4 (the per-player
+     table walk); the SP fixed-timestep path is fully lifted and host-validated. The FF gate
+     `DAT_1409cf314` is the WinMain *idle* gate (skips `WaitMessage`), not a field of this struct —
+     it lets the loop spin so the scheduler's cadence governs tick rate.
+   - The tick clock stays **serial** in the rewrite (parallelism is *within* a tick); lifting it
+     first pins the tick every later unit is diffed against.
 2. **Entity-update spine.** `FUN_1403639d0` → `FUN_1402be640` → `FUN_1403a6b80` (minus the
    per-behavior bodies): the `ReferenceListClass<GameObject>` traversal (`node+0x8` next, `node+0x18`
    ref, `entity=*ref-0x18`), the behavior-dispatch loop (`entity+0x278` array / `+0x290` count,
@@ -374,9 +398,11 @@ yields **~3–4× faster fast-forward** (Amdahl, s≈0.15, N=4→2.9×, N=8→4�
 
 Phases 0–2 done; Phase 3 scoped **and its gate task (behavior census) complete** — the in-slice set
 is the 13 sim behaviors + locomotor + hardpoint fire-control + spine tabulated above (~180–280 fns).
-The next concrete action is **begin the lift in dependency order**: (1) tick clock/scheduler →
-(2) entity-update spine (`3639d0`/`2be640`/`3a6b80`) → (3) locomotor integrators → (4) hardpoint
-fire-control → the IN behaviors, diffing each unit against the DIFFTRACE oracle as it lands. Two
+**Unit 1 (tick clock) is LIFTED** (`sim/tick_clock.{h,cpp}`, host-validated via `just sim-test`).
+The next concrete action is **unit 2 — the entity-update spine** (`FUN_1403639d0` →
+`FUN_1402be640` [GOM+0xe8 iterator] → `FUN_1403a6b80` minus the per-behavior bodies): lift the
+`ReferenceListClass<GameObject>` traversal + the behavior-dispatch loop + child recursion (the loop
+the rewrite parallelizes over entities). Continue diffing each unit against the DIFFTRACE oracle. Two
 front-loads: (a) the determinism pins (Phase 4) — the `a76b0` order-sensitive float sum + RNG draws —
 since they are *rewrite* risk surfaced early; (b) classify each IN behavior's writes as Phase-A
 (own-entity, parallel) vs Phase-B (cross-entity, deferred-command) as it is lifted, since that split
