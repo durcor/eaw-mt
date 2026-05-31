@@ -397,4 +397,22 @@ struct fighter_steer_cmd { bool snapped; f32 pitch_cmd; f32 yaw_cmd; };
 fighter_steer_cmd fighter_hard_turn(bool latched, f32 yaw_err, f32 pitch_err,
                                     int state, bool gate_ok);
 
+// --- Roll-coupling yaw wrap (FUN_1405caaf0 lines 100-109, LAB_1405cad66) -----------------------
+//
+// The LAST step before the yaw integrator: caaf0 adds the roll-induced yaw to the commanded yaw and,
+// if the COMBINED magnitude would exceed 180°, wraps yaw_cmd toward zero by 360° so the roll-coupled
+// integrator (fighter_steer_yaw) takes the short way around the bank instead of unwinding the long way.
+//   term = a_rate·(wrap180(roll_deg) / b_rate) + yaw_cmd        // |term| compared to 180 (DAT_1408524f8)
+//   if |term| > 180:  yaw_cmd -= sign(yaw_cmd)·360               // sign(0)=+1 (DAT_1407ffaf8/14080080c, 360)
+// a_rate = template+0x38c (FUN_140372560), b_rate = template+0x394 (FUN_1403724d0) — the SAME pair
+// fighter_steer_yaw uses; both accessors apply the identical game-speed scale, so it CANCELS in a/b and
+// the RAW template fields suffice. roll_deg is the owner's stored roll (entity+0x84), wrapped here.
+// yaw_cmd is the post-hard-turn command (wrap180 bearing error, or 0 when snapped) so |yaw_cmd| <= 180;
+// the wrap therefore only ever fires when the roll term pushes a large same-sign yaw_cmd past 180°.
+// ✅ ORACLE: across 8971 real fighter ticks (DTYAW capture) the wrap NEVER fires — every captured
+// integrator input |ye| <= 180 — and this lifted condition agrees 8971/8971 (max |term| = 164.2°, so the
+// branch is reachable to within ~16°, a live edge-case guard, not dead code). Positive (firing) path is
+// covered host-side. a_rate=2, b_rate=3 for the captured fighter (template ratio is difficulty-invariant).
+f32 fighter_roll_comp_yaw(f32 yaw_cmd, f32 roll_deg, f32 a_rate, f32 b_rate);
+
 } // namespace eaw

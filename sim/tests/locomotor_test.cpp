@@ -568,6 +568,27 @@ static void test_fighter_hard_turn() {
         CHECK(!c.snapped && approx(c.pitch_cmd, 5.0f) && approx(c.yaw_cmd, 89.0f)); }
 }
 
+static void test_fighter_roll_comp_yaw() {
+    // a=2, b=3 (the captured fighter); term = (2/3)·wrap180(roll) + yaw_cmd, wrap when |term|>180.
+    // (A) no roll, moderate yaw: term=yaw_cmd, |term|<=180 -> passes through untouched.
+    CHECK(approx(fighter_roll_comp_yaw(120.0f, 0.0f, 2.0f, 3.0f), 120.0f));
+    // (B) positive yaw + same-sign roll pushes the combined past 180 -> wrap DOWN by 360.
+    //     yaw=170, roll=90 -> (2/3)·90=60, term=230>180 -> 170-360 = -190.
+    CHECK(approx(fighter_roll_comp_yaw(170.0f, 90.0f, 2.0f, 3.0f), -190.0f));
+    // (B') negative yaw + same-sign roll past -180 -> wrap UP by 360 (sign(yaw_cmd<0) -> -1, yaw - (-360)).
+    //     yaw=-170, roll=-90 -> (2/3)·(-90)=-60, term=-230 -> -170+360 = 190.
+    CHECK(approx(fighter_roll_comp_yaw(-170.0f, -90.0f, 2.0f, 3.0f), 190.0f));
+    // (C) opposite signs cancel below threshold -> no wrap.  yaw=170, roll=-90 -> term=110.
+    CHECK(approx(fighter_roll_comp_yaw(170.0f, -90.0f, 2.0f, 3.0f), 170.0f));
+    // (D) raw roll is wrapped to (-180,180] first: roll=300 -> -60 -> (2/3)·-60=-40; yaw=-150 -> term=-190
+    //     -> wraps UP: -150+360 = 210.
+    CHECK(approx(fighter_roll_comp_yaw(-150.0f, 300.0f, 2.0f, 3.0f), 210.0f));
+    // (E) boundary: |term| exactly 180 does NOT wrap (strict >).  yaw=120, roll=90 -> 60+120=180.
+    CHECK(approx(fighter_roll_comp_yaw(120.0f, 90.0f, 2.0f, 3.0f), 120.0f));
+    // (F) sign(0)=+1: yaw=0 can't reach |term|>180 here (roll term <=120), so it never wraps -> 0.
+    CHECK(approx(fighter_roll_comp_yaw(0.0f, 179.0f, 2.0f, 3.0f), 0.0f));
+}
+
 int main() {
     std::printf("== locomotor host validation ==\n");
     test_reschedule_prestep();
@@ -602,6 +623,7 @@ int main() {
     test_fighter_turn_angle();
     test_fighter_steer_yaw();
     test_fighter_hard_turn();
+    test_fighter_roll_comp_yaw();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll locomotor checks passed.\n");
     return 0;

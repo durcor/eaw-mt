@@ -487,4 +487,14 @@ fighter_steer_cmd fighter_hard_turn(bool latched, f32 yaw_err, f32 pitch_err,
     return out;
 }
 
+f32 fighter_roll_comp_yaw(f32 yaw_cmd, f32 roll_deg, f32 a_rate, f32 b_rate) {
+    const f32 roll = wrap180(roll_deg);                    // fVar12 = FUN_14020b6d0(entity+0x84)
+    const f32 term = a_rate * (roll / b_rate) + yaw_cmd;   // fVar9·(fVar12/fVar8) + fVar11
+    if (std::fabs(term) > 180.0f) {                        // DAT_1408524f8 < ABS(...)
+        const f32 s = (yaw_cmd < 0.0f) ? -1.0f : 1.0f;     // sign(yaw_cmd): +1 if >=0 (DAT_1407ffaf8/14080080c)
+        yaw_cmd -= s * 360.0f;                             // fVar11 - s·DAT_1408007f4
+    }
+    return yaw_cmd;
+}
+
 } // namespace eaw
