@@ -3720,6 +3720,96 @@ static BOOL install_b3a76b0_hook(void)
 }
 
 /* =========================================================================
+ * DTRNG — global sim RNG (FUN_1401ffb40) I/O capture.
+ *
+ * FUN_1401ffb40 is the bounded-int draw on the ONE shared LCG state word
+ * (DAT_140a13e24):  s' = s*0x41c64e6d + 0xbdf,  result = (s'>>10)&mask + lo,
+ * rejection-sampled while > range. 202 call sites pull from it — the
+ * opportunity-target scan start index in FUN_140387400, Starship locomotor
+ * jitter, entity-spine perturbations — so it is THE determinism primitive for
+ * the whole Phase-3/4 replay. We wrap it directly and capture each draw's
+ * complete I/O:
+ *   s_in  = *state before the call,
+ *   a, b  = the range args (edx, r8d),
+ *   ret   = the returned int,
+ *   s_out = *state after the call (encodes the rejection draw COUNT).
+ * Offline (tools/analyze_rng_oracle.py): SimRng(s_in).range_i(a,b) must == ret
+ * AND leave state == s_out — validating constants, masking AND draw count.
+ *
+ * Hot path (thousands/tick) -> sample 1-in-DTRNG_SAMPLE and cap total lines.
+ * The trampoline ALWAYS runs exactly once (no extra draws -> NO determinism
+ * perturbation); only logging is sampled, and each tuple is self-contained.
+ *
+ * arg count = 3 (decomp/1ffb40.c): param_1=rcx uint*, param_2=edx int,
+ * param_3=r8d int; returns eax int.
+ * Prologue (objdump): 41 3b d0 / 45 8b c8 / 44 0f 4e ca / 41 0f 4e d0
+ * = 3+3+4+4 = 14 bytes, all register-only (relocatable), boundary == FF25 width.
+ * Profile-build only; runtime-gated by EAW_DIFFTRACE=1.
+ * ========================================================================= */
+#define RNG_FFB40_RVA    0x1ffb40ULL
+#define DTRNG_SAMPLE     64u       /* log 1 of every N draws (power of two) */
+#define DTRNG_MAXLINES   20000u    /* hard cap on emitted lines */
+static const BYTE rng_ffb40_prologue[14] = {
+    0x41, 0x3b, 0xd0,              /* cmp    edx, r8d */
+    0x45, 0x8b, 0xc8,              /* mov    r9d, r8d */
+    0x44, 0x0f, 0x4e, 0xca,        /* cmovle r9d, edx */
+    0x41, 0x0f, 0x4e, 0xd0,        /* cmovle edx, r8d */
+};
+typedef int (*Ffb40Fn)(uint32_t *state, int a, int b);
+static Ffb40Fn  g_ffb40_trampoline = NULL;
+static uint32_t g_rng_callctr = 0;
+static uint32_t g_rng_lines   = 0;
+
+static int b1ffb40_hook(uint32_t *state, int a, int b)
+{
+    if (!(g_dt_frame_ctr && dt_on())) return g_ffb40_trampoline(state, a, b);
+
+    uint32_t idx = g_rng_callctr++;
+    int sample = (state != NULL) && ((idx & (DTRNG_SAMPLE - 1u)) == 0u) &&
+                 (g_rng_lines < DTRNG_MAXLINES);
+    if (!sample) return g_ffb40_trampoline(state, a, b);
+
+    uint32_t s_in = *state;
+    int ret = g_ffb40_trampoline(state, a, b);
+    uint32_t s_out = *state;
+
+    char s[160];
+    snprintf(s, sizeof s,
+        "DTRNG\ttick=%u\ts_in=%08x\ta=%d\tb=%d\tret=%d\ts_out=%08x\n",
+        *g_dt_frame_ctr, s_in, a, b, ret, s_out);
+    log_write(s);
+    g_rng_lines++;
+    return ret;
+}
+
+static BOOL install_b1ffb40_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + RNG_FFB40_RVA;
+    if (memcmp(fn, rng_ffb40_prologue, 14) != 0) {
+        log_write("[eaw-mt] WARN: FUN_1401ffb40 prologue mismatch — DTRNG not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTRNG trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, rng_ffb40_prologue, 14);
+    write_abs_jmp(tramp + 14, (uint64_t)(fn + 14));
+    g_ffb40_trampoline = (Ffb40Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b1ffb40_hook);
+    VirtualProtect(fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 14);
+    log_write("[eaw-mt] DTRNG: FUN_1401ffb40 global-RNG hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -7195,6 +7285,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b5caaf0_hook();   /* DTSTEER: Fighter steering controller I/O (EAW_DIFFTRACE=1) */
         install_b5c95a0_hook();   /* DTYAW: Fighter yaw/roll bank-to-turn integrator I/O (EAW_DIFFTRACE=1) */
         install_b3a76b0_hook();   /* DTFIRE: hardpoint fire-budget distribution I/O (EAW_DIFFTRACE=1) */
+        install_b1ffb40_hook();   /* DTRNG: global sim RNG draw I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
 #endif
 
