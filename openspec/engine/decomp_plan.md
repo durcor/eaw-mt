@@ -805,6 +805,30 @@ real behavior rather than synthetic host cases.
   in-engine hash list is faithfully modelled as an insertion-ordered vector. Phase-A parallel-safe
   (own `+0x1a0` sub-object) modulo that one buffered emission. `command_sink.h` gains `0x2d`.
 
+**✅ DTDMG IN-GAME ORACLE — DECAY + RATE PASS; emit/multi-node DORMANT (2026-06-01).** Added the
+`DTDMG` capture to the hook DLL (`hooks/winmm_proxy.c`, profile build, `EAW_DIFFTRACE=1`): wraps
+`FUN_14058bd80`, snapshots the `+0x1a0` effect list `{key,duration}` + `count`/`accum`/`interval`
+**before** the trampoline and re-walks survivors **after** (expired nodes are freed, survivors
+remain), so per-node `decay = dur_before − dur_after` is recovered offline without calling the
+world-coupled rate fns (`3727a0` reads a player-diplomacy table + buff stack). Trampoline runs
+exactly once → no determinism perturbation; emit events bypass the latch so any empty-transition is
+logged. **Two full TR space battles (~15k sim ticks), 4 clean samples — all confirm the running
+math:**
+  - **Per-node decay** = a single per-entity scalar, subtracted from `+0x14`, and it *varies per
+    entity* (`0.35`, `0.50`, `0.60`, `0.60` — the faction/buff/game-speed composition modelled
+    behind `DamageEnv`); survivor kept iff new duration `> 0` (`emit=0`).
+  - **Rate readout** `rate = hz·accum/interval` with **`hz` = `(float)DAT_140b0a340` = 30 = interval**
+    → `rate == accum` exactly on all 4 (residual `0.000000`), across a 10× magnitude range
+    (`0.63 … 6.28`). (Confirms `DAT_140b0a340` is an **int32** cast to float, value 30.)
+  - **NOT observed: the `0x2d` empty-transition (`emit=1`) and any multi-node tick.** Effect lists
+    were uniformly **depth-1**; a caught effect's next behavior-tick never reappears → effects are
+    **refreshed under continuous fire** and only drain to empty when a unit *stops* being hit, which
+    coincides with unit death / battle-end (sim no longer ticking the behavior). Same **DTFIRE-dormant
+    pattern**: the path that runs is validated; the rarely-exercised edge isn't reachable in this
+    content. The `0x2d` emit is a 2-line `count→0` consequence (`58bd80` lines 63–82), covered by host
+    cases `test_exactly_zero_removed` + `test_empty_transition_emits_once`; the `DTDMG` oracle stays
+    **armed + committed** to confirm it opportunistically in any future capture that exercises it.
+
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
 2. ~~Game service / loop spine — `FUN_14028d400` (gsvc), `FUN_1403a76b0`.~~ *(`a76b0` is hardpoints,

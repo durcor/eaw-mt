@@ -3810,6 +3810,201 @@ static BOOL install_b1ffb40_hook(void)
 }
 
 /* =========================================================================
+ * DTDMG — DamageTracking decay/expiry (FUN_14058bd80) I/O capture.
+ *
+ * In-game oracle for the Phase-3 IN sim behavior #1 lift (sim/damage_tracking.cpp).
+ * DamageTrackingBehaviorClass::vfunc_6 is a TIMED-EFFECT-LIST DECAY TICKER over the
+ * entity's own damage/status effects (entity+0x1a0 -> DamageEffectList sub-object).
+ * Each tick it computes one shared decay scalar
+ *   decay = (FUN_1403727a0 + FUN_1403725f0) * _DAT_140b168fc
+ * walks the intrusive list decrementing each node's +0x14 duration, removes nodes
+ * whose new duration is NOT > 0 (exactly-0 removed), and — edge-triggered on the tick
+ * the LAST effect expires (count@+0x20 hits 0) — emits parameterless signal 0x2d on
+ * entity+0x38. Tail: rate@+0x0c = (DAT_140b0a340 * accum@+0x08) / interval(behavior+0x34),
+ * accum := 0. (decomp/58bd80.c.)
+ *
+ * The lifted core takes the resolved `decay` scalar (DamageEnv) and a CommandSink; this
+ * oracle confirms the in-game reading of: (a) every surviving node decays by a SINGLE
+ * shared scalar — recoverable offline as decay = dur_before - dur_after, equal across all
+ * survivors; (b) removed nodes are exactly those with dur_before - decay <= 0; (c) the
+ * count→0 transition (the proxy for the 0x2d emit) is edge-triggered; (d) the rate readout
+ * = hz*accum/interval with accum reset. We snapshot the list BEFORE the trampoline (keys +
+ * durations, insertion order) and re-walk survivors AFTER (freed nodes are gone; survivors
+ * remain), so the per-node before/after deltas yield `decay` with no need to call the
+ * world-coupled rate fns ourselves (3727a0 reads a player-diplomacy table + buff stack).
+ *
+ * The trampoline runs exactly once (no extra list mutation -> no determinism perturbation);
+ * only logging is gated + latched onto one active entity at a time.
+ *
+ * arg count = 2 (decomp/58bd80.c): param_1=rcx behavior(this), param_2=rdx entity. Returns
+ * undefined8 (eax 0x650000) — preserved through the wrapper.
+ * Prologue (objdump @14058bd80): 40 53 / 55 / 57 / 41 54 / 41 56 / 48 83 ec 40 /
+ * 0f 29 74 24 30 = 2+1+1+2+2+4+5 = 17 bytes (a 14-byte FF25 patch lands mid-movaps, so
+ * copy 17; all push/sub/movaps reg — none RIP-relative). Own latch, independent of the
+ * other DT hooks. Profile-build only; runtime-gated by EAW_DIFFTRACE=1.
+ * ========================================================================= */
+#define DMG_58BD80_RVA     0x58bd80ULL
+#define DTDMG_MAXEFF       64
+#define DTDMG_STALE_TICKS  240u
+static const BYTE dmg_58bd80_prologue[17] = {
+    0x40, 0x53,                    /* push rbx                 */
+    0x55,                          /* push rbp                 */
+    0x57,                          /* push rdi                 */
+    0x41, 0x54,                    /* push r12                 */
+    0x41, 0x56,                    /* push r14                 */
+    0x48, 0x83, 0xec, 0x40,        /* sub rsp, 0x40            */
+    0x0f, 0x29, 0x74, 0x24, 0x30,  /* movaps [rsp+0x30], xmm6  */
+};
+typedef int64_t (*Dmg58bd80Fn)(int64_t behavior, int64_t entity);
+static Dmg58bd80Fn g_dmg_trampoline = NULL;
+static int64_t  g_dmg_ent         = 0;
+static uint32_t g_dmg_lasttick    = 0xFFFFFFFFu;
+static uint32_t g_dmg_seentick    = 0;
+static uint32_t g_dmg_surv_active = 0;          /* entity-ticks with >=1 active effect      */
+static uint32_t g_dmg_surv_emit   = 0;          /* entity-ticks where list emptied (0x2d emit) */
+static uint32_t g_dmg_surv_last   = 0xFFFFFFFFu;
+
+static int64_t b58bd80_hook(int64_t behavior, int64_t entity)
+{
+    /* self-contained lazy init (don't depend on the a76b0 hook firing first this tick) */
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(entity && g_dt_frame_ctr && dt_on()))
+        return g_dmg_trampoline(behavior, entity);
+
+    int64_t list = *(int64_t *)(entity + 0x1a0);
+    if (!list) return g_dmg_trampoline(behavior, entity);
+
+    int64_t count_before = *(int64_t *)(list + 0x20);
+    if (count_before <= 0 || count_before > DTDMG_MAXEFF)   /* no active effects → skip */
+        return g_dmg_trampoline(behavior, entity);
+
+    uint32_t tick = *g_dt_frame_ctr;
+    g_dmg_surv_active++;
+
+    /* snapshot keys + durations BEFORE decay (intrusive list, insertion order).
+     * sentinel = *(list+0x18); first node = *(sentinel); next = *(node); stop at sentinel. */
+    static uint32_t key0[DTDMG_MAXEFF];
+    static float    dur0[DTDMG_MAXEFF];
+    int     n0 = 0;
+    int64_t sentinel = *(int64_t *)(list + 0x18);
+    if (sentinel) {
+        for (int64_t node = *(int64_t *)sentinel;
+             node && node != sentinel && n0 < DTDMG_MAXEFF; node = *(int64_t *)node) {
+            key0[n0] = *(uint32_t *)(node + 0x10);
+            dur0[n0] = *(float *)(node + 0x14);
+            n0++;
+        }
+    }
+    float   accum_before = *(float *)(list + 8);
+    int32_t interval     = *(int32_t *)(behavior + 0x34);
+
+    int64_t r = g_dmg_trampoline(behavior, entity);
+
+    int64_t count_after = *(int64_t *)(list + 0x20);
+    float   rate_after  = *(float *)(list + 0xc);
+    int     emitted     = (count_before > 0 && count_after == 0) ? 1 : 0;
+    if (emitted) g_dmg_surv_emit++;
+
+    /* re-walk survivors AFTER (expired nodes were unlinked + freed; survivors remain) */
+    static uint32_t key1[DTDMG_MAXEFF];
+    static float    dur1[DTDMG_MAXEFF];
+    int n1 = 0;
+    if (sentinel) {
+        for (int64_t node = *(int64_t *)sentinel;
+             node && node != sentinel && n1 < DTDMG_MAXEFF; node = *(int64_t *)node) {
+            key1[n1] = *(uint32_t *)(node + 0x10);
+            dur1[n1] = *(float *)(node + 0x14);
+            n1++;
+        }
+    }
+
+    /* periodic survey flush — settles "is DamageTracking even exercised in this content?" */
+    if (tick != g_dmg_surv_last && (tick & 0x1ffu) == 0) {       /* once per 512 ticks */
+        g_dmg_surv_last = tick;
+        char sv[200];
+        snprintf(sv, sizeof sv,
+            "DTDMGSURVEY\ttick=%u\tactive_entticks=%u\temit_entticks=%u\n",
+            tick, g_dmg_surv_active, g_dmg_surv_emit);
+        log_write(sv);
+    }
+
+    /* latch one active entity for ROUTINE per-tick sampling; release after STALE ticks. */
+    if (!g_dmg_ent) {
+        g_dmg_ent = entity;
+    } else if (entity != g_dmg_ent &&
+               (uint32_t)(tick - g_dmg_seentick) > DTDMG_STALE_TICKS) {
+        g_dmg_ent = entity;
+    }
+    if (entity == g_dmg_ent) g_dmg_seentick = tick;
+
+    /* Log detail when EITHER: (a) routine sample — the latched entity on a fresh tick, OR
+     * (b) emitted — an empty-transition (the rare 0x2d CommandSink event) fired on ANY entity.
+     * (b) bypasses the latch so we never miss the seam event we're hunting; an emitted entity
+     * goes empty (count_after==0) so its next call early-returns at count_before<=0 → no dup. */
+    int routine = (entity == g_dmg_ent && tick != g_dmg_lasttick);
+    if (!routine && !emitted) return r;
+    if (routine) g_dmg_lasttick = tick;
+
+    /* tick rate DAT_140b0a340 (RVA 0xb0a340) — the rate-readout numerator hz. The decompile reads
+     * it as (float)DAT_140b0a340, i.e. an INT32 cast to float (the value is 30), so read int32 then
+     * cast — reading the raw bytes as a float would print ~0 (0x1e's bit pattern). Confirmed = 30 by
+     * the 3 captured samples where rate==accum exactly with interval==30 (rate=hz*accum/iv). */
+    float tick_hz = g_dt_imgbase ? (float)*(int32_t *)(g_dt_imgbase + 0xb0a340) : 0.0f;
+
+    char s[256];
+    snprintf(s, sizeof s,
+        "DTDMG\ttick=%u\tent=%llx\tnb=%d\tna=%d\taccum=%.6f\trate=%.6f\tiv=%d\thz=%.6f\temit=%d\n",
+        tick, (unsigned long long)entity, (int)count_before, (int)count_after,
+        accum_before, rate_after, interval, tick_hz, emitted);
+    log_write(s);
+
+    for (int i = 0; i < n0; i++) {           /* pre-decay durations (recover decay offline) */
+        char e[160];
+        snprintf(e, sizeof e, "DTDMGEFF\ttick=%u\tph=pre\tidx=%d\tkey=%08x\tdur=%.6f\n",
+                 tick, i, key0[i], dur0[i]);
+        log_write(e);
+    }
+    for (int i = 0; i < n1; i++) {           /* post-decay survivor durations */
+        char e[160];
+        snprintf(e, sizeof e, "DTDMGEFF\ttick=%u\tph=post\tidx=%d\tkey=%08x\tdur=%.6f\n",
+                 tick, i, key1[i], dur1[i]);
+        log_write(e);
+    }
+    return r;
+}
+
+static BOOL install_b58bd80_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + DMG_58BD80_RVA;
+    if (memcmp(fn, dmg_58bd80_prologue, 17) != 0) {
+        log_write("[eaw-mt] WARN: FUN_14058bd80 prologue mismatch — DTDMG not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTDMG trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, dmg_58bd80_prologue, 17);
+    write_abs_jmp(tramp + 17, (uint64_t)(fn + 17));
+    g_dmg_trampoline = (Dmg58bd80Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b58bd80_hook);
+    VirtualProtect(fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 14);
+    log_write("[eaw-mt] DTDMG: FUN_14058bd80 DamageTracking decay hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -7286,6 +7481,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b5c95a0_hook();   /* DTYAW: Fighter yaw/roll bank-to-turn integrator I/O (EAW_DIFFTRACE=1) */
         install_b3a76b0_hook();   /* DTFIRE: hardpoint fire-budget distribution I/O (EAW_DIFFTRACE=1) */
         install_b1ffb40_hook();   /* DTRNG: global sim RNG draw I/O (EAW_DIFFTRACE=1) */
+        install_b58bd80_hook();   /* DTDMG: DamageTracking decay/expiry I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
 #endif
 
