@@ -617,8 +617,16 @@ depends on it):
 | locomotor | 12× `vfunc_6` + common + state-machine helpers | ~40–60 |
 | hardpoint fire-control | `a76b0`,`387010`,`387400`,`3825b0`,`385cf0`,`385190`,`382510`,`3846c0`,`387f50`,`29f810` + callees | ~30 |
 | sim behaviors (per-unit `vfunc_6`) | 13 in-slice classes (census below) + helpers | ~80–140 |
+| **global sim RNG** | `1ffb40`,`1ffbb0`,`1ffdb0` (LCG state `DAT_140a13e24`) — ✅ **LIFTED + in-game oracle PASS 2026-05-31** | ~3 |
 | command/event queue | `OutgoingEventQueue` + event types | ~10 |
 | **Total** | | **~180–280 fns** |
+
+> **✅ Global sim RNG LIFTED 2026-05-31** (`sim/sim_rng.{h,cpp}` = `SimRng`). LCG `s'=s·0x41c64e6d+0xbdf`,
+> output `(s>>10)&0x7fff`; `range_i`/`range_f`/`percent` over the shared state `DAT_140a13e24` (**202
+> callers** = the Phase-3/4 lockstep/replay primitive). The draw COUNT per call (rejection loops) is
+> determinism-relevant. **DTRNG in-game oracle: 20000/20000 ret AND post-draw state bit-exact**
+> (`tools/analyze_rng_oracle.py`). `387400`'s opportunity-scan seeds its start index here — this is the
+> foundation slice of the `387400` lift. Commit 580cd77.
 
 **✅ Behavior set RESOLVED 2026-05-30 (runtime `BEHENUM` census + decompile classification).** A
 representative space unit carries **~14 behaviors** (`entity+0x278` array, `+0x290` count), each with
