@@ -97,4 +97,35 @@ void hardpoint_fire_budget(ShipFireControl& ship, HardpointEnv& env, u32 tick) {
             service_hardpoint(hp, env, tick);
 }
 
+// FUN_140387400 — opportunity-target scan core (lines 244–288). See hardpoint.h for the full
+// semantics + the player-table layout. This is the determinism-critical, RNG-consuming heart of the
+// acquisition function; the surrounding guard cascade and command emission are env-modeled.
+void* scan_opportunity_target(SimRng& rng, OppScanEnv& env) {
+    const int  n        = env.player_count();      // iVar4 = (end - begin) >> 3
+    const int  self_id  = env.self_skip_id();      // iVar8 = self_player[+0x4c]
+    const bool vis_mode = env.visibility_mode();   // cVar6 = FUN_14039aa60(context), evaluated ONCE
+
+    // The start index is drawn UNCONDITIONALLY (binary line 250, before the `0 < iVar4` loop guard),
+    // so the RNG draw count is preserved even for degenerate player counts. range_i(0,0) (n==1) is a
+    // no-draw per the LCG contract; range_i(0,-1) (n==0) still draws — both matched by SimRng.
+    int idx = rng.range_i(0, n - 1);               // iVar9
+
+    void* result = nullptr;                        // lVar13/lVar15 running result (initially 0)
+    for (int count = 0; n > 0 && count < n; ++count) {
+        if (idx == self_id) {                      // skip the owner's own player slot
+            if (++idx >= n) idx = 0;
+            continue;                              // -> iVar16++ (advance, no candidate eval)
+        }
+        void* cand = env.player_at(idx);           // FUN_140294bc0(&DAT_140a16fd0, iVar9)
+        if (!cand || (vis_mode && env.candidate_blocked(idx))) {
+            continue;                              // STALL: null/fog-blocked -> count++ WITHOUT advancing idx
+        }
+        const CandidateEval e = env.eval_candidate(idx);
+        if (e.target) result = e.target;           // commit found unit (covers accept AND the score-leak)
+        if (e.accept) break;                       // first valid target wins
+        if (++idx >= n) idx = 0;                   // reject (incl. score-leak): advance
+    }
+    return result;
+}
+
 } // namespace eaw

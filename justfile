@@ -41,7 +41,7 @@ sim-test:
     sim/tests/locomotor_test.cpp sim/locomotor.cpp -o /tmp/eaw_locomotor_test
   /tmp/eaw_locomotor_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
-    sim/tests/hardpoint_test.cpp sim/hardpoint.cpp -o /tmp/eaw_hardpoint_test
+    sim/tests/hardpoint_test.cpp sim/hardpoint.cpp sim/sim_rng.cpp -o /tmp/eaw_hardpoint_test
   /tmp/eaw_hardpoint_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/sim_rng_test.cpp sim/sim_rng.cpp -o /tmp/eaw_sim_rng_test

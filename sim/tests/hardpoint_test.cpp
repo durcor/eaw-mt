@@ -202,6 +202,159 @@ static void test_service_dispatch() {
     CHECK(ship2.hardpoints[0].last_serviced_tick == 3);    // unchanged
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Opportunity-target scan (FUN_140387400 core) tests.
+
+static void* tgt(int i) { return reinterpret_cast<void*>(static_cast<uintptr_t>(i) + 1); }
+
+// Deterministic player-table oracle. Each index carries: present(slot non-null), blocked(fog),
+// and an eval result (target + accept). The scan's RNG seeding is real (SimRng); the world queries
+// are these fixed tables — so the test exercises the scan's control logic exactly.
+struct ScanEnv : OppScanEnv {
+    int n = 0, self = -1;
+    bool vis = false;
+    std::vector<bool>  present;
+    std::vector<bool>  blocked;
+    std::vector<void*> evtarget;
+    std::vector<bool>  evaccept;
+    int player_count() override { return n; }
+    int self_skip_id() override { return self; }
+    void* player_at(int idx) override { return present[idx] ? tgt(idx) : nullptr; }
+    bool visibility_mode() override { return vis; }
+    bool candidate_blocked(int idx) override { return blocked[idx]; }
+    CandidateEval eval_candidate(int idx) override { return { evtarget[idx], evaccept[idx] }; }
+    void resize(int count) {
+        n = count;
+        present.assign(count, true); blocked.assign(count, false);
+        evtarget.assign(count, nullptr); evaccept.assign(count, false);
+    }
+};
+
+// Independent prediction of the start index the scan will draw, for a given seed + player count.
+static int predict_start(u32 seed, int n) { SimRng r(seed); return r.range_i(0, n - 1); }
+
+static void test_scan_skip_self() {
+    std::printf("test_scan_skip_self\n");
+    // All non-self players accept on first look -> winner is the start index, or start+1 (wrapping,
+    // skipping self) when the draw lands on self. Self is NEVER the chosen target.
+    for (u32 seed = 1; seed <= 200; ++seed) {
+        ScanEnv env; env.resize(4); env.self = 2;
+        for (int i = 0; i < 4; ++i) { env.evtarget[i] = tgt(i); env.evaccept[i] = (i != 2); }
+        env.evtarget[2] = nullptr; // self yields nothing even if examined (it never is)
+        int start = predict_start(seed, 4);
+        int expect = (start == env.self) ? (start + 1) % 4 : start;
+        SimRng rng(seed);
+        void* got = scan_opportunity_target(rng, env);
+        CHECK(got == tgt(expect));
+        CHECK(got != tgt(2));               // self never selected
+    }
+}
+
+static void test_scan_circular_and_first_wins() {
+    std::printf("test_scan_circular_and_first_wins\n");
+    // Two accepters (indices 1 and 4) in a 6-player table, no self. The FIRST reached circularly from
+    // the random start wins — which forces the wrap-around path when start > the nearest accepter.
+    for (u32 seed = 1; seed <= 300; ++seed) {
+        ScanEnv env; env.resize(6); env.self = 99;
+        env.evtarget[1] = tgt(1); env.evaccept[1] = true;
+        env.evtarget[4] = tgt(4); env.evaccept[4] = true;
+        int start = predict_start(seed, 6);
+        int expect = -1;                    // mirror the circular-first walk
+        for (int c = 0, idx = start; c < 6; ++c) {
+            if (idx == 1 || idx == 4) { expect = idx; break; }
+            idx = (idx + 1) % 6;
+        }
+        SimRng rng(seed);
+        void* got = scan_opportunity_target(rng, env);
+        CHECK(got == tgt(expect));
+    }
+}
+
+static void test_scan_fog_stall() {
+    std::printf("test_scan_fog_stall\n");
+    // With visibility mode ON, a fog-blocked candidate at the start index STALLS the scan (the index
+    // never advances) -> no target, even though a valid accepter exists elsewhere. With vis OFF the
+    // same layout reaches the accepter.
+    u32 seed = 12345; int n = 4;
+    int start = predict_start(seed, n);
+    int other = (start + 2) % n;
+    {
+        ScanEnv env; env.resize(n); env.self = 99; env.vis = true;
+        env.blocked[start] = true;
+        env.evtarget[other] = tgt(other); env.evaccept[other] = true;
+        SimRng rng(seed);
+        CHECK(scan_opportunity_target(rng, env) == nullptr);   // stalled on the blocked start
+    }
+    {
+        ScanEnv env; env.resize(n); env.self = 99; env.vis = false; // fog ignored
+        env.blocked[start] = true;
+        env.evtarget[other] = tgt(other); env.evaccept[other] = true;
+        SimRng rng(seed);
+        CHECK(scan_opportunity_target(rng, env) == tgt(other)); // reaches the accepter
+    }
+}
+
+static void test_scan_null_slot_stall() {
+    std::printf("test_scan_null_slot_stall\n");
+    // A null player slot at the start index also stalls (player_at == nullptr, no advance).
+    u32 seed = 777; int n = 5;
+    int start = predict_start(seed, n);
+    ScanEnv env; env.resize(n); env.self = 99;
+    env.present[start] = false;                         // null slot at the draw
+    int win = (start + 1) % n;
+    env.evtarget[win] = tgt(win); env.evaccept[win] = true;
+    SimRng rng(seed);
+    CHECK(scan_opportunity_target(rng, env) == nullptr); // never advances off the null slot
+}
+
+static void test_scan_score_leak() {
+    std::printf("test_scan_score_leak\n");
+    // A candidate that is an enemy with a FOUND unit but a non-accept score still commits its unit as
+    // the running result (the lVar13=lVar15 leak), so with no true accepter the leaked target is
+    // returned. The LAST committed leak wins.
+    u32 seed = 42; int n = 5;
+    ScanEnv env; env.resize(n); env.self = 99;
+    env.evtarget[1] = tgt(1); env.evaccept[1] = false;  // leak A
+    env.evtarget[3] = tgt(3); env.evaccept[3] = false;  // leak B
+    int start = predict_start(seed, n);
+    // last leak committed in the circular walk:
+    int last_leak = -1;
+    for (int c = 0, idx = start; c < n; ++c) {
+        if (idx == 1 || idx == 3) last_leak = idx;
+        idx = (idx + 1) % n;
+    }
+    SimRng rng(seed);
+    CHECK(scan_opportunity_target(rng, env) == tgt(last_leak));
+    // No leak, no accept -> nullptr.
+    ScanEnv env2; env2.resize(n); env2.self = 99;
+    SimRng rng2(seed);
+    CHECK(scan_opportunity_target(rng2, env2) == nullptr);
+}
+
+static void test_scan_rng_contract() {
+    std::printf("test_scan_rng_contract\n");
+    // n == 1 (only the owner): range_i(0,0) is a NO-DRAW per the LCG contract, and the lone slot is
+    // self -> skipped -> nullptr, with the RNG state UNCHANGED.
+    {
+        ScanEnv env; env.resize(1); env.self = 0;
+        SimRng rng(0xCAFEBABEu); u32 before = rng.state;
+        CHECK(scan_opportunity_target(rng, env) == nullptr);
+        CHECK(rng.state == before);                     // no draw
+    }
+    // n >= 2: exactly one draw (state advances) and same seed -> same result.
+    {
+        ScanEnv a; a.resize(3); a.self = 99; a.evtarget[2] = tgt(2); a.evaccept[2] = true;
+        ScanEnv b = a;
+        SimRng ra(0x1111u), rb(0x1111u);
+        void* g1 = scan_opportunity_target(ra, a);
+        void* g2 = scan_opportunity_target(rb, b);
+        CHECK(g1 == g2);
+        CHECK(ra.state == rb.state);
+        SimRng pre(0x1111u); pre.range_i(0, 2);         // one draw reference
+        CHECK(ra.state == pre.state);                   // scan drew exactly once
+    }
+}
+
 int main() {
     test_skip_disabled();
     test_cancellation();
@@ -212,6 +365,12 @@ int main() {
     test_owner_match_guard();
     test_depletion_event();
     test_service_dispatch();
+    test_scan_skip_self();
+    test_scan_circular_and_first_wins();
+    test_scan_fog_stall();
+    test_scan_null_slot_stall();
+    test_scan_score_leak();
+    test_scan_rng_contract();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll hardpoint checks passed.\n");
     return 0;

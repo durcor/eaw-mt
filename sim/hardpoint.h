@@ -33,6 +33,7 @@
 // the engine's exact op order below, so the lift stays bit-faithful for a future DTFIRE oracle.
 #pragma once
 #include "eaw_types.h"
+#include "sim_rng.h"
 #include <vector>
 
 namespace eaw {
@@ -113,5 +114,66 @@ void service_hardpoint(HardPoint& hp, HardpointEnv& env, u32 tick);
 
 // FUN_1403a76b0 — the per-ship fire-control entry: distribute the fire budget, then update each mount.
 void hardpoint_fire_budget(ShipFireControl& ship, HardpointEnv& env, u32 tick);
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// FUN_140387400 — opportunity-target acquisition (the LIVE weapon-fire path in TR content, per the
+// DTFIRE survey). The bulk of the 1904-byte function is a guard cascade + target-validation + command
+// emission over deep world state (virtual dispatch, the global player table, fog/diplomacy) — that
+// orchestration is left behind the Env (HardpointEnv::acquire_targets). Its ONE determinism-critical,
+// liftable core is the OPPORTUNITY-TARGET SCAN (FUN_140387400 lines 244–288): a random-start circular
+// sweep of the player table that consumes the global sim RNG (SimRng, the 202-caller LCG validated
+// bit-exact in-game by the DTRNG oracle). The scan draws a uniform random START player index in
+// [0, nplayers-1], then walks players circularly — skipping the owner's own slot, stalling on
+// fog-blocked players (when in visibility mode), and taking the FIRST enemy player that yields a
+// valid target.
+//
+// Player table (global &DAT_140a16fd0, a contiguous 8-byte-element vector):
+//   nplayers     = (DAT_140a16fd8 - DAT_140a16fd0) >> 3        (end @+0x08 − begin @+0x00, /8)
+//   player_at(i) = vector[+0x20][i], bounds-checked vs count @+0x28   (FUN_140294bc0)
+//   self         = player_at(context.player_id @ +0x58)
+//   self_skip_id = self[+0x4c]   (the value the scan index is compared against to skip the owner)
+//
+// Per-candidate accept test (all world-coupled → Env), from the decompile:
+//   accept iff  NOT skip-flag (cand[0x68] && cand[0x68][0x108])       // defeated/neutral guard
+//               AND  is-enemy(self, cand)                             // diplomacy table self[+0x370][cand[+0x4c]]==1 (FUN_1402824f0)
+//               AND  capped-search finds a unit (FUN_140385190)       // the Fix-B2 cap point
+//               AND  search score == DAT_140899780                    // the accept sentinel
+// TWO determinism subtleties lifted faithfully:
+//   (1) STALL — a non-null but fog-blocked candidate does NOT advance the index; the scan burns the
+//       remaining iterations on it (only enemy/self/rejected-candidate paths advance).
+//   (2) SCORE-LEAK — a candidate that is an enemy with a found unit but whose score ≠ the accept
+//       sentinel still COMMITS that unit as the running result (the `lVar13 = lVar15` before the
+//       score compare), so a score-rejected target can become the opportunity target if nothing
+//       better is found.
+// The scan's RNG seeding (range_i(0, nplayers-1)) is exactly the a/b spans seen in the DTRNG capture
+// (0..21, 0..N) — i.e. this scan's nondeterminism source is already in-game-validated; what is lifted
+// here is the deterministic control logic on top of it.
+
+// Result of evaluating one *considered* candidate player (Env-supplied; wraps the world-coupled
+// skip-flag + diplomacy + capped spatial search + sentinel checks).
+struct CandidateEval {
+    void* target = nullptr; // the found unit — non-null iff !skip-flag && is-enemy && capped-search hit
+                            //   (REGARDLESS of score); committed as the running result whenever set
+    bool  accept = false;   // target != nullptr && score == DAT_140899780 (the accept sentinel)
+};
+
+// World-coupled queries the opportunity scan needs (global player table + fog/diplomacy + the capped
+// spatial target search). Injected so the scan's deterministic control logic (random start, skip-self,
+// circular advance, fog-stall, first-accept, score-leak) is lifted and host-testable.
+struct OppScanEnv {
+    virtual ~OppScanEnv() = default;
+    virtual int   player_count() = 0;                          // (DAT_140a16fd8 - DAT_140a16fd0) >> 3
+    virtual int   self_skip_id() = 0;                          // self_player[+0x4c]
+    virtual void* player_at(int idx) = 0;                      // FUN_140294bc0 (bounds-checked) or nullptr
+    virtual bool  visibility_mode() { return false; }          // FUN_14039aa60(context) — gates the fog check
+    virtual bool  candidate_blocked(int /*idx*/) { return false; } // FUN_14035f3b0 fog block (vis mode only)
+    virtual CandidateEval eval_candidate(int idx) = 0;         // the accept composite above
+};
+
+// FUN_140387400's opportunity-target scan core. Draws ONE start index from `rng`
+// (range_i(0, nplayers-1)) UNCONDITIONALLY — matching the binary, which draws before the `0 < n`
+// loop guard — then returns the chosen target pointer (or nullptr). See the block comment for the
+// exact stall/leak/skip-self semantics.
+void* scan_opportunity_target(SimRng& rng, OppScanEnv& env);
 
 } // namespace eaw
