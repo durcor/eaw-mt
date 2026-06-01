@@ -64,6 +64,9 @@ sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/unit_ai_test.cpp sim/unit_ai.cpp -o /tmp/eaw_unit_ai_test
   /tmp/eaw_unit_ai_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/nebula_test.cpp sim/nebula.cpp -o /tmp/eaw_nebula_test
+  /tmp/eaw_nebula_test
 
 ghidra-script script:
   nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
