@@ -179,4 +179,38 @@ void acquire_opportunity_target(SimRng& rng, OppAcquireEnv& env, sim::CommandSin
     }
 }
 
+// FUN_140387400 lines 173–201 — the ordered-fire commit (sig-0x20 emission). See hardpoint.h for the
+// state machine and the flag-persists-on-bail subtlety. Counterpart to acquire_opportunity_target;
+// the two are mutually exclusive within a call (cVar6 gate at line 221 / state_flag return at 203).
+void commit_ordered_fire(OrderedFireEnv& env, sim::CommandSink& sink) {
+    // cVar6 enters as the regular-target fire-allowed result computed in lines 133–171.
+    bool cVar6 = env.regular_target_fire_allowed();
+
+    // ORDERED branch (line 173): state_flag==1 guarantees order_object!=0 (lines 86–88), but the
+    // decompile keeps the explicit conjunction — preserved.
+    if (env.state_flag() && env.order_object() != nullptr) {
+        cVar6 = env.order_fire_allowed();          // line 174 — recompute for the ordered target
+        if (!cVar6) {                              // line 175 — order not allowed -> LAB_1403877f0
+            env.set_in_progress(false);            // line 199 (cVar6==0)
+            return;
+        }
+        env.clear_order_object();                  // line 176 — order committed; clear it
+        // fall through to the 0->1 transition (LAB_140387791)
+    } else {                                        // REGULAR branch (state_flag==0)
+        if (!cVar6) {                              // line 196 false -> LAB_1403877f0
+            env.set_in_progress(false);            // line 199 (cVar6==0)
+            return;
+        }
+        // cVar6==1 -> goto LAB_140387791 (line 196)
+    }
+
+    // LAB_140387791 (lines 177–193) — the in_progress_flag 0->1 transition. Emit only on the edge.
+    if (env.in_progress()) return;                 // line 178 — already in progress, no re-emit
+    env.set_in_progress(true);                     // line 180 — SET before the emitter resolution
+    void* emitter = nullptr;
+    if (!env.resolve_emitter(emitter))             // lines 181–186 — FUN_1404ec820 subordinate mismatch
+        return;                                    // line 184 goto LAB_1403877f9: skip emit, flag SET
+    sink.emit_fire_order_in_progress(emitter);     // lines 191–192 — sig 0x20, parameterless
+}
+
 } // namespace eaw

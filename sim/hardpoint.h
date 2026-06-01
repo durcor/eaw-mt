@@ -236,4 +236,51 @@ struct OppAcquireEnv : OppScanEnv {
 // scan_opportunity_target, and only when the rescan gate opens.
 void acquire_opportunity_target(SimRng& rng, OppAcquireEnv& env, sim::CommandSink& sink);
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// FUN_140387400 lines 173–201 — the ORDERED-FIRE COMMIT: the in_progress_flag 0→1 transition that
+// emits FireOrderInProgress (sig 0x20, PARAMETERLESS). This is the EARLIER emission site, the
+// counterpart to acquire_opportunity_target above. The two are MUTUALLY EXCLUSIVE within a single
+// 387400 call: this section runs when a regular OR ordered target is fire-allowed (cVar6==1), and in
+// that case the autonomous opp-acquisition tail is skipped (line 221 `if (cVar6 == 0)`); conversely
+// the tail runs only when NO target was committed here (cVar6==0). So 387400 emits EITHER 0x20 OR
+// (via the tail) 0x21 — never both. (And when state_flag==1, line 203 returns before the tail at all.)
+//
+// The state machine (lines 173–201), tracking the decompile's `cVar6` (the fire-allowed result):
+//   • `cVar6` ENTERS this section as the regular-target result computed in lines 133–171.
+//   • ORDERED branch — owner.state_flag==1 (which, by lines 86–88, guarantees order_object!=0):
+//       recompute cVar6 = order target fire-allowed.
+//         - not allowed → clear in_progress (no emit), order_object kept.
+//         - allowed     → clear order_object, then the 0→1 transition below.
+//   • REGULAR branch — state_flag==0:
+//         - cVar6==1 (regular target allowed) → the 0→1 transition below.
+//         - cVar6==0 (nothing allowed)        → clear in_progress (no emit).
+//   • the 0→1 transition (LAB_140387791): emit ONLY if in_progress was 0; set it to 1 FIRST, then
+//     resolve the emitter and emit. If in_progress was already 1 → no re-emit.
+//
+// DETERMINISM SUBTLETY (the one that distinguishes 0x20 from 0x21): in_progress_flag is set to 1
+// BEFORE the emitter resolution (line 180), and the emitter-mismatch bail is `goto LAB_1403877f9`
+// (line 184) — it SKIPS THE EMIT but the flag transition PERSISTS (unlike the 0x21 path, whose bail
+// is a full `return` that mutates nothing). So on an emitter bail the unit still records the
+// transition; only the cross-entity signal is suppressed. Replayed exactly.
+//
+// The emitter resolution is the SAME idiom as the 0x21 path (lines 181–186 ≡ 301–308): emit on the
+// unit's own context+0x38, unless it is a subordinate of a parent (ctx+0x2b0 with +0x110 set), in
+// which case FUN_1404ec820 must equal the context (else bail) and the parent context is used instead.
+struct OrderedFireEnv {
+    virtual ~OrderedFireEnv() = default;
+    virtual bool  regular_target_fire_allowed() = 0; // cVar6 entering line 173 (lines 133–171 result)
+    virtual bool  state_flag() = 0;                  // owner_record->state_flag == 1 (ordered-fire)
+    virtual void* order_object() = 0;                // param_1->order_object (line 173; !=0 when state_flag)
+    virtual bool  order_fire_allowed() = 0;          // FUN_1403825b0(self, order_object, 0) != 0 (line 174)
+    virtual void  clear_order_object() = 0;          // FUN_1403846c0(self, &order_object) (line 176)
+    virtual bool  in_progress() = 0;                 // param_1->in_progress_flag (line 178)
+    virtual void  set_in_progress(bool) = 0;         // param_1->in_progress_flag = 0/1 (lines 180/199)
+    virtual bool  resolve_emitter(void*& out) = 0;   // same as the 0x21 path; returns false to bail
+                                                     //   (line 184 goto — skips emit, flag stays SET)
+};
+
+// FUN_140387400 lines 173–201. Emits at most one parameterless sig 0x20 into `sink`. No RNG draw.
+// See the block comment above for the state machine and the flag-persists-on-bail subtlety.
+void commit_ordered_fire(OrderedFireEnv& env, sim::CommandSink& sink);
+
 } // namespace eaw

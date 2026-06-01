@@ -535,6 +535,122 @@ static void test_acq_scan_empty_no_emit() {
     CHECK(env.last_scan == 100);        // gate opened -> stamped
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Ordered-fire commit (FUN_140387400 lines 173–201) — the sig-0x20 FireOrderInProgress emission,
+// the in_progress_flag 0→1 transition. Counterpart to the sig-0x21 tail. These pin: ordered vs
+// regular commit, the edge-only emit, the not-committed clear, and the flag-persists-on-bail subtlety.
+
+static void* const ORDER_OBJ = tgt(3000);
+
+// Controllable ordered-fire env. Owns in_progress + order_object; tallies the side effects.
+struct OrderEnv : OrderedFireEnv {
+    bool  regular_ok = false;       // cVar6 entering line 173
+    bool  has_state  = false;       // owner.state_flag == 1
+    void* order      = nullptr;     // order_object
+    bool  order_ok   = false;       // ordered target fire-allowed
+    bool  in_prog    = false;       // in_progress_flag
+    bool  emitter_ok = true;        // emitter resolves (false -> bail)
+    int   order_clears = 0;         // clear_order_object() count
+
+    bool  regular_target_fire_allowed() override { return regular_ok; }
+    bool  state_flag() override { return has_state; }
+    void* order_object() override { return order; }
+    bool  order_fire_allowed() override { return order_ok; }
+    void  clear_order_object() override { order = nullptr; ++order_clears; }
+    bool  in_progress() override { return in_prog; }
+    void  set_in_progress(bool v) override { in_prog = v; }
+    bool  resolve_emitter(void*& out) override { out = EMITTER; return emitter_ok; }
+};
+
+static void test_order_ordered_emit() {
+    std::printf("test_order_ordered_emit\n");
+    // state_flag=1, order present + fire-allowed, not yet in progress -> clear order, set in_progress,
+    // emit 0x20 (parameterless) on the resolved emitter.
+    OrderEnv env; env.has_state = true; env.order = ORDER_OBJ; env.order_ok = true; env.in_prog = false;
+    sim::RecordingCommandSink sink;
+    commit_ordered_fire(env, sink);
+    CHECK(env.order == nullptr);           // order_object cleared
+    CHECK(env.order_clears == 1);
+    CHECK(env.in_prog == true);            // 0->1 transition
+    CHECK(sink.commands.size() == 1);
+    if (!sink.commands.empty()) {
+        const sim::RecordedCommand& c = sink.commands[0];
+        CHECK(c.sig_id == sim::kSigFireOrderInProgress);
+        CHECK(c.emitter == EMITTER);
+        CHECK(!c.has_payload);             // parameterless
+    }
+}
+
+static void test_order_ordered_not_allowed() {
+    std::printf("test_order_ordered_not_allowed\n");
+    // state_flag=1, order present but NOT fire-allowed -> clear in_progress, no emit, order kept.
+    OrderEnv env; env.has_state = true; env.order = ORDER_OBJ; env.order_ok = false; env.in_prog = true;
+    sim::RecordingCommandSink sink;
+    commit_ordered_fire(env, sink);
+    CHECK(env.in_prog == false);           // cleared
+    CHECK(env.order == ORDER_OBJ);         // NOT cleared (line 176 skipped)
+    CHECK(env.order_clears == 0);
+    CHECK(sink.commands.empty());
+}
+
+static void test_order_already_in_progress() {
+    std::printf("test_order_already_in_progress\n");
+    // Ordered + allowed but in_progress already 1 -> order cleared, but NO re-emit (edge already passed).
+    OrderEnv env; env.has_state = true; env.order = ORDER_OBJ; env.order_ok = true; env.in_prog = true;
+    sim::RecordingCommandSink sink;
+    commit_ordered_fire(env, sink);
+    CHECK(env.order == nullptr);           // still cleared (line 176 runs before the edge check)
+    CHECK(env.in_prog == true);            // unchanged
+    CHECK(sink.commands.empty());          // no re-emit
+}
+
+static void test_order_emitter_bail_keeps_flag() {
+    std::printf("test_order_emitter_bail_keeps_flag\n");
+    // Ordered + allowed + edge, but emitter resolution bails -> the flag transition PERSISTS (set to 1
+    // before the bail) while the emit is suppressed. The distinguishing 0x20 subtlety.
+    OrderEnv env; env.has_state = true; env.order = ORDER_OBJ; env.order_ok = true; env.in_prog = false;
+    env.emitter_ok = false;
+    sim::RecordingCommandSink sink;
+    commit_ordered_fire(env, sink);
+    CHECK(env.in_prog == true);            // flag SET despite the bail
+    CHECK(env.order == nullptr);           // order still cleared (before the edge)
+    CHECK(sink.commands.empty());          // emit suppressed
+}
+
+static void test_order_regular_emit() {
+    std::printf("test_order_regular_emit\n");
+    // state_flag=0 (regular branch), regular target fire-allowed, edge -> emit 0x20; order untouched.
+    OrderEnv env; env.has_state = false; env.regular_ok = true; env.in_prog = false; env.order = ORDER_OBJ;
+    sim::RecordingCommandSink sink;
+    commit_ordered_fire(env, sink);
+    CHECK(env.in_prog == true);
+    CHECK(env.order == ORDER_OBJ);         // regular branch never touches order_object
+    CHECK(env.order_clears == 0);
+    CHECK(sink.commands.size() == 1);
+    if (!sink.commands.empty())
+        CHECK(sink.commands[0].sig_id == sim::kSigFireOrderInProgress);
+}
+
+static void test_order_regular_not_allowed_clears() {
+    std::printf("test_order_regular_not_allowed_clears\n");
+    // state_flag=0, no regular target allowed (cVar6==0) -> clear in_progress, no emit.
+    OrderEnv env; env.has_state = false; env.regular_ok = false; env.in_prog = true;
+    sim::RecordingCommandSink sink;
+    commit_ordered_fire(env, sink);
+    CHECK(env.in_prog == false);
+    CHECK(sink.commands.empty());
+}
+
+static void test_order_regular_already_in_progress() {
+    std::printf("test_order_regular_already_in_progress\n");
+    // Regular allowed but in_progress already 1 -> no re-emit, flag stays set.
+    OrderEnv env; env.has_state = false; env.regular_ok = true; env.in_prog = true;
+    sim::RecordingCommandSink sink;
+    commit_ordered_fire(env, sink);
+    CHECK(env.in_prog == true);
+    CHECK(sink.commands.empty());
+}
+
 int main() {
     test_skip_disabled();
     test_cancellation();
@@ -558,6 +674,13 @@ int main() {
     test_acq_no_rescan_interval();
     test_acq_stamp_even_when_blocked();
     test_acq_scan_empty_no_emit();
+    test_order_ordered_emit();
+    test_order_ordered_not_allowed();
+    test_order_already_in_progress();
+    test_order_emitter_bail_keeps_flag();
+    test_order_regular_emit();
+    test_order_regular_not_allowed_clears();
+    test_order_regular_already_in_progress();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll hardpoint checks passed.\n");
     return 0;

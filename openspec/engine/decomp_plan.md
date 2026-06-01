@@ -642,9 +642,23 @@ depends on it):
    > (cleared slot forces rescan → bound + fire-allowed → emit `0x21` payload `{target, hardpoint=self}`),
    > **bound-not-fire-allowed** (→ clear, no emit), **emitter-bail** (`1404ec820 != context` → return,
    > no emit) — plus the rescan-gate `last_scan_time` comma side-effect (stamps under the force/interval
-   > condition even when the blocked/active-order check then suppresses the scan). sig `0x20` (the
-   > ordered-fire `in_progress` 0→1 transition, lines 173–194) is a *different* sub-path, not the scan
-   > caller, and stays env-modelled.
+   > condition even when the blocked/active-order check then suppresses the scan).
+   >
+   > **✅ SECOND EMITTER WIRED 2026-06-01** (`commit_ordered_fire`, `sim/hardpoint.{h,cpp}`). Lifted
+   > `387400` lines 173–201 — the **ordered-fire commit**, the `in_progress_flag` 0→1 transition that
+   > emits the parameterless sig `0x20` (FireOrderInProgress). Now wired to `sim::CommandSink` behind an
+   > `OrderedFireEnv`. This is the counterpart to `acquire_opportunity_target`, and the two are
+   > **mutually exclusive within a single `387400` call**: the commit runs when a regular OR ordered
+   > target is fire-allowed (`cVar6==1`), which then **skips** the autonomous tail (line 221 gate);
+   > conversely the tail runs only when nothing was committed here (`cVar6==0`). And when
+   > `state_flag==1` the function returns (line 203) before the tail entirely. So `387400` emits
+   > **EITHER `0x20` OR (via the tail) `0x21`, never both** — a clean dichotomy that tightens the
+   > Phase-A emission model. Host-validated (7 new cases): the ordered vs regular branch, the edge-only
+   > emit (no re-emit when already in progress), the not-committed `in_progress` clear, and the
+   > **distinguishing `0x20` subtlety** — the flag is set to 1 **before** the emitter is resolved, and
+   > the emitter-mismatch bail is a `goto` (skips the emit) not a `return`, so **the flag transition
+   > persists through an emit suppression** (unlike `0x21`'s full-`return` bail, which mutates nothing).
+   > Both `387400` emitters are now lifted; the dispatch fan-out (`240940`) remains Phase-B.
 6. **Command/event queue drain (serial Phase-B apply).** `OutgoingEventQueueClass`,
    `StopMovementEventClass` + the `EventFactoryClass<…>` family, the queue at `DAT_140b27e60` —
    applied single-threaded after the parallel compute pass, in canonical order.
