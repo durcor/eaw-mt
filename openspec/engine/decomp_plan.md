@@ -566,8 +566,14 @@ depends on it):
    (`(motion−5)<6 && enable` → `387400`). **Behind `HardpointEnv` (deferred sub-lifts):** the ship
    scalars `fire_fraction`(`396df0`)/`fire_capacity`(`396070`), the shot `386660`, and the deep
    opportunity-target acquisition `FUN_140387400` (1904 B — cross-entity target writes + player-table
-   RNG scan + command emission = Phase-A/B-entangled, the real next sub-lift). Host: 9 checks
-   (`sim/tests/hardpoint_test.cpp`, incl. the scale-cancellation test) via `just sim-test`. The
+   RNG scan + command emission = Phase-A/B-entangled). **✅ `387400`'s determinism-critical core — the
+   opportunity-target SCAN — is now LIFTED** (`scan_opportunity_target`, host-validated): a random-start
+   (`SimRng::range_i(0,nplayers−1)`) circular sweep of the global player table (`&DAT_140a16fd0`),
+   skip-self, fog-stall + score-leak subtleties faithful, first enemy-with-valid-target wins; per-candidate
+   accept (`2824f0` diplomacy + `385190` capped search + sentinels) behind `OppScanEnv`. Its RNG seeding is
+   already in-game-validated by the DTRNG oracle. The surrounding guard cascade / countdown / state_flag
+   branch / command emission stay env-modeled (`HardpointEnv::acquire_targets`). Host: 15 checks
+   (`sim/tests/hardpoint_test.cpp`, incl. the scale-cancellation + 6 scan tests) via `just sim-test`. The
    DIFFTRACE per-tick hash already folds `hp+0x28`/`+0x58`, so the distribution's effect is observed;
    a dedicated **DTFIRE** capture (per-tick `total_w`/`avail`/`share`/budget deltas) is the precise
    in-game oracle = the follow-on analysis step.
