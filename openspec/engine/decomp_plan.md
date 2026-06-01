@@ -599,6 +599,38 @@ depends on it):
    `target+0x38` (`220e90`/`ed0`/`eb0` via `058570`), the global event queue `DAT_140b27e60`
    (`2d5290`), `OutgoingEventQueueClass`. In the parallel rewrite these defer into a per-thread
    command buffer (Phase B) instead of executing inline.
+
+   > **🟡 FRAMED 2026-05-31** (`sim/command_sink.h` = `CommandSink`). The emission path decompiled
+   > from the `387400` call sites + RTTI. It is **two distinct channels**, not one queue:
+   >
+   > **(1) Per-object signal/slot (observer).** Each GameObject embeds a `SignalDispatcherClass` at
+   > `obj+0x38` (RTTI: `SingletonInstance<SignalDispatcherClass>`; layout: `+0x08` reentrancy flag,
+   > `+0x0c` dispatch-depth, `+0x10` hash-map `sig_id→SignalListClass`, key hashed
+   > `(id^0xdeadbeef)&0x7fffffff` Park-Miller via `1cacb0`). `SignalListClass` is an **insertion-ordered
+   > intrusive slot list**. Primitives: emit `220ed0→240940` (walks list head→tail, invokes each slot
+   > `vfunc_2(slot,disp,sig,payload)`); connect `220e90→2406c0` (lazily builds the list, registers it
+   > into the **global** `SignalDispatcherClass` singleton `058570` = a live-emitter registry);
+   > has-slot `220eb0→2408c0`. **`058570`'s return is passed to `220ed0` but ignored** — emit dispatches
+   > on `self+0x38`, the singleton call only forces lazy construction. Connected slots mutate arbitrary
+   > other entities → this IS the cross-entity write; emission itself reads only `self+0x38`.
+   >
+   > **(2) Global scheduled-event queue.** `OutgoingEventQueueClass` (RTTI + strings
+   > "Adding {scheduled,non-scheduled} event %s"). Globals `DAT_140b27e60` (`2d5290`, 387400 line 99
+   > ordered branch) and `DAT_140b2ed18` (`vfunc_1`, `28d400`). Orders by `(fire_time, insertion)`;
+   > drains when the sim clock reaches `fire_time` — the deferred/timed channel.
+   >
+   > **`387400` emits exactly two signals**, both on channel 1: `0x20` "fire-order in progress"
+   > (parameterless, ordered path, lines 191-192) and `0x21` `OpportunityTargetAcquired` (payload =
+   > 3-ptr `OpportunityTargetAcquiredDataClass`, autonomous path, lines 297-314).
+   >
+   > **Determinism contract** the eventual Phase-B drain must preserve: per emission, slots fire in
+   > `SignalListClass` insertion order (incl. re-entrant nested emits guarded by `+0x08`/`+0x0c`);
+   > across entities, emissions are produced in GOM tick order (same order as RNG draws), so buffering
+   > per-thread + draining in canonical entity order reproduces the serial-tick global emit sequence;
+   > the scheduled queue's within-tick tie-break is insertion (also GOM-order-sensitive). Emission
+   > decisions are deterministic given a unit's inputs and **independent of any slot's behaviour** →
+   > a recording `CommandSink` is a faithful, host-testable Phase-A stand-in. The dispatch machinery
+   > (`240940` fan-out, the queue drain) is Phase-B and deliberately **not** lifted yet.
 6. **Command/event queue drain (serial Phase-B apply).** `OutgoingEventQueueClass`,
    `StopMovementEventClass` + the `EventFactoryClass<…>` family, the queue at `DAT_140b27e60` —
    applied single-threaded after the parallel compute pass, in canonical order.
