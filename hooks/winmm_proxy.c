@@ -4308,6 +4308,187 @@ static BOOL install_b42f910_hook(void)
 }
 
 /* =========================================================================
+ * DTUAI — in-game oracle for the lifted UnitAI fog/sensor-visibility ticker (sim/unit_ai.cpp,
+ * from FUN_1404f6070). Behavior #4 — the FIRST cross-entity behavior: reads the global object list
+ * and writes a per-(observer,object) visibility matrix plus the SHARED sensor grid (DAT_140b31900).
+ *
+ * The deterministic core's cleanly-reproducible outputs (what this oracle validates bit-exact):
+ *   (1) THROTTLE: ai+0x20 (next_due) advances by a FIXED +300 the tick it is due (next_due <= now)
+ *       and the sensor mgr exists — never reset to now+300. So on any tick where next_due CHANGED,
+ *       it must be exactly old+300 (the non-tautological PASS signal, like DTNRG's `va`).
+ *   (2) TRANSFORM CHANGE-DETECT + RECACHE: the 12-float observer transform (entity+0x248..+0x274) is
+ *       compared against the cache (ai+0x68..+0x94); on a refresh tick, if it changed the cache is
+ *       recached to it (and object_moved fires), else the cache is untouched.
+ * Plus it CHARACTERISES the cross-boundary Block-C visibility matrix (not bit-exact reproducible — the
+ * bit VALUE is the env LOS predicate's output): the per-(observer) bit array at ai+0x58 (count ai+0x60),
+ * its set-count before/after, and the edge counts e01/e10 = exactly the number of became_visible /
+ * became_hidden notifies the core would push into the shared grid this tick. fog/sensor gates are
+ * logged so the analyzer can check the clear-path (fog off => all bits 0) and notify suppression.
+ *
+ * Snapshots BEFORE, runs the original once (trampoline — no determinism perturbation), snapshots
+ * AFTER. Logs DTUAI lines for refresh ticks (throttle gold) + a sparse steady-state sample, capped.
+ *
+ * arg count = 3 (uniform vfunc_6 call site: rcx=behavior, rdx=entity, r8d=tick — the body ignores the
+ * tick param and reads now from game[2], but we keep the 3-arg shape so the call frame matches). The
+ * ai manager = *(*(behavior+0x28)+0x108); the observer transform is read from entity(rdx)=param_2.
+ * Prologue (PE @1404f6070): 40 56 / 57 / 41 56 / 48 83 ec 20 / 48 8b f2 / 4c 8b f1 = 2+1+2+4+3+3 = 15
+ * bytes (push rsi/rdi/r14 + sub rsp,0x20 + mov rsi,rdx + mov r14,rcx — all position-independent),
+ * ending cleanly before the relative `call <spine>` at +15 (reached via the trampoline tail).
+ * ========================================================================= */
+#define UAI_4F6070_RVA   0x4f6070ULL
+#define UAI_MAXVIS       4096            /* cap on the per-observer vis-array digest scan */
+static const BYTE uai_4f6070_prologue[15] = {
+    0x40, 0x56,                    /* push rsi      */
+    0x57,                          /* push rdi      */
+    0x41, 0x56,                    /* push r14      */
+    0x48, 0x83, 0xec, 0x20,        /* sub rsp, 0x20 */
+    0x48, 0x8b, 0xf2,              /* mov rsi, rdx  */
+    0x4c, 0x8b, 0xf1,              /* mov r14, rcx  */
+};
+typedef int64_t (*Uai4f6070Fn)(int64_t behavior, int64_t entity, int32_t tick);
+static Uai4f6070Fn g_uai_trampoline = NULL;
+static uint32_t g_uai_lines      = 0;          /* emitted DTUAI lines, capped                        */
+static uint32_t g_uai_ticks      = 0;          /* observer-ticks the hook logged-eligible            */
+static uint32_t g_uai_advances   = 0;          /* throttle advances seen (next_due += 300)           */
+static uint32_t g_uai_bad_adv    = 0;          /* advances where nda != ndb+300 (model violation)    */
+static uint32_t g_uai_e01        = 0;          /* total became_visible edges                         */
+static uint32_t g_uai_e10        = 0;          /* total became_hidden edges                          */
+static uint32_t g_uai_fogoff     = 0;          /* fog-off (clear-path) observer-ticks                */
+static uint32_t g_uai_cachebad   = 0;          /* cache post-condition violations                    */
+static uint32_t g_uai_surv_last  = 0xFFFFFFFFu;
+
+static int popcnt_bytes(const uint8_t *p, int n) { int c = 0; for (int i = 0; i < n; ++i) c += (p[i] != 0); return c; }
+
+static int64_t b4f6070_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(behavior && g_dt_imgbase && dt_on()))
+        return g_uai_trampoline(behavior, entity, tick_arg);
+
+    int64_t owner = *(int64_t *)(behavior + 0x28);
+    if (!owner) return g_uai_trampoline(behavior, entity, tick_arg);
+    int64_t ai = *(int64_t *)(owner + 0x108);
+    if (!ai) return g_uai_trampoline(behavior, entity, tick_arg);
+
+    /* global state the throttle / fog gates read */
+    int64_t game   = *(int64_t *)(g_dt_imgbase + 0xb15418);
+    int32_t now    = game ? *(int32_t *)(game + 0x10) : 0;
+    int     sensor = (*(int64_t *)(g_dt_imgbase + 0xb31900)) != 0;
+    int8_t  fogg   = *(int8_t *)(g_dt_imgbase + 0xa284c4);
+    int8_t  h34b   = *(int8_t *)(owner + 0x34b);
+    int8_t  h348   = *(int8_t *)(owner + 0x348);
+    int     fog    = (fogg != 0) && !((h34b == -1) && (h348 == -1));   /* sweep vs clear path */
+
+    /* BEFORE snapshot: throttle + transform cache + transform + vis-array digest */
+    int32_t ndb     = *(int32_t *)(ai + 0x20);
+    int32_t initb   = *(int32_t *)(ai + 0x18);
+    float   cacheb[12], xform[12];
+    for (int i = 0; i < 12; ++i) {
+        cacheb[i] = *(float *)(ai + 0x68 + (int64_t)i * 4);
+        xform[i]  = *(float *)(entity + 0x248 + (int64_t)i * 4);
+    }
+    int     chg = 0;
+    for (int i = 0; i < 12; ++i) { if (cacheb[i] != xform[i]) { chg = 1; break; } }
+
+    int64_t vdata = *(int64_t *)(ai + 0x58);
+    int32_t vcnt  = *(int32_t *)(ai + 0x60);
+    int     scan  = (vdata && vcnt > 0) ? (vcnt < UAI_MAXVIS ? vcnt : UAI_MAXVIS) : 0;
+    uint8_t vbits[UAI_MAXVIS];
+    for (int i = 0; i < scan; ++i) vbits[i] = *(uint8_t *)(vdata + i);
+    int vb = popcnt_bytes(vbits, scan);
+
+    int64_t r = g_uai_trampoline(behavior, entity, tick_arg);
+
+    /* AFTER snapshot */
+    int32_t nda   = *(int32_t *)(ai + 0x20);
+    int32_t va = 0, e01 = 0, e10 = 0;
+    int64_t vdata2 = *(int64_t *)(ai + 0x58);     /* array may have been (re)allocated on first pass */
+    int32_t vcnt2  = *(int32_t *)(ai + 0x60);
+    int     scan2  = (vdata2 && vcnt2 > 0) ? (vcnt2 < UAI_MAXVIS ? vcnt2 : UAI_MAXVIS) : 0;
+    int     emin   = (scan2 < scan) ? scan2 : scan;
+    for (int i = 0; i < scan2; ++i) {
+        uint8_t a = *(uint8_t *)(vdata2 + i);
+        va += (a != 0);
+        if (i < emin) {
+            if (!vbits[i] && a) e01++;
+            else if (vbits[i] && !a) e10++;
+        }
+    }
+    /* cache post-condition: on an advance, recached-to-xform iff changed; else cache untouched */
+    int advanced = (nda != ndb);
+    int cacheok = 1;
+    for (int i = 0; i < 12; ++i) {
+        float ca = *(float *)(ai + 0x68 + (int64_t)i * 4);
+        float want = (advanced && chg) ? xform[i] : cacheb[i];
+        if (ca != want) { cacheok = 0; break; }
+    }
+
+    /* accounting */
+    g_uai_ticks++;
+    if (advanced) { g_uai_advances++; if (nda != ndb + 300) g_uai_bad_adv++; }
+    if (!cacheok) g_uai_cachebad++;
+    if (!fog) g_uai_fogoff++;
+    g_uai_e01 += (uint32_t)e01;
+    g_uai_e10 += (uint32_t)e10;
+
+    /* emit a line for refresh ticks (the throttle gold) + a sparse steady-state sample, capped */
+    int want_line = advanced || (e01 | e10) || ((now & 0xffu) == 0);
+    if (want_line && g_uai_lines < 20000u) {
+        g_uai_lines++;
+        char s[384];
+        snprintf(s, sizeof s,
+            "DTUAI\ttick=%u\tent=%llx\tndb=%d\tnda=%d\tnow=%d\tinit=%d\tchg=%d\tcacheok=%d"
+            "\tvcnt=%d\tvb=%d\tva=%d\te01=%d\te10=%d\tfog=%d\tsen=%d\n",
+            (unsigned)now, (unsigned long long)owner, ndb, nda, now, initb, chg, cacheok,
+            vcnt, vb, va, e01, e10, fog, sensor);
+        log_write(s);
+    }
+
+    if (now != (int32_t)g_uai_surv_last && ((uint32_t)now & 0x1ffu) == 0) {     /* once per 512 ticks */
+        g_uai_surv_last = (uint32_t)now;
+        char sv[256];
+        snprintf(sv, sizeof sv,
+            "DTUAISURVEY\ttick=%u\tobs_ticks=%u\tadvances=%u\tbad_adv=%u\tcache_bad=%u"
+            "\te01=%u\te10=%u\tfogoff=%u\n",
+            (unsigned)now, g_uai_ticks, g_uai_advances, g_uai_bad_adv, g_uai_cachebad,
+            g_uai_e01, g_uai_e10, g_uai_fogoff);
+        log_write(sv);
+    }
+    return r;
+}
+
+static BOOL install_b4f6070_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + UAI_4F6070_RVA;
+    if (memcmp(fn, uai_4f6070_prologue, 15) != 0) {
+        log_write("[eaw-mt] WARN: FUN_1404f6070 prologue mismatch — DTUAI not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTUAI trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, uai_4f6070_prologue, 15);
+    write_abs_jmp(tramp + 15, (uint64_t)(fn + 15));
+    g_uai_trampoline = (Uai4f6070Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 15, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b4f6070_hook);
+    VirtualProtect(fn, 15, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 15);
+    log_write("[eaw-mt] DTUAI: FUN_1404f6070 UnitAI visibility hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -7787,6 +7968,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b58bd80_hook();   /* DTDMG: DamageTracking decay/expiry I/O (EAW_DIFFTRACE=1) */
         install_b56c030_hook();   /* DTNRG: EnergyPool regen I/O (EAW_DIFFTRACE=1) */
         install_b42f910_hook();   /* DTABIL: AbilityCountdown cooldown/chargeup I/O (EAW_DIFFTRACE=1) */
+        install_b4f6070_hook();   /* DTUAI: UnitAI fog/sensor-visibility I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
 #endif
 

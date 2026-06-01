@@ -753,7 +753,7 @@ sim state; out = presentation):
 | Behavior class | `vfunc_6` | In/Out | Note |
 |---|---|---|---|
 | `SimpleSpaceLocomotorBehaviorClass` (+Walk/Fighter/Fleet/Starship…) | `0x626420` | **IN** | the mover — writes `entity+0x78` position [CORE] |
-| `UnitAIBehaviorClass` | `0x4f6070` | **IN** | per-tick AI decision/orders (977 B; cross-entity — the Model-B write surface) |
+| `UnitAIBehaviorClass` | `0x4f6070` | **IN** | ✅ **LIFTED + DTUAI ORACLE PASS** (behavior #4) — the fog-of-war/sensor-visibility ticker, **first cross-entity behavior** (reads global object list, writes per-(observer,object) visibility matrix → shared sensor grid `DAT_140b31900`): (A) 300-tick fixed-phase throttled transform-change self-refresh, (B) gated reveal, (C) per-object LOS bit + edge notify. **NOT Phase-A parallel-safe** (shared-grid writes need buffering/sharding). In-game: throttle 3427/3427 `+300`-exact, cacheok 6988/6988, 90 vis edges characterised |
 | `TargetingBehaviorClass` | `0x633a30` | **IN** | weapon target selection (per game-speed mode) |
 | `DamageTrackingBehaviorClass` | `0x58bd80` | **IN** | ✅ **LIFTED** (behavior #1) — *not* HP application: a **timed damage/status-effect decay ticker** (own `+0x1a0` list); emits `0x2d` on empty |
 | `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
@@ -912,6 +912,39 @@ emits. 8 host cases.
     drain/clamp edges stayed dormant). The `0x2c` gate (`39b480` verdict) is env-modelled, so whether a
     given edge actually emits is host-covered; the oracle validates the edge TRIGGER. Capture saved
     `logs/dtabil_oracle_pass.log` (reproducible, not committed).
+
+**✅ Behavior #4 — `UnitAIBehaviorClass::vfunc_6` (`0x4f6070`) LIFTED + DTUAI ORACLE PASS
+(2026-06-01)** → `sim/unit_ai.{h,cpp}`. The fog-of-war / sensor-visibility ticker over the entity's AI
+manager at `owner+0x108` (`owner = *(behavior+0x28)`), and the **FIRST CROSS-ENTITY behavior** — it
+reads the live global object list and maintains a per-(observer,object) visibility matrix, writing into
+the **shared** sensor grid `DAT_140b31900`. Three blocks: **(A)** a 300-tick **fixed-phase** throttled
+self-refresh (`next_due += 300`, NOT `now+300`) — when the observer's 12-float world transform
+(`entity+0x248..+0x274`) differs from the cache (`ai+0x68..+0x94`), pushes a "moved" update to the grid
+(`FUN_140659760`) and recaches; first pass builds/zeroes the bit array once (`FUN_1404f5cb0`). **(B)** a
+gated reveal hook (`FUN_1404f6470`). **(C)** the visibility matrix — for each global object, evaluate the
+heavy LOS/faction predicate (`FUN_14035f470`, env) and maintain an owner-private bit (`ai+0x58[idx]`); on
+each bit EDGE notify the shared grid (`FUN_140657ce0` became-visible / `FUN_140657db0` became-hidden);
+sensor-absent suppresses the notifies but still writes the bit; fog-off clears the whole array.
+**KEY THREADING FINDING: NOT Phase-A parallel-safe** — unlike #1–3 (own-entity state only), its three
+cross-boundary acts mutate the shared sensor grid keyed by (observer,object), and it reads the live
+global object set mid-sweep. To parallelise: buffer those writes (CommandSink-style) or shard the grid
+per-observer; the bit array itself is owner-private/safe. 9 host cases.
+  **DTUAI in-game oracle** (`hooks/winmm_proxy.c`, profile, `EAW_DIFFTRACE=1`): inline trampoline on
+  `0x4f6070` (15-byte position-independent prologue `40 56 / 57 / 41 56 / 48 83 ec 20 / 48 8b f2 /
+  4c 8b f1`, FF25 abs-jmp to fn+15, arg count 3 `behavior,entity,tick`); snapshots `next_due` before/
+  after, the 12-float cache vs the live transform, and the visibility-bit array (capped scan) before/
+  after; emits `DTUAI` on refresh/edge/sparse-sample + periodic `DTUAISURVEY` totals.
+  `tools/analyze_unitai_oracle.py` validates the throttle (`nda==ndb+300`, due, sensor) and the
+  transform-cache post-condition, and characterises the vis-matrix edges. **Result over a capital
+  battle (333 distinct observers, 6988 samples):**
+  - **throttle 3427/3427 advances exactly `+300`** (fixed-phase, only when due & sensor-present) —
+    the scheduler reproduces the live binary bit-exact.
+  - **transform-cache `cacheok == 1` on 6988/6988** — the recache-iff-(advanced ∧ changed) post-
+    condition holds on every sample.
+  - **90 visibility edges (36 became-visible / 54 became-hidden)** characterised as the shared-grid
+    notify count; bounds clean. The vis-matrix bit VALUE is the env LOS predicate (`35f470`,
+    characterised, not reproduced); the deterministic core (throttle + transform cache) is bit-exact.
+    Capture saved `logs/dtuai_oracle_pass.log` (reproducible, not committed).
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
