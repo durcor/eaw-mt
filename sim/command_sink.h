@@ -82,8 +82,9 @@ namespace sim {
 
 // Canonical signal ids seen at the FUN_140387400 emission sites. Extend as more units are lifted.
 enum SignalId : uint32_t {
-    kSigFireOrderInProgress      = 0x20, // parameterless; ordered-fire commit
-    kSigOpportunityTargetAcquired = 0x21, // payload = OpportunityTargetAcquiredData
+    kSigFireOrderInProgress      = 0x20, // parameterless; ordered-fire commit (FUN_140387400)
+    kSigOpportunityTargetAcquired = 0x21, // payload = OpportunityTargetAcquiredData (FUN_140387400)
+    kSigDamageEffectsCleared     = 0x2d, // parameterless; last active damage effect expired (FUN_14058bd80)
 };
 
 // POD payload for kSigOpportunityTargetAcquired (OpportunityTargetAcquiredDataClass, 3 ptrs).

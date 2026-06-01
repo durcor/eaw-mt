@@ -755,7 +755,7 @@ sim state; out = presentation):
 | `SimpleSpaceLocomotorBehaviorClass` (+Walk/Fighter/Fleet/Starship…) | `0x626420` | **IN** | the mover — writes `entity+0x78` position [CORE] |
 | `UnitAIBehaviorClass` | `0x4f6070` | **IN** | per-tick AI decision/orders (977 B; cross-entity — the Model-B write surface) |
 | `TargetingBehaviorClass` | `0x633a30` | **IN** | weapon target selection (per game-speed mode) |
-| `DamageTrackingBehaviorClass` | `0x58bd80` | **IN** | HP/damage application (cross-entity) |
+| `DamageTrackingBehaviorClass` | `0x58bd80` | **IN** | ✅ **LIFTED** (behavior #1) — *not* HP application: a **timed damage/status-effect decay ticker** (own `+0x1a0` list); emits `0x2d` on empty |
 | `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
 | `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | energy/power resource |
 | `IonStunEffectBehaviorClass` | `0x62bba0` | **IN** | ion-stun status effect |
@@ -782,6 +782,28 @@ one-shot RTTI dump of `entity+0x278`); decompiled `vfunc_6` bodies in `decomp/{3
 (`entity+0x78`) + hardpoint fire-control state. Each lifted function is diffed by replaying a fixed
 save and comparing the per-tick DIFFTRACE hash stream bit-for-bit. Coverage gap to close in Phase 4:
 fold RNG state + command-queue contents.
+
+#### IN sim behaviors — lift log
+
+**✅ Behavior #1 — `DamageTrackingBehaviorClass::vfunc_6` (`0x58bd80`) LIFTED 2026-06-01** →
+`sim/damage_tracking.{h,cpp}` (+ `sim/tests/damage_tracking_test.cpp`, 7 host cases). First of the
+13 IN behaviors, and the first to drive the channel-1 `CommandSink` seam (`command_sink.h`) with a
+real behavior rather than synthetic host cases.
+
+- **Census-label correction.** The census tagged it "HP/damage application (cross-entity)". The
+  per-tick `vfunc_6` does **not** write another entity's HP — it is a **timed damage/status-effect
+  decay ticker** over the entity's *own* effect list at `entity+0x1a0` (a hash-indexed intrusive
+  list; nodes `{+0x10 key, +0x14 duration}`). Actual HP application happens at effect-*attach* time
+  (a slot/connect path), not in the periodic update — that attach path stays to-find.
+- **Per-tick algorithm:** `decay = (FUN_1403727a0 + FUN_1403725f0)·_DAT_140b168fc` (template base ×
+  game-speed mode × faction × buff — world-coupled, modelled behind `DamageEnv`); walk the list,
+  `duration -= decay`, remove nodes whose new duration is **not > 0** (exactly-0 removed); **on the
+  empty transition** (count→0) emit **parameterless signal `0x2d`** (`kSigDamageEffectsCleared`) on
+  `entity+0x38`; tail `rate(+0x0c) = (hz·accum(+0x08)) / interval(behavior+0x34)`, `accum := 0`.
+- **Determinism:** no sim RNG drawn; the only cross-boundary effect is the single edge-triggered
+  `0x2d` emit, which fires iff the list empties this tick — **removal-order independent**, so the
+  in-engine hash list is faithfully modelled as an insertion-ordered vector. Phase-A parallel-safe
+  (own `+0x1a0` sub-object) modulo that one buffered emission. `command_sink.h` gains `0x2d`.
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
