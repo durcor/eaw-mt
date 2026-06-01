@@ -855,10 +855,31 @@ value and one presentation flag.
 - **Determinism:** no RNG, no other-entity access; writes only own `pool+0xf8` (+ own UI flag) → fully
   Phase-A parallel-safe with **no Phase-B command**. The three world-coupled inputs are behind
   `EnergyEnv` (`time_scale`/`max_energy`/`drain_disposition`/`regen_rate`/`local_selected`).
-- **NEXT (oracle):** EnergyPool is the **cleanest in-game oracle target** — pools regenerate every
-  combat tick, so unlike DamageTracking's death-only emit there is no dormancy. A future `DTNRG`
-  capture can snapshot `pool+0xf8` before/after + `regen_rate`, recover `dt = (value'−value)/rate`
-  offline (the DTDMG technique), and validate `value' == clamp(value+rate·dt,0,max)` bit-exact.
+**✅ DTNRG IN-GAME ORACLE — REGEN + CLAMP + SHARED-`dt` PASS (2026-06-01).** Added the `DTNRG`
+capture to the hook DLL (`hooks/winmm_proxy.c`, profile build, `EAW_DIFFTRACE=1`): wraps `0x56c030`,
+snapshots `pool+0xf8` (+ `regen_rate` template+0xddc, base `template+0xdd0`, disabled `pool+0x130`,
+drain `template+0x8b`) **before** the trampoline and re-reads `pool+0xf8` **after**, so the per-tick
+delta recovers the world-coupled time-scale `dt` offline as `dt = (value'−value)/rate` (the DTDMG
+technique — no need to call `FUN_140398010` ourselves). Trampoline runs exactly once → no determinism
+perturbation. Two-layer sampling: one latched entity per tick (`DTNRG`) + a **latch-bypass `DTNRGINT`
+stream** that logs ANY entity whose pool lands strictly inside `(0, base)` — needed because the
+latched pools refill to the cap each interval (`va==base`, a one-sided `dt≥…` bound only), so the
+interior landings (drain outpaced one regen step) are what pin `dt`. `tools/analyze_energy_oracle.py`.
+**Result over a TR capital battle (67 latched + 58 interior samples, 7 entities, rates 400/800):**
+  - **Recovered `dt` = `1.000000` exactly** (min=max=mean, stdev `0.000000`) across **all 58 interior
+    samples** spanning multiple entities and regen rates → confirms the rate·`dt` model with a
+    **single shared game-speed scalar** (normal speed → scale 1.0); `FUN_140398010(entity,4)` is a
+    clean per-tick multiplier.
+  - **Model reproduces `va` 67/67** latched samples via `va == clamp(vb + rate·dt, 0, base)` — all 67
+    were upper-clamp ticks (pool refilled to the cap), so the clamp must independently produce
+    `va==base` from `vb+rate·dt>base`, the genuinely non-circular check. `va` never `< 0`, never
+    `> base` (no buffed pools in this capture).
+  - **NOT observed: the lower clamp (`va→0`), the disabled no-op (`pool+0x130≠0`), and the drain
+    branch (`template+0x8b`).** No unit ran out of energy / got ionized / triggered an energy-drain
+    ability in the capture — the rare edges, same DTFIRE/DTDMG-dormant pattern. All three are
+    host-covered (`test_regen_floors_at_zero`, `test_disabled_no_write`, `test_draining_zeroes_pool`);
+    the `DTNRG` oracle stays **armed + committed** to confirm them opportunistically. (Note: `param_3`
+    is the sim **tick** the spine passes to `vfunc_6`, not a mode flag — a harmless capture-field nit.)
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)

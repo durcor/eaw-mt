@@ -4005,6 +4005,170 @@ static BOOL install_b58bd80_hook(void)
 }
 
 /* =========================================================================
+ * DTNRG — EnergyPool regen (FUN_14056c030) I/O capture.
+ *
+ * In-game oracle for the Phase-3 IN sim behavior #2 lift (sim/energy_pool.cpp).
+ * EnergyPoolBehaviorClass::vfunc_6 is a PURE self-contained Phase-A regen ticker:
+ *   value' = clamp(value + regen_rate*dt, 0, max_energy)
+ * on its own pool sub-object (entity+0xf0)+0xf8, where regen_rate = template+0xddc
+ * (template = entity+0x298), dt = FUN_140398010(entity,4) (per-tick game-speed/
+ * difficulty time-scale), max_energy = FUN_140372320 = base(template+0xdd0)*(1+Σbuffs).
+ * Guards: pool present + not disabled (pool+0x130 == 0). A drain gate (template+0x8b)
+ * can force-zero the pool instead of regenning. (decomp/56c030.c.)
+ *
+ * Unlike DTDMG (whose 0x2d emit only fires at unit death = dormant), an energy pool
+ * regenerates EVERY combat tick, so this oracle gets rich continuous data. We snapshot
+ * the pool value BEFORE the trampoline and re-read it AFTER; the per-tick delta recovers
+ * the game-speed scale offline as  scale = (value' - value) / regen_rate  (the DTDMG
+ * technique — no need to call the world-coupled dt fn ourselves). The validation:
+ *   (a) scale is a SINGLE shared scalar across ALL entities & ticks at a given game speed
+ *       (every pool regens by rate_i * the same dt) — a genuine multi-sample cross-check;
+ *   (b) when value sits at the base cap the delta is ~0 (upper clamp), and never < 0;
+ *   (c) a disabled pool (pool+0x130 != 0) does not change (guarded no-op).
+ * We also capture base(template+0xdd0) so buffed pools (value' > base) are filterable.
+ *
+ * The trampoline runs exactly once (no extra mutation -> no determinism perturbation);
+ * only logging is gated + latched onto one active entity at a time.
+ *
+ * arg count = 3 (decomp/56c030.c): param_1=rcx behavior(this), param_2=rdx entity,
+ * param_3=r8d mode-flag (int32). Returns undefined8 — preserved through the wrapper.
+ * Prologue (objdump @14056c030): 40 56 / 48 83 ec 40 / 0f 29 74 24 30 / 48 8b f2 =
+ * 2+4+5+3 = 14 bytes exactly (a 14-byte FF25 patch lands on the mov rsi,rdx boundary;
+ * all push/sub/movaps/mov-reg — none RIP-relative; the two body `call`s are past +14,
+ * reached via the trampoline tail). Own latch, independent of the other DT hooks.
+ * Profile-build only; runtime-gated by EAW_DIFFTRACE=1.
+ * ========================================================================= */
+#define NRG_56C030_RVA     0x56c030ULL
+#define DTNRG_STALE_TICKS  240u
+static const BYTE nrg_56c030_prologue[14] = {
+    0x40, 0x56,                    /* rex push rsi             */
+    0x48, 0x83, 0xec, 0x40,        /* sub rsp, 0x40            */
+    0x0f, 0x29, 0x74, 0x24, 0x30,  /* movaps [rsp+0x30], xmm6  */
+    0x48, 0x8b, 0xf2,              /* mov rsi, rdx             */
+};
+typedef int64_t (*Nrg56c030Fn)(int64_t behavior, int64_t entity, int32_t mode);
+static Nrg56c030Fn g_nrg_trampoline = NULL;
+static int64_t  g_nrg_ent       = 0;
+static uint32_t g_nrg_lasttick  = 0xFFFFFFFFu;
+static uint32_t g_nrg_seentick  = 0;
+static uint32_t g_nrg_pool_ticks = 0;          /* entity-ticks with a present, enabled pool   */
+static uint32_t g_nrg_regen_ticks = 0;         /* entity-ticks where the value actually moved  */
+static uint32_t g_nrg_interior_lines = 0;      /* emitted DTNRGINT lines (latch-bypass, capped)  */
+static uint32_t g_nrg_surv_last  = 0xFFFFFFFFu;
+
+static int64_t b56c030_hook(int64_t behavior, int64_t entity, int32_t mode)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(entity && g_dt_frame_ctr && dt_on()))
+        return g_nrg_trampoline(behavior, entity, mode);
+
+    int64_t pool     = *(int64_t *)(entity + 0xf0);
+    int64_t template_ = *(int64_t *)(entity + 0x298);
+    if (!pool || !template_)
+        return g_nrg_trampoline(behavior, entity, mode);
+
+    uint32_t tick = *g_dt_frame_ctr;
+
+    /* snapshot BEFORE */
+    float   value_before = *(float *)(pool + 0xf8);
+    uint8_t disabled     = *(uint8_t *)(pool + 0x130);
+    float   regen_rate   = *(float *)(template_ + 0xddc);
+    float   base_max     = *(float *)(template_ + 0xdd0);
+    uint8_t drain_flag   = *(uint8_t *)(template_ + 0x8b);
+    int32_t obj_id       = *(int32_t *)(entity + 0x50);
+    int32_t sel_id       = g_dt_imgbase ? *(int32_t *)(g_dt_imgbase + 0xa286f0) : 0;
+    int     selected     = (obj_id == sel_id) ? 1 : 0;
+
+    g_nrg_pool_ticks++;
+
+    int64_t r = g_nrg_trampoline(behavior, entity, mode);
+
+    float value_after = *(float *)(pool + 0xf8);
+    if (value_after != value_before) g_nrg_regen_ticks++;
+
+    /* INTERIOR sample (any entity, bypasses the latch) — a clean regen tick where the new value
+     * lands STRICTLY inside (0, base): the clamp is inactive so dt = (va-vb)/rate is recoverable
+     * exactly. Latched samples are dominated by pools that refill to the cap each interval (va==base,
+     * one-sided dt bound only); these interior landings (drain outpaced one regen step) are the ones
+     * that pin the game-speed scale. Same "bypass the latch for the rare informative event" tactic as
+     * DTDMG's emit. Capped so a pathological stream can't flood the log. */
+    if (!disabled && !drain_flag && regen_rate > 0.001f &&
+        value_after != value_before &&
+        value_after > 0.001f && value_after < base_max - 0.001f &&
+        g_nrg_interior_lines < 4000u) {
+        g_nrg_interior_lines++;
+        char in[320];
+        snprintf(in, sizeof in,
+            "DTNRGINT\ttick=%u\tent=%llx\tvb=%.6f\tva=%.6f\trate=%.6f\tbase=%.6f\n",
+            tick, (unsigned long long)entity, value_before, value_after, regen_rate, base_max);
+        log_write(in);
+    }
+
+    /* periodic survey — settles how often the regen path actually runs in this content */
+    if (tick != g_nrg_surv_last && (tick & 0x1ffu) == 0) {       /* once per 512 ticks */
+        g_nrg_surv_last = tick;
+        char sv[220];
+        snprintf(sv, sizeof sv,
+            "DTNRGSURVEY\ttick=%u\tpool_entticks=%u\tregen_entticks=%u\tinterior=%u\n",
+            tick, g_nrg_pool_ticks, g_nrg_regen_ticks, g_nrg_interior_lines);
+        log_write(sv);
+    }
+
+    /* latch one entity for routine per-tick sampling; release after STALE ticks. */
+    if (!g_nrg_ent) {
+        g_nrg_ent = entity;
+    } else if (entity != g_nrg_ent &&
+               (uint32_t)(tick - g_nrg_seentick) > DTNRG_STALE_TICKS) {
+        g_nrg_ent = entity;
+    }
+    if (entity == g_nrg_ent) g_nrg_seentick = tick;
+
+    int routine = (entity == g_nrg_ent && tick != g_nrg_lasttick);
+    if (!routine) return r;
+    g_nrg_lasttick = tick;
+
+    char s[320];
+    snprintf(s, sizeof s,
+        "DTNRG\ttick=%u\tent=%llx\tvb=%.6f\tva=%.6f\trate=%.6f\tbase=%.6f"
+        "\tdis=%d\tdrain=%d\tsel=%d\tmode=%d\n",
+        tick, (unsigned long long)entity, value_before, value_after,
+        regen_rate, base_max, (int)disabled, (int)drain_flag, selected, (int)mode);
+    log_write(s);
+    return r;
+}
+
+static BOOL install_b56c030_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + NRG_56C030_RVA;
+    if (memcmp(fn, nrg_56c030_prologue, 14) != 0) {
+        log_write("[eaw-mt] WARN: FUN_14056c030 prologue mismatch — DTNRG not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTNRG trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, nrg_56c030_prologue, 14);
+    write_abs_jmp(tramp + 14, (uint64_t)(fn + 14));
+    g_nrg_trampoline = (Nrg56c030Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b56c030_hook);
+    VirtualProtect(fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 14);
+    log_write("[eaw-mt] DTNRG: FUN_14056c030 EnergyPool regen hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -7482,6 +7646,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b3a76b0_hook();   /* DTFIRE: hardpoint fire-budget distribution I/O (EAW_DIFFTRACE=1) */
         install_b1ffb40_hook();   /* DTRNG: global sim RNG draw I/O (EAW_DIFFTRACE=1) */
         install_b58bd80_hook();   /* DTDMG: DamageTracking decay/expiry I/O (EAW_DIFFTRACE=1) */
+        install_b56c030_hook();   /* DTNRG: EnergyPool regen I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
 #endif
 
