@@ -55,6 +55,9 @@ sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/damage_tracking_test.cpp sim/damage_tracking.cpp -o /tmp/eaw_damage_tracking_test
   /tmp/eaw_damage_tracking_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/energy_pool_test.cpp sim/energy_pool.cpp -o /tmp/eaw_energy_pool_test
+  /tmp/eaw_energy_pool_test
 
 ghidra-script script:
   nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \

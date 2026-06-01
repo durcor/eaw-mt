@@ -757,7 +757,7 @@ sim state; out = presentation):
 | `TargetingBehaviorClass` | `0x633a30` | **IN** | weapon target selection (per game-speed mode) |
 | `DamageTrackingBehaviorClass` | `0x58bd80` | **IN** | ✅ **LIFTED** (behavior #1) — *not* HP application: a **timed damage/status-effect decay ticker** (own `+0x1a0` list); emits `0x2d` on empty |
 | `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
-| `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | energy/power resource |
+| `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | ✅ **LIFTED** (behavior #2) — pure self-contained Phase-A regen ticker: `value' = clamp(value + rate·dt, 0, max)` on own pool `(entity+0xf0)+0xf8`; no RNG/cross-entity/CommandSink |
 | `IonStunEffectBehaviorClass` | `0x62bba0` | **IN** | ion-stun status effect |
 | `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ability cooldowns |
 | `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | environmental damage |
@@ -828,6 +828,37 @@ math:**
     content. The `0x2d` emit is a 2-line `count→0` consequence (`58bd80` lines 63–82), covered by host
     cases `test_exactly_zero_removed` + `test_empty_transition_emits_once`; the `DTDMG` oracle stays
     **armed + committed** to confirm it opportunistically in any future capture that exercises it.
+
+**✅ Behavior #2 — `EnergyPoolBehaviorClass::vfunc_6` (`0x56c030`) LIFTED 2026-06-01** →
+`sim/energy_pool.{h,cpp}` (+ `sim/tests/energy_pool_test.cpp`, 10 host cases). The **cleanest** of the
+IN behaviors so far: a **pure self-contained Phase-A regen ticker** — no sim RNG, no cross-entity
+read/write, no `CommandSink` seam at all (contrast #1's `0x2d` emit). It writes only its own energy
+value and one presentation flag.
+
+- **Per-tick algorithm:** `value' = clamp(value + regen_rate·dt, 0, max_energy)` on the pool sub-object
+  `(entity+0xf0)+0xf8`, where `regen_rate = template+0xddc`, `dt = FUN_140398010(entity,4)` (the
+  per-tick game-speed/difficulty time-scale — same multiplier family as the locomotor/hardpoint
+  lifts), `max_energy = FUN_140372320(template,entity) = base(template+0xdd0)·(1 + Σ buff modifiers)`.
+  The clamp is the engine's exact two-compare form (`v<0→0; v>max→max; else v`). Float order faithful:
+  compose `value+rate·dt` first, then clamp to a **separately-queried** `max`.
+- **Drain gate** (only if `template+0x8b != 0`, i.e. the unit type has a drain source): look up the
+  source (`DAT_140b15418` vtable`[0x220]`, keyed `entity+0x58`); source null → return `NoDrainSource`
+  (`0x80650001`) with no write; drain predicate `FUN_140527520` (a `BitwiseAnd<bool>` over `src+0x198`)
+  **false → force-drain** the pool to `min(max,0)=0`; **true → normal regen**. All three world-coupled
+  resolutions collapse to one `DrainDisposition` enum behind `EnergyEnv`.
+- **Guards:** pool present (`entity+0xf0`) + regen not disabled (`pool+0x130 == 0`) — either failing is
+  a guarded no-op (`Ok`, no write, no UI flag). The in-engine `template==0` null checks are defensive
+  dead paths for a real EnergyPool unit (folded into the env's resolution).
+- **UI flag:** reached only after a write (`LAB_14056c180`) — if this object is the locally-selected
+  one (`entity+0x50 == DAT_140a286f0`) set `entity+0x3a0 |= 1`, a presentation "refresh the stat bar"
+  dirty bit, **not lockstep-relevant**.
+- **Determinism:** no RNG, no other-entity access; writes only own `pool+0xf8` (+ own UI flag) → fully
+  Phase-A parallel-safe with **no Phase-B command**. The three world-coupled inputs are behind
+  `EnergyEnv` (`time_scale`/`max_energy`/`drain_disposition`/`regen_rate`/`local_selected`).
+- **NEXT (oracle):** EnergyPool is the **cleanest in-game oracle target** — pools regenerate every
+  combat tick, so unlike DamageTracking's death-only emit there is no dormancy. A future `DTNRG`
+  capture can snapshot `pool+0xf8` before/after + `regen_rate`, recover `dt = (value'−value)/rate`
+  offline (the DTDMG technique), and validate `value' == clamp(value+rate·dt,0,max)` bit-exact.
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
