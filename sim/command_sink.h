@@ -80,10 +80,12 @@
 
 namespace sim {
 
-// Canonical signal ids seen at the FUN_140387400 emission sites. Extend as more units are lifted.
+// Canonical signal ids seen at the lifted emission sites. Extend as more units are lifted.
 enum SignalId : uint32_t {
     kSigFireOrderInProgress      = 0x20, // parameterless; ordered-fire commit (FUN_140387400)
     kSigOpportunityTargetAcquired = 0x21, // payload = OpportunityTargetAcquiredData (FUN_140387400)
+    kSigAbilityChargeComplete    = 0x29, // parameterless; ability chargeup reached target (FUN_14042f460)
+    kSigAbilityRecharged         = 0x2c, // payload = AbilitySignalData; cooldown hit 0 (FUN_14042f910)
     kSigDamageEffectsCleared     = 0x2d, // parameterless; last active damage effect expired (FUN_14058bd80)
 };
 
@@ -93,6 +95,14 @@ struct OpportunityTargetAcquiredData {
     const void* vftable     = nullptr; // OpportunityTargetAcquiredDataClass::vftable (drain-filled)
     void*       target_slot = nullptr; // self->opp_target_slot at emit time (387400 local_60)
     void*       hardpoint   = nullptr; // the emitting HardPointClass*           (387400 local_58)
+};
+
+// POD payload for kSigAbilityRecharged (AbilitySignalDataClass). The stack-built struct at the
+// FUN_14042f910 emit site is {vftable@+0x00, slot@+0x08} (local_48 = vftable, local_40 = slot).
+// vtable is supplied by the live binary at drain; the lifted code only fills the slot index.
+struct AbilitySignalData {
+    const void* vftable = nullptr; // +0x00 AbilitySignalDataClass::vftable (drain-filled)
+    int         slot    = 0;       // +0x08 ability slot index (42f910 local_40)
 };
 
 // One buffered cross-entity command. `emitter` is the GameObject* whose `+0x38` dispatcher the

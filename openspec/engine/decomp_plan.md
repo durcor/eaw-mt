@@ -759,7 +759,7 @@ sim state; out = presentation):
 | `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
 | `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | ✅ **LIFTED** (behavior #2) — pure self-contained Phase-A regen ticker: `value' = clamp(value + rate·dt, 0, max)` on own pool `(entity+0xf0)+0xf8`; no RNG/cross-entity/CommandSink |
 | `IonStunEffectBehaviorClass` | `0x62bba0` | **IN** | ion-stun status effect |
-| `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ability cooldowns |
+| `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ✅ **LIFTED** (behavior #3) — self-contained **integer-tick** cooldown/chargeup ticker over own `entity+0x1e8` 77-slot array; `delta=tick−last_tick`; countdown→0 emits `0x2c` (gated by `39b480`), chargeup→target calls `42f460` |
 | `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | environmental damage |
 | `NebulaBehaviorClass` | `0x437b60` | **IN** | nebula env effects (sensors/shields) |
 | `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | force-power target state (TR hero powers) |
