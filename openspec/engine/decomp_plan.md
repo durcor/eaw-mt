@@ -659,9 +659,34 @@ depends on it):
    > the emitter-mismatch bail is a `goto` (skips the emit) not a `return`, so **the flag transition
    > persists through an emit suppression** (unlike `0x21`'s full-`return` bail, which mutates nothing).
    > Both `387400` emitters are now lifted; the dispatch fan-out (`240940`) remains Phase-B.
-6. **Command/event queue drain (serial Phase-B apply).** `OutgoingEventQueueClass`,
-   `StopMovementEventClass` + the `EventFactoryClass<…>` family, the queue at `DAT_140b27e60` —
-   applied single-threaded after the parallel compute pass, in canonical order.
+   >
+   > **✅ PHASE-B DISPATCH FAN-OUT WIRED 2026-06-01** (`SignalDispatcher::emit` = `FUN_140240940`,
+   > `sim/signal_dispatch.{h,cpp}`). Lifted the synchronous per-object observer fan-out that the emit
+   > seam drains into — channel (1)'s machinery, the drain side of `CommandSink`. `emit(sig_id,
+   > payload)` looks up the `sig_id→SignalListClass` map (`1cacb0`, absent ⇒ no dispatch), walks the
+   > insertion-ordered slot list head→tail, and invokes each slot's `vtable[1](slot, disp, sig_id,
+   > payload)`. The two determinism-critical subtleties are reproduced faithfully rather than
+   > simplified: **(a) the dedup is a LOCKSTEP CURSOR, not a set** — a `fired` vector plus a cursor
+   > that advances in lockstep with the list and never rewinds within a forward pass, so it collapses
+   > only the already-fired *prefix* on a restart (a `std::set` would wrongly dedup a forward
+   > duplicate the monotonic cursor lets through); **(b) the touched-flag (`+0x08`) restart** — any
+   > structural/query access to the dispatcher during a slot callback (has-slot `2408c0` provably
+   > sets it; connect/disconnect mutate the list) trips the flag, and `240940` re-checks it after
+   > every slot: if set, the walk RESTARTS from head (already-fired slots skipped via the cursor,
+   > appended slots fired), and the flag is **left set after a restart** (`uVar9=1`) so a nested/outer
+   > in-progress dispatch also restarts — the propagation is part of the contract. Plus the `+0x0c`
+   > dispatch-depth bookkeeping (bumped on entry, restored on exit; supports nesting). `drain_commands`
+   > is the serial Phase-B apply pass: it replays a `RecordingCommandSink` buffer in canonical order
+   > (= GOM tick × per-emission insertion = buffer order), resolves each `emitter+0x38` to its
+   > dispatcher (null ⇒ skip, per `220ed0`), and routes the 0x21 opportunity-target payload. Host-
+   > validated (`sim/tests/signal_dispatch_test.cpp`, 9 cases): insertion-order firing, unconnected-
+   > signal no-op, restart-on-connect (each slot once, appended slot fired last), no-double-fire on
+   > restart, the has-slot-query restart + flag-left-set, restart-free flag restore, depth nesting
+   > (outer@1 / inner@2 / 0 after), drain order across two emitters, null-emitter skip.
+6. **Command/event queue drain (serial Phase-B apply).** ✅ Signal/slot channel done (`240940` above).
+   Remaining: the scheduled-event channel — `OutgoingEventQueueClass`, `StopMovementEventClass` + the
+   `EventFactoryClass<…>` family, the queue at `DAT_140b27e60` (`2d5290`) — applied single-threaded
+   after the parallel compute pass, in `(fire_time, insertion)` order.
 
 **The parallel boundary (concrete, from the above):**
 - **Phase A — parallel over entities (steps 2–4):** each entity reads its own + others' *last-tick*

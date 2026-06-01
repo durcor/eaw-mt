@@ -46,6 +46,9 @@ sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/sim_rng_test.cpp sim/sim_rng.cpp -o /tmp/eaw_sim_rng_test
   /tmp/eaw_sim_rng_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/signal_dispatch_test.cpp sim/signal_dispatch.cpp -o /tmp/eaw_signal_dispatch_test
+  /tmp/eaw_signal_dispatch_test
 
 ghidra-script script:
   nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
