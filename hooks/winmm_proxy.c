@@ -3511,6 +3511,215 @@ static BOOL install_b5c95a0_hook(void)
 }
 
 /* =========================================================================
+ * DTFIRE — hardpoint fire-budget distribution (FUN_1403a76b0) I/O capture.
+ *
+ * This is the in-game oracle for the Phase-3 Unit-4 lift (sim/hardpoint.cpp).
+ * FUN_1403a76b0 distributes a per-ship fire budget across the ship's HardPointClass
+ * mounts (DynamicVectorClass<HardPointClass*> at ship+0x2d0): it sums the
+ * game-speed-scaled mount weights (total_w via FUN_140540070), computes
+ *   avail   = (capacity(396070) - base(396df0+bias, clamped)) * total_w
+ * then per mount
+ *   share_i = (budget_i / total_w) * avail
+ * and consumes share_i from the mount (FUN_140387f50 decrements mount+0x28).
+ *
+ * The headline lifted finding is the total_w CANCELLATION:
+ *   share_i = budget_i * (capacity - base)
+ * — total_w (and therefore the whole 540070 game-speed weight scale) cancels out
+ * of every share; weight only GATES distribution (needs total_w>0). The precise
+ * oracle for that is: for every active mount that fires, the consumed FRACTION
+ *   k_i = (b0_i - b1_i) / b0_i
+ * must be a SINGLE shared constant (= capacity-base), INDEPENDENT of the mount's
+ * weight w. So we capture, per latched ship per tick, each active mount's
+ * budget-before (b0, mount+0x28), weight (w, mount+0x58), and budget-after (b1).
+ *
+ * We can't call 396070/396df0 ourselves to log capacity/base: 396df0 has a side
+ * effect (it writes the clamped fire-fraction back to ship+0x5c). So we recover
+ * (capacity-base) purely from the per-mount before/after deltas offline — which is
+ * exactly the cross-mount-constant assertion above. The per-mount dispatcher
+ * FUN_140387010 (run after distribution) does NOT touch mount+0x28 (verified:
+ * decomp/387010.c), so the after-read is the clean post-distribution budget.
+ *
+ * arg count = 2 (decomp/3a76b0.c): param_1=ship (rcx), param_2=tick (edx, int).
+ *
+ * Prologue (objdump): 4c 8b dc / 49 89 73 20 / 41 56 / 48 83 ec 70 / 48 8b f1
+ * = 3+4+2+4+3 = 16 bytes (>= the 14-byte FF25 width, instruction boundary, none
+ * RIP-relative). Own latch, independent of DTSTEER/DTYAW.
+ * Profile-build only; runtime-gated by EAW_DIFFTRACE=1.
+ * ========================================================================= */
+#define FIRE_A76B0_RVA   0x3a76b0ULL
+#define FIRE_STALE_TICKS 240u
+#define DTFIRE_MAXHP     128
+static const BYTE fire_a76b0_prologue[16] = {
+    0x4c, 0x8b, 0xdc,              /* mov r11, rsp        */
+    0x49, 0x89, 0x73, 0x20,        /* mov [r11+0x20], rsi */
+    0x41, 0x56,                    /* push r14            */
+    0x48, 0x83, 0xec, 0x70,        /* sub rsp, 0x70       */
+    0x48, 0x8b, 0xf1,              /* mov rsi, rcx        */
+};
+typedef void (*A76b0Fn)(int64_t ship, int32_t tick_param);
+static A76b0Fn  g_a76b0_trampoline = NULL;
+static int64_t  g_fire_ent      = 0;
+static uint32_t g_fire_lasttick = 0xFFFFFFFFu;
+static uint32_t g_fire_seentick = 0;
+
+/* Scan a ship's hardpoint vector: count active mounts, sum the raw fire-rate weights
+ * (+0x58, what FUN_140540070 feeds into total_w), and note whether any active mount
+ * carries budget (+0x28 > 0). The distribution path in FUN_1403a76b0 only consumes
+ * when total_w>0 (avail = (cap-base)*total_w) AND a mount has budget. */
+static void dtfire_scan(int64_t arr, int count, int *n_active_out, float *total_w_out,
+                        int *has_budget_out)
+{
+    int   na = 0, has_budget = 0;
+    float tw = 0.0f;
+    for (int i = 0; i < count; i++) {
+        int64_t m = *(int64_t *)(arr + (int64_t)i * 8);
+        if (m) {
+            int64_t owner = *(int64_t *)(m + 0x20);
+            if (owner && *(uint8_t *)(owner + 0x4d) == 1) {
+                na++;
+                tw += *(float *)(m + 0x58);
+                if (*(float *)(m + 0x28) > 0.0f) has_budget = 1;
+            }
+        }
+    }
+    *n_active_out = na; *total_w_out = tw; *has_budget_out = has_budget;
+}
+
+/* Survey counters: across the whole capture, do ANY ships exercise the distribution
+ * path? na2 = ship-ticks with >=2 active mounts; twpos = those with total_w>0 (the
+ * precondition for the lifted distribution to do anything); consume = those that
+ * actually decremented budget. If twpos stays 0 through a battle, the lifted
+ * distribution is dormant in this content (zero-weight hardpoints) and weapons fire
+ * via the unconditional per-mount dispatch (387010->387400) instead. */
+static uint32_t g_surv_na2 = 0, g_surv_twpos = 0, g_surv_consume = 0;
+static uint32_t g_surv_last = 0xFFFFFFFFu;
+static float    g_surv_maxtw = 0.0f;
+static int64_t  g_surv_maxtw_ent = 0;
+
+static void b3a76b0_hook(int64_t ship, int32_t tick_param)
+{
+    int      count = 0, n_active = 0, has_budget = 0, cheap = 0;
+    int64_t  arr = 0;
+    float    total_w = 0.0f;
+
+    if (ship && g_dt_frame_ctr && dt_on()) {
+        int64_t vec = *(int64_t *)(ship + 0x2d0);
+        /* same gate as the engine: vector present and (ship+0x3a0 & 0x40)==0 */
+        if (vec && (*(uint8_t *)(ship + 0x3a0) & 0x40) == 0) {
+            count = *(int *)(vec + 0x10);
+            if (count > 0 && count <= DTFIRE_MAXHP) {
+                arr = *(int64_t *)(vec + 8);
+                dtfire_scan(arr, count, &n_active, &total_w, &has_budget);
+                cheap = (n_active >= 2);
+            }
+        }
+    }
+
+    if (!cheap) { g_a76b0_trampoline(ship, tick_param); return; }
+
+    /* --- survey accounting + periodic flush (settles dormant-vs-mislatched) --- */
+    uint32_t tick = *g_dt_frame_ctr;
+    g_surv_na2++;
+    if (total_w > 0.0f) {
+        g_surv_twpos++;
+        if (total_w > g_surv_maxtw) { g_surv_maxtw = total_w; g_surv_maxtw_ent = ship; }
+    }
+    if (tick != g_surv_last && (tick & 0x1ffu) == 0) {       /* once per 512 ticks */
+        g_surv_last = tick;
+        char sv[256];
+        snprintf(sv, sizeof sv,
+            "DTFIRESURVEY\ttick=%u\tna2_shipticks=%u\ttwpos_shipticks=%u\t"
+            "consume_shipticks=%u\tmaxtw=%.6f\tmaxtw_ent=%llx\n",
+            tick, g_surv_na2, g_surv_twpos, g_surv_consume,
+            g_surv_maxtw, (unsigned long long)g_surv_maxtw_ent);
+        log_write(sv);
+    }
+
+    /* only a ship that can actually distribute (total_w>0 and some budget) goes to the
+     * snapshot + consumption-latched oracle emission below */
+    if (!(total_w > 0.0f && has_budget)) { g_a76b0_trampoline(ship, tick_param); return; }
+
+    /* --- snapshot each active mount's budget+weight BEFORE distribution.
+     * We do this for EVERY qualifying ship (not just the latched one) so we can detect
+     * which ship actually CONSUMES budget this tick — a ship can pass the weight/budget
+     * gate yet not fire (capacity<=base, or negligible weight), and such a ship must not
+     * be allowed to hog the latch and starve out the real firing ships. --- */
+    static float   b0[DTFIRE_MAXHP], w[DTFIRE_MAXHP], b1[DTFIRE_MAXHP];
+    static int     act[DTFIRE_MAXHP];
+    static int64_t mp[DTFIRE_MAXHP];
+    for (int i = 0; i < count; i++) {
+        int64_t m = *(int64_t *)(arr + (int64_t)i * 8);
+        mp[i] = m;
+        if (m) {
+            int64_t owner = *(int64_t *)(m + 0x20);
+            act[i] = (owner && *(uint8_t *)(owner + 0x4d) == 1) ? 1 : 0;
+            b0[i]  = *(float *)(m + 0x28);
+            w[i]   = *(float *)(m + 0x58);
+        } else { act[i] = 0; b0[i] = 0.0f; w[i] = 0.0f; }
+    }
+
+    g_a76b0_trampoline(ship, tick_param);
+
+    /* --- after: re-read budgets (387010 leaves mount+0x28 untouched) + detect consumption --- */
+    int consumed = 0;
+    for (int i = 0; i < count; i++) {
+        b1[i] = mp[i] ? *(float *)(mp[i] + 0x28) : 0.0f;
+        if (act[i] && b0[i] - b1[i] > 1e-4f) consumed = 1;
+    }
+    if (!consumed) return;   /* qualifying but idle this tick — don't latch or emit */
+    g_surv_consume++;
+
+    /* latch onto a ship that is actually firing; release it only after FIRE_STALE_TICKS
+     * elapse with no fire from it, then a different firing ship may take the latch. */
+    if (!g_fire_ent) {
+        g_fire_ent = ship;
+    } else if (ship != g_fire_ent &&
+               (uint32_t)(tick - g_fire_seentick) > FIRE_STALE_TICKS) {
+        g_fire_ent = ship;
+    }
+    if (ship != g_fire_ent) return;
+    g_fire_seentick = tick;
+    if (tick == g_fire_lasttick) return;
+    g_fire_lasttick = tick;
+
+    for (int i = 0; i < count; i++) {
+        if (!mp[i] || !act[i]) continue;   /* only active mounts participate in distribution */
+        char s[256];
+        snprintf(s, sizeof s,
+            "DTFIRE\ttick=%u\tent=%llx\tnm=%d\tna=%d\tidx=%d\tb0=%.6f\tw=%.6f\tb1=%.6f\n",
+            tick, (unsigned long long)ship, count, n_active, i, b0[i], w[i], b1[i]);
+        log_write(s);
+    }
+}
+
+static BOOL install_b3a76b0_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + FIRE_A76B0_RVA;
+    if (memcmp(fn, fire_a76b0_prologue, 16) != 0) {
+        log_write("[eaw-mt] WARN: FUN_1403a76b0 prologue mismatch — DTFIRE not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTFIRE trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, fire_a76b0_prologue, 16);
+    write_abs_jmp(tramp + 16, (uint64_t)(fn + 16));
+    g_a76b0_trampoline = (A76b0Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b3a76b0_hook);
+    VirtualProtect(fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 14);
+    log_write("[eaw-mt] DTFIRE: FUN_1403a76b0 hardpoint fire-budget hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -6985,6 +7194,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_galactic_slot22_hook();
         install_b5caaf0_hook();   /* DTSTEER: Fighter steering controller I/O (EAW_DIFFTRACE=1) */
         install_b5c95a0_hook();   /* DTYAW: Fighter yaw/roll bank-to-turn integrator I/O (EAW_DIFFTRACE=1) */
+        install_b3a76b0_hook();   /* DTFIRE: hardpoint fire-budget distribution I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
 #endif
 

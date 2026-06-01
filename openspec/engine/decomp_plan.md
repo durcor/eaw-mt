@@ -571,6 +571,23 @@ depends on it):
    DIFFTRACE per-tick hash already folds `hp+0x28`/`+0x58`, so the distribution's effect is observed;
    a dedicated **DTFIRE** capture (per-tick `total_w`/`avail`/`share`/budget deltas) is the precise
    in-game oracle = the follow-on analysis step.
+
+   **🔬 DTFIRE in-game survey result (2026-05-31) — the phase-1 distribution is DORMANT in TR content.**
+   A `FUN_1403a76b0` trampoline (profile build, `EAW_DIFFTRACE=1`, `hooks/winmm_proxy.c`) instrumented
+   every ship-tick with ≥2 active mounts and latched before/after budget deltas. Over a full capital
+   battle (`logs/dtfire_survey_capbattle.log`, tick 105,984→114,176):
+   - `na2_shipticks = 81,302` — plenty of multi-hardpoint capitals engaging;
+   - `twpos_shipticks = 72,275` (89%) had `total_w > 0` — weights are *technically* nonzero, **but**
+   - `maxtw = 0.000000` for the **entire** battle — the summed weight never exceeded ~5e-7;
+   - **`consume_shipticks = 0`** and **0 DTFIRE data lines** — the distribution branch (`387f50`
+     consume) decremented `hp+0x28` on **zero** ship-ticks.
+
+   Interpretation: in Thrawn's Revenge content the hardpoint fire-rate weight (`hp+0x58`) is
+   sub-microscopic and the phase-1 budget-distribution path **never consumes** — weapons fire entirely
+   through the **phase-2 per-mount dispatch** (`387010`→`387400`). The cancellation oracle is therefore
+   **unobservable in this mod** (no consumption samples exist to test); the host-validated lift stands
+   on its own. **`FUN_140387400` (target acquisition) is the live fire path** and the priority next
+   sub-lift — DTFIRE confirmed *that* branch, not the distributor, is what actually fires weapons here.
 5. **Cross-entity / global write sites → command emitters.** The compute→apply boundary: every write
    a per-entity update makes to *other* entities or globals — target listener-list registration on
    `target+0x38` (`220e90`/`ed0`/`eb0` via `058570`), the global event queue `DAT_140b27e60`
