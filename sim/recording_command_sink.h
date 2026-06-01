@@ -23,7 +23,8 @@ struct RecordedCommand {
 
 struct RecordingCommandSink : CommandSink {
     std::vector<RecordedCommand> commands;
-    std::vector<std::pair<void*, uint64_t>> scheduled; // (event, fire_time) for channel 2
+    std::vector<SfxCommand> sfx;                        // channel-2 presentation cues, in emit order
+    std::vector<std::pair<void*, uint64_t>> scheduled;  // galactic OutgoingEventQueueClass (out of scope)
 
     void emit_signal(void* emitter, uint32_t sig_id,
                      const void* payload, size_t payload_size) override {
@@ -36,6 +37,10 @@ struct RecordingCommandSink : CommandSink {
             rc.opp = *static_cast<const OpportunityTargetAcquiredData*>(payload);
         }
         commands.push_back(rc);
+    }
+
+    void emit_sfx_event(void* emitter, uint32_t sfx_id) override {
+        sfx.push_back(SfxCommand{emitter, sfx_id});
     }
 
     void schedule_event(void* event, uint64_t fire_time) override {

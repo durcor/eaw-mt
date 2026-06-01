@@ -683,10 +683,35 @@ depends on it):
    > signal no-op, restart-on-connect (each slot once, appended slot fired last), no-double-fire on
    > restart, the has-slot-query restart + flag-left-set, restart-free flag restore, depth nesting
    > (outer@1 / inner@2 / 0 after), drain order across two emitters, null-emitter skip.
-6. **Command/event queue drain (serial Phase-B apply).** ✅ Signal/slot channel done (`240940` above).
-   Remaining: the scheduled-event channel — `OutgoingEventQueueClass`, `StopMovementEventClass` + the
-   `EventFactoryClass<…>` family, the queue at `DAT_140b27e60` (`2d5290`) — applied single-threaded
-   after the parallel compute pass, in `(fire_time, insertion)` order.
+   >
+   > **✅ CHANNEL-2 = PRESENTATION SFX CUE LIFTED 2026-06-01 — and the "(2) scheduled-event queue"
+   > framing above is CORRECTED** (`sim/sfx_channel.{h,cpp}`). `387400` line 99's second emission is
+   > `FUN_1402d5290(&DAT_140b27e60, DAT_140b301c8, 0,0,0)` = `SFXEventManagerClass::Start_SFX_Event_`
+   > `Internally` (decomp `2d5440`: `ActiveSFXEventClass`, SFX presets, looping events, voice limits) —
+   > a **sound cue** fired when an ordered fire-order completes, **not** a gameplay scheduled event. It
+   > is presentation-only and fully decoupled from the lockstep sim, on three independent lines of
+   > evidence: (a) its probability gate (`2d5440:153`) draws from `&DAT_140a13e20`, a SEPARATE LCG state
+   > word from the sim RNG `&DAT_140a13e24` — corpus-wide `a13e24` is read only by core sim fns
+   > (`6236b0` locomotor / `387400` hardpoint / `3a6b80`+`3825b0` spine) and `a13e20` only by audio
+   > (`2d5440`), independently seeded in init (`5d990:95` = `FUN_140222fa0()`); (b) its internal queue
+   > (`2d72c0` over `b27e60`) sorts active events by **wall-clock `timeGetTime()`** (`2d5290:21`,
+   > comparator `2d3d90`) — a lockstep sim queue can never key on real time. **Determinism contract =
+   > the OPPOSITE of channel-1's**: this channel mutates no sim state and draws no sim RNG, so its
+   > ordering is NOT lockstep-relevant — the drain may reorder, drop (audio off / headless server), or
+   > run on a presentation thread with zero sim effect. Modelled as `CommandSink::emit_sfx_event` →
+   > `RecordingCommandSink.sfx` → `drain_sfx(buffer, SfxSink&)` (the `SfxSink` is the presentation
+   > boundary; the real impl calls `Start_SFX_Event`). Host-validated (`sim/tests/sfx_channel_test.cpp`,
+   > 4 cases): emit-in-order, drain-in-order, **the sim-RNG-untouched invariant** (a `SimRng` is
+   > bit-identical across a drain — and draws its next value exactly as with no drain), droppable to a
+   > no-op sink. The genuine `OutgoingEventQueueClass` (`DAT_140b2ed18`, "OutgoingEventQueueClass::Add",
+   > `(fire_time, insertion)`) IS a real timed queue, but it lives at the **galactic/strategic layer**
+   > (`28d400`: `PENDING_TACTICAL_BATTLE_VOTE`), outside this tactical sim slice — `387400` never
+   > touches it.
+6. **Command/event queue drain (serial Phase-B apply).** ✅ **DONE for the tactical sim slice.**
+   Channel-1 signal/slot fan-out (`240940` + `drain_commands`) and channel-2 presentation SFX cue
+   (`drain_sfx`) both lifted & host-validated (above). Both `387400` emission channels are now
+   modelled end-to-end. The galactic `OutgoingEventQueueClass` (`b2ed18`) + the `StopMovementEvent`/
+   `EventFactoryClass<…>` family are a separate strategic-layer concern, not part of this slice.
 
 **The parallel boundary (concrete, from the above):**
 - **Phase A — parallel over entities (steps 2–4):** each entity reads its own + others' *last-tick*
