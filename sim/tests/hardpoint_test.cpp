@@ -6,6 +6,7 @@
 // in-game oracle (a DTFIRE capture, folded already into the DIFFTRACE per-tick hash) is the
 // end-to-end check.
 #include "../hardpoint.h"
+#include "../recording_command_sink.h"
 #include <cstdio>
 #include <cmath>
 #include <vector>
@@ -355,6 +356,185 @@ static void test_scan_rng_contract() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Opportunity-target acquisition tail (FUN_140387400 lines 220–316) — the sig-0x21 EMISSION decision,
+// wired to a recording sim::CommandSink. The world queries are controllable; the scan underneath uses
+// the real SimRng. These pin the four emission outcomes + the rescan-stamp side effect.
+
+static void* const SELF_HP = tgt(1000);  // the emitting HardPointClass* (payload.hardpoint)
+static void* const EMITTER = tgt(2000);  // resolved emitter context
+
+// Controllable acquisition env. Owns the opp_target_slot; folds an inner ScanEnv for the scan.
+struct AcqEnv : OppAcquireEnv {
+    // scan side (OppScanEnv): a single accepter table by default.
+    int   scan_n = 4, scan_self = 99;
+    bool  scan_vis = false;
+    std::vector<bool>  s_present, s_blocked;
+    std::vector<void*> s_target;
+    std::vector<bool>  s_accept;
+    // acquisition side.
+    void* slot = nullptr;
+    bool  ex_blocked = false, ex_fire_ok = false;
+    int   frame = 100, interval = 10, last_scan = 0;
+    bool  ctx_blocked = false, ctx_order = false;
+    bool  new_fire_ok = true;
+    bool  emitter_ok = true;
+    // tallies of the side effects.
+    int   clears = 0, binds = 0, scans_predicted = 0;
+
+    void init_scan() {
+        s_present.assign(scan_n, true); s_blocked.assign(scan_n, false);
+        s_target.assign(scan_n, nullptr); s_accept.assign(scan_n, false);
+    }
+    // OppScanEnv
+    int player_count() override { return scan_n; }
+    int self_skip_id() override { return scan_self; }
+    void* player_at(int idx) override { return s_present[idx] ? tgt(idx) : nullptr; }
+    bool visibility_mode() override { return scan_vis; }
+    bool candidate_blocked(int idx) override { return s_blocked[idx]; }
+    CandidateEval eval_candidate(int idx) override { return { s_target[idx], s_accept[idx] }; }
+    // OppAcquireEnv
+    void* opp_slot() override { return slot; }
+    bool existing_fog_blocked() override { return ex_blocked; }
+    bool existing_fire_allowed() override { return ex_fire_ok; }
+    void clear_opp_slot() override { slot = nullptr; ++clears; }
+    void bind_opp_slot(void* t) override { slot = t; ++binds; }
+    int frame_counter() override { return frame; }
+    int rescan_interval() override { return interval; }
+    int last_scan_time() override { return last_scan; }
+    void set_last_scan_time(int v) override { last_scan = v; }
+    bool context_blocked() override { return ctx_blocked; }
+    bool context_has_active_order() override { return ctx_order; }
+    bool new_slot_fire_allowed() override { return new_fire_ok; }
+    bool resolve_emitter(void*& out) override { out = EMITTER; return emitter_ok; }
+    void* self_hardpoint() override { return SELF_HP; }
+};
+
+static void test_acq_keep_existing() {
+    std::printf("test_acq_keep_existing\n");
+    // Existing slot is not fog-blocked and still fire-allowed -> KEEP: no scan, no bind, no clear,
+    // no emit, RNG untouched.
+    AcqEnv env; env.init_scan();
+    env.slot = tgt(7); env.ex_blocked = false; env.ex_fire_ok = true;
+    sim::RecordingCommandSink sink;
+    SimRng rng(0xABCDu); u32 before = rng.state;
+    acquire_opportunity_target(rng, env, sink);
+    CHECK(sink.commands.empty());
+    CHECK(env.slot == tgt(7));          // unchanged
+    CHECK(env.clears == 0 && env.binds == 0);
+    CHECK(rng.state == before);         // no scan -> no draw
+}
+
+static void test_acq_emit_after_rescan() {
+    std::printf("test_acq_emit_after_rescan\n");
+    // Existing slot fails revalidation -> cleared -> forced rescan -> scan binds an accepter that is
+    // fire-allowed -> EMIT 0x21 with payload {target = bound slot, hardpoint = self}.
+    AcqEnv env; env.init_scan();
+    env.scan_self = 99;                 // no self in table
+    for (int i = 0; i < env.scan_n; ++i) { env.s_target[i] = tgt(i); env.s_accept[i] = true; }
+    env.slot = tgt(7); env.ex_blocked = false; env.ex_fire_ok = false; // revalidation fails -> clear+force
+    env.new_fire_ok = true; env.emitter_ok = true;
+    sim::RecordingCommandSink sink;
+    u32 seed = 0x1234u;
+    int start = predict_start(seed, env.scan_n);     // first accepter == start (all accept)
+    SimRng rng(seed);
+    acquire_opportunity_target(rng, env, sink);
+    CHECK(env.clears == 1);             // the failed existing slot
+    CHECK(env.binds == 1);
+    CHECK(env.slot == tgt(start));      // bound the scan winner
+    CHECK(sink.commands.size() == 1);
+    if (!sink.commands.empty()) {
+        const sim::RecordedCommand& c = sink.commands[0];
+        CHECK(c.sig_id == sim::kSigOpportunityTargetAcquired);
+        CHECK(c.emitter == EMITTER);
+        CHECK(c.has_payload);
+        CHECK(c.opp.target_slot == tgt(start));
+        CHECK(c.opp.hardpoint == SELF_HP);
+        CHECK(c.opp.vftable == nullptr);   // drain-filled
+    }
+    CHECK(env.last_scan == env.frame);  // stamped
+}
+
+static void test_acq_bound_not_fire_allowed() {
+    std::printf("test_acq_bound_not_fire_allowed\n");
+    // Scan binds a target but it is no longer fire-allowed at the emission gate -> CLEAR, no emit.
+    AcqEnv env; env.init_scan();
+    for (int i = 0; i < env.scan_n; ++i) { env.s_target[i] = tgt(i); env.s_accept[i] = true; }
+    env.slot = nullptr; env.last_scan = 0; env.frame = 100; env.interval = 10; // interval elapsed -> rescan
+    env.new_fire_ok = false;            // bound target rejected at the gate
+    sim::RecordingCommandSink sink;
+    SimRng rng(0x55u);
+    acquire_opportunity_target(rng, env, sink);
+    CHECK(env.binds == 1);              // scan bound something
+    CHECK(env.slot == nullptr);         // ...then cleared at the emission gate
+    CHECK(env.clears == 1);
+    CHECK(sink.commands.empty());       // no emit
+}
+
+static void test_acq_emitter_bail() {
+    std::printf("test_acq_emitter_bail\n");
+    // Bound + fire-allowed, but emitter resolution bails (FUN_1404ec820 != context) -> return, no emit
+    // and no clear.
+    AcqEnv env; env.init_scan();
+    for (int i = 0; i < env.scan_n; ++i) { env.s_target[i] = tgt(i); env.s_accept[i] = true; }
+    env.slot = nullptr; env.last_scan = 0; env.frame = 100; env.interval = 10;
+    env.new_fire_ok = true; env.emitter_ok = false;   // bail
+    sim::RecordingCommandSink sink;
+    SimRng rng(0x66u);
+    acquire_opportunity_target(rng, env, sink);
+    CHECK(sink.commands.empty());
+    CHECK(env.slot != nullptr);         // slot kept (no clear on the bail path)
+}
+
+static void test_acq_no_rescan_interval() {
+    std::printf("test_acq_no_rescan_interval\n");
+    // No existing slot and the interval has NOT elapsed -> rescan gate stays shut: no scan, no draw,
+    // no emit, and last_scan_time is NOT stamped.
+    AcqEnv env; env.init_scan();
+    for (int i = 0; i < env.scan_n; ++i) { env.s_target[i] = tgt(i); env.s_accept[i] = true; }
+    env.slot = nullptr; env.last_scan = 95; env.frame = 100; env.interval = 10; // 10 < 5 false
+    sim::RecordingCommandSink sink;
+    SimRng rng(0x77u); u32 before = rng.state;
+    acquire_opportunity_target(rng, env, sink);
+    CHECK(sink.commands.empty());
+    CHECK(env.binds == 0);
+    CHECK(rng.state == before);         // gate shut -> no draw
+    CHECK(env.last_scan == 95);         // NOT stamped (COND_A false)
+}
+
+static void test_acq_stamp_even_when_blocked() {
+    std::printf("test_acq_stamp_even_when_blocked\n");
+    // COND_A holds (interval elapsed) but the context is blocked -> the scan is suppressed, yet the
+    // last_scan_time stamp STILL fires (the comma side effect inside the &&). No emit, no draw.
+    AcqEnv env; env.init_scan();
+    for (int i = 0; i < env.scan_n; ++i) { env.s_target[i] = tgt(i); env.s_accept[i] = true; }
+    env.slot = nullptr; env.last_scan = 0; env.frame = 100; env.interval = 10; // elapsed -> COND_A true
+    env.ctx_blocked = true;             // COND_B suppresses the scan
+    sim::RecordingCommandSink sink;
+    SimRng rng(0x88u); u32 before = rng.state;
+    acquire_opportunity_target(rng, env, sink);
+    CHECK(env.binds == 0);
+    CHECK(sink.commands.empty());
+    CHECK(rng.state == before);         // scan suppressed -> no draw
+    CHECK(env.last_scan == 100);        // ...but the stamp still fired
+}
+
+static void test_acq_scan_empty_no_emit() {
+    std::printf("test_acq_scan_empty_no_emit\n");
+    // Rescan runs but the scan finds nothing (no accepters, no leaks) -> nothing bound, slot stays
+    // null -> no emit. The RNG draw still happens (the scan always draws its start index).
+    AcqEnv env; env.init_scan();        // all targets null, no accept
+    env.slot = nullptr; env.last_scan = 0; env.frame = 100; env.interval = 10;
+    sim::RecordingCommandSink sink;
+    SimRng rng(0x99u); u32 before = rng.state;
+    acquire_opportunity_target(rng, env, sink);
+    CHECK(env.binds == 0);
+    CHECK(env.slot == nullptr);
+    CHECK(sink.commands.empty());
+    CHECK(rng.state != before);         // the scan drew its start index
+    CHECK(env.last_scan == 100);        // gate opened -> stamped
+}
+
 int main() {
     test_skip_disabled();
     test_cancellation();
@@ -371,6 +551,13 @@ int main() {
     test_scan_null_slot_stall();
     test_scan_score_leak();
     test_scan_rng_contract();
+    test_acq_keep_existing();
+    test_acq_emit_after_rescan();
+    test_acq_bound_not_fire_allowed();
+    test_acq_emitter_bail();
+    test_acq_no_rescan_interval();
+    test_acq_stamp_even_when_blocked();
+    test_acq_scan_empty_no_emit();
     if (g_fail) { std::printf("\nFAILED: %d check(s)\n", g_fail); return 1; }
     std::printf("\nAll hardpoint checks passed.\n");
     return 0;

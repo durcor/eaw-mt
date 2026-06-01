@@ -631,6 +631,20 @@ depends on it):
    > decisions are deterministic given a unit's inputs and **independent of any slot's behaviour** →
    > a recording `CommandSink` is a faithful, host-testable Phase-A stand-in. The dispatch machinery
    > (`240940` fan-out, the queue drain) is Phase-B and deliberately **not** lifted yet.
+   >
+   > **✅ FIRST EMITTER WIRED 2026-05-31** (`acquire_opportunity_target`, `sim/hardpoint.{h,cpp}`).
+   > Lifted `387400` lines 220–316 — the autonomous opportunity-target acquisition tail, i.e. the code
+   > that **calls `scan_opportunity_target`**, binds the result into `opp_target_slot`, and emits sig
+   > `0x21`. It now takes a `sim::CommandSink&` and emits instead of dispatching inline (`220ed0`). The
+   > world queries are an `OppAcquireEnv` (extends `OppScanEnv`); `sim/recording_command_sink.h` is a
+   > reusable Phase-A recording sink. Host-validated (`sim/tests/hardpoint_test.cpp`, 7 new cases): the
+   > four emission outcomes — **keep-existing** (revalidates → no scan/emit), **emit-after-rescan**
+   > (cleared slot forces rescan → bound + fire-allowed → emit `0x21` payload `{target, hardpoint=self}`),
+   > **bound-not-fire-allowed** (→ clear, no emit), **emitter-bail** (`1404ec820 != context` → return,
+   > no emit) — plus the rescan-gate `last_scan_time` comma side-effect (stamps under the force/interval
+   > condition even when the blocked/active-order check then suppresses the scan). sig `0x20` (the
+   > ordered-fire `in_progress` 0→1 transition, lines 173–194) is a *different* sub-path, not the scan
+   > caller, and stays env-modelled.
 6. **Command/event queue drain (serial Phase-B apply).** `OutgoingEventQueueClass`,
    `StopMovementEventClass` + the `EventFactoryClass<…>` family, the queue at `DAT_140b27e60` —
    applied single-threaded after the parallel compute pass, in canonical order.

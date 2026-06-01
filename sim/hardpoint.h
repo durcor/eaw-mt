@@ -34,6 +34,7 @@
 #pragma once
 #include "eaw_types.h"
 #include "sim_rng.h"
+#include "command_sink.h"
 #include <vector>
 
 namespace eaw {
@@ -175,5 +176,64 @@ struct OppScanEnv {
 // loop guard — then returns the chosen target pointer (or nullptr). See the block comment for the
 // exact stall/leak/skip-self semantics.
 void* scan_opportunity_target(SimRng& rng, OppScanEnv& env);
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// FUN_140387400 lines 220–316 — the AUTONOMOUS opportunity-target acquisition tail: the code that
+// *calls* scan_opportunity_target, binds its result into the mount's opp_target_slot, and (the
+// payoff) decides the OpportunityTargetAcquired (sig 0x21) emission. This is "scan_opportunity_target's
+// caller", wired to a sim::CommandSink instead of dispatching the signal inline (FUN_140220ed0).
+//
+// PRECONDITION (the upstream guard cascade, lines 1–219, stays env-modelled in HardpointEnv::
+// acquire_targets): reached only on the autonomous-fire path — owner_record.state_flag == 0 (line 203
+// returns early when ==1) and with cVar6 == 0 at LAB_14038786d (line 221), i.e. no regular/ordered
+// target was already fire-allowed. The sig-0x20 "fire-order in progress" emission lives in the
+// EARLIER ordered-fire section (lines 173–194) and is NOT part of this caller — it stays env-modelled.
+//
+// The four emission OUTCOMES this tail produces (what the host test pins):
+//   • existing slot revalidates (not fog-blocked AND still fire-allowed) → KEEP, return, no scan,
+//     no emit                                                              (lines 224–231)
+//   • slot cleared / absent, rescan gate opens, scan binds a target that is fire-allowed → EMIT 0x21
+//     with payload {target = opp_target_slot, hardpoint = self}            (lines 290–315)
+//   • bound slot is NOT fire-allowed → CLEAR it, no emit                   (lines 291–295)
+//   • emitter resolution bails (FUN_1404ec820 != context for a subordinate mount) → return, no emit
+//                                                                          (lines 301–306)
+// Determinism notes carried from the binary:
+//   • the rescan gate stamps last_scan_time (field_0x64) whenever the FORCE/INTERVAL condition holds,
+//     EVEN when the blocked/active-order check then suppresses the scan (the `field_0x64 = iVar8`
+//     comma side effect sits inside the &&, line 240) — replayed exactly.
+//   • a just-cleared existing slot forces a rescan that same call (`pvVar11==0 && bVar5`, line 238).
+//   • the scan itself consumes the global SimRng (see scan_opportunity_target) — the ONE nondeterminism
+//     source; everything else here is deterministic given the env outcomes.
+
+// World-coupled queries/side-effects of the acquisition tail. Extends OppScanEnv so the same object
+// also drives the inner scan (matching the binary, where it is all one function's world state). The
+// opp_target_slot is OWNED by the env (clear_opp_slot/bind_opp_slot mutate it; opp_slot() reads it).
+struct OppAcquireEnv : OppScanEnv {
+    // --- existing-slot revalidation (lines 224–234) ---
+    virtual void* opp_slot() = 0;              // current opp_target_slot value (null == unset)
+    virtual bool  existing_fog_blocked() = 0;  // vis_mode && FUN_14035f3b0(existing slot) — composite
+    virtual bool  existing_fire_allowed() = 0; // FUN_1403825b0(self, existing slot, 0) != 0
+    virtual void  clear_opp_slot() = 0;        // FUN_1403846c0(self, &opp_target_slot) -> opp_slot()==null
+    virtual void  bind_opp_slot(void* target) = 0; // FUN_140382510 -> opp_slot()==target
+
+    // --- rescan gate (lines 237–242) ---
+    virtual int   frame_counter() = 0;         // *(*(*(ctx+0x2b8)+0x20)+0x10) — global frame index
+    virtual int   rescan_interval() = 0;       // (int)(DAT_140b0a340 * DAT_1408007c0) — runtime const
+    virtual int   last_scan_time() = 0;        // field_0x64 (get)
+    virtual void  set_last_scan_time(int) = 0; // field_0x64 (set) — stamped under the force/interval cond
+    virtual bool  context_blocked() = 0;       // ctx+0x3a1 & 0x10
+    virtual bool  context_has_active_order() = 0; // ctx+0x100 != 0 && *(ctx+0x100 + 0x2a4) != 0
+
+    // --- emission (lines 290–315) ---
+    virtual bool  new_slot_fire_allowed() = 0;     // FUN_1403825b0(self, opp_target_slot, 0) != 0
+    virtual bool  resolve_emitter(void*& out) = 0; // emitter context (self.context or parent ctx+0x2b0);
+                                                   // returns false to ABORT (FUN_1404ec820 != context)
+    virtual void* self_hardpoint() = 0;            // param_1 — the HardPointClass* (payload.hardpoint)
+};
+
+// FUN_140387400 lines 220–316. Emits at most one sig 0x21 into `sink`. See the block comment above
+// for the four outcomes and the determinism notes. The lone RNG draw happens inside the wrapped
+// scan_opportunity_target, and only when the rescan gate opens.
+void acquire_opportunity_target(SimRng& rng, OppAcquireEnv& env, sim::CommandSink& sink);
 
 } // namespace eaw

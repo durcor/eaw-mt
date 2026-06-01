@@ -128,4 +128,55 @@ void* scan_opportunity_target(SimRng& rng, OppScanEnv& env) {
     return result;
 }
 
+// FUN_140387400 lines 220–316 — the autonomous opportunity-target acquisition tail + sig-0x21
+// emission. See hardpoint.h for the four outcomes, the precondition, and the determinism notes.
+// Variable names track the decompile (pvVar11/bVar5 = the just-cleared-slot force-rescan markers).
+void acquire_opportunity_target(SimRng& rng, OppAcquireEnv& env, sim::CommandSink& sink) {
+    void* pvVar11 = nullptr;   // line 223
+    bool  bVar5   = false;     // line 131 (init false; set true iff an existing slot is cleared)
+
+    // [A] Existing-slot revalidation (lines 224–234). Keep the slot iff it is NOT fog-blocked AND is
+    // still fire-allowed; otherwise clear it (which forces a rescan below).
+    if (env.opp_slot() != nullptr) {
+        if (!env.existing_fog_blocked() && env.existing_fire_allowed())
+            return;                            // [A-keep] still valid -> done, no emit
+        env.clear_opp_slot();                  // FUN_1403846c0
+        pvVar11 = env.opp_slot();              // == nullptr after clear
+        bVar5   = true;
+    }
+
+    // [R] Rescan gate (lines 237–242). COND_A = just-cleared OR interval elapsed; the last_scan_time
+    // stamp is a comma side effect under COND_A (fires even when COND_B then suppresses the scan).
+    const int frame = env.frame_counter();
+    const bool cond_a = (pvVar11 == nullptr && bVar5) ||
+                        (env.rescan_interval() < frame - env.last_scan_time());
+    if (cond_a) {
+        env.set_last_scan_time(frame);         // field_0x64 = iVar8 (stamp)
+        if (!env.context_blocked() && !env.context_has_active_order()) {
+            void* result = scan_opportunity_target(rng, env);   // lines 243–288 (the RNG draw)
+            if (result != nullptr) {                            // bind (lines 283–288)
+                if (env.opp_slot() != nullptr) env.clear_opp_slot();
+                env.bind_opp_slot(result);     // FUN_140382510
+            }
+        }
+    }
+
+    // [E] Emission decision (lines 290–315): validate the (possibly newly-bound) slot; clear it if no
+    // longer fire-allowed, else emit OpportunityTargetAcquired (sig 0x21) on the resolved emitter.
+    if (env.opp_slot() != nullptr) {
+        if (!env.new_slot_fire_allowed()) {    // FUN_1403825b0 == 0
+            env.clear_opp_slot();              // [E-clear]
+        } else {
+            void* emitter = nullptr;
+            if (!env.resolve_emitter(emitter)) // FUN_1404ec820 mismatch for a subordinate mount
+                return;                        // bail entirely (line 305)
+            // Payload = OpportunityTargetAcquiredDataClass {vftable (drain-filled), opp_slot, self}.
+            sim::OpportunityTargetAcquiredData d;
+            d.target_slot = env.opp_slot();    // local_60 = *opp_target_slot
+            d.hardpoint   = env.self_hardpoint(); // local_58 = param_1
+            sink.emit_opportunity_target_acquired(emitter, d); // FUN_140220ed0(_, emitter+0x38, 0x21, &d)
+        }
+    }
+}
+
 } // namespace eaw
