@@ -759,7 +759,7 @@ sim state; out = presentation):
 | `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
 | `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | ✅ **LIFTED** (behavior #2) — pure self-contained Phase-A regen ticker: `value' = clamp(value + rate·dt, 0, max)` on own pool `(entity+0xf0)+0xf8`; no RNG/cross-entity/CommandSink |
 | `IonStunEffectBehaviorClass` | `0x62bba0` | **IN** | ion-stun status effect |
-| `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ✅ **LIFTED** (behavior #3) — self-contained **integer-tick** cooldown/chargeup ticker over own `entity+0x1e8` 77-slot array; `delta=tick−last_tick`; countdown→0 emits `0x2c` (gated by `39b480`), chargeup→target calls `42f460` |
+| `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ✅ **LIFTED + DTABIL ORACLE PASS** (behavior #3) — self-contained **integer-tick** cooldown/chargeup ticker over own `entity+0x1e8` 77-slot array; `delta=tick−last_tick`; countdown→0 emits `0x2c` (gated by `39b480`), chargeup→target calls `42f460` (recycles slot to cooldown). In-game: 19981/19981 pure-core bit-exact + 19 charge-complete + 13 emit edges |
 | `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | environmental damage |
 | `NebulaBehaviorClass` | `0x437b60` | **IN** | nebula env effects (sensors/shields) |
 | `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | force-power target state (TR hero powers) |
@@ -880,6 +880,38 @@ interior landings (drain outpaced one regen step) are what pin `dt`. `tools/anal
     host-covered (`test_regen_floors_at_zero`, `test_disabled_no_write`, `test_draining_zeroes_pool`);
     the `DTNRG` oracle stays **armed + committed** to confirm them opportunistically. (Note: `param_3`
     is the sim **tick** the spine passes to `vfunc_6`, not a mode flag — a harmless capture-field nit.)
+
+**✅ Behavior #3 — `AbilityCountdownBehaviorClass::vfunc_6` (`0x42f910`) LIFTED + DTABIL ORACLE PASS
+(2026-06-01)** → `sim/ability_countdown.{h,cpp}`. A self-contained **integer-tick** cooldown/chargeup
+ticker over the entity's own recharge manager at `entity+0x1e8`: a fixed 0x4d-slot array {timer
+`+0x8+i*4`, chargeup-target `+0x13c+i*4`, mode byte `+0x270+i` (0=countdown / !=0=chargeup)},
+last-serviced tick `+0x2c0`. `delta = tick − last_tick` (integer ticks — **no game-speed float scale**,
+cleaner than #2's `dt`). COUNTDOWN `timer = max(timer−delta, 0)`, and on the **edge** a cooldown
+reaches 0 emits sig `0x2c` (kSigAbilityRecharged, payload `{vftable, slot}`) on `owner+0x38`, gated by
+the heavy availability predicate `FUN_14039b480` (modelled behind `AbilityCountdownEnv::ability_ready`).
+CHARGEUP `timer = min(timer+delta, target)`, and on reaching the target invokes `FUN_14042f460`
+(env-modelled `charge_complete`) — which **recycles the slot into a cooldown**: flips mode 1→0, resets
+the timer to a new (larger) cooldown value, updates the target, emits sig `0x29`, fires an SFX cue.
+No sim RNG; writes only its own array + recharge stamp; Phase-A parallel-safe modulo the two buffered
+emits. 8 host cases.
+  **DTABIL in-game oracle** (`hooks/winmm_proxy.c`, profile, `EAW_DIFFTRACE=1`): inline trampoline on
+  `0x42f910` (16-byte prologue `44 89 44 24 18 / 53 / 41 54 / 41 55 / 41 56 / 48 83 ec 48`, FF25
+  abs-jmp, arg count 3 `behavior,entity,tick`); snapshots all 77 slot timers before/after, logs per
+  active slot `tb/ta/mode/tgt/delta` (any-entity, latch-bypassed + capped) + a `DTABILEDGE` stream for
+  cooldown→0 edges. `tools/analyze_ability_oracle.py` reproduces `ta` and splits pure-core vs the
+  env-callback recycle ticks. **Result over a capital battle (25 entities, 20000 samples):**
+  - **pure-core `ta` 19981/19981 bit-exact** (countdown 11154 + chargeup-below-target) — integer
+    recurrence reproduces the live binary with NO scalar to recover.
+  - **19 charge-complete events**, all correctly recycled (`ta != tgt`): the core's DECISION to invoke
+    `charge_complete` is right; the post-tick value is the env-owned recycle write, and the cooldown
+    that follows is reproduced bit-exact by the COUNTDOWN path (traced live: `…749 →[complete]→ 1350`
+    then mode-0 `1350→1349→…`).
+  - **13 cooldown→0 `DTABILEDGE`s**, all consistent (`tb>0 ∧ tb−delta≤0`) — confirms the sig-`0x2c`
+    emit trigger fires exactly when a cooldown lands on 0. **Both cross-boundary acts (countdown emit +
+    chargeup recycle) exercised in-game** — richer than #1 (whose `0x2d` stayed dormant) and #2 (whose
+    drain/clamp edges stayed dormant). The `0x2c` gate (`39b480` verdict) is env-modelled, so whether a
+    given edge actually emits is host-covered; the oracle validates the edge TRIGGER. Capture saved
+    `logs/dtabil_oracle_pass.log` (reproducible, not committed).
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)

@@ -45,12 +45,18 @@
 //     ability-specific gates (decomp/39b480.c, 1094 B) — world-coupled, modelled behind
 //     AbilityCountdownEnv::ability_ready, not byte-lifted. Payload = AbilitySignalData{vftable, slot}
 //     built on the emit-site stack (42f910 local_48/local_40), fired on owner+0x38 via FUN_140220ed0.
-//   * CHARGEUP→target CALLBACK (FUN_14042f460, env-modelled). Invoked every tick a chargeup slot is
-//     pinned at its target. 42f460 (410 B) is itself env-heavy: behind its own gates it emits sig
-//     0x29 (kSigAbilityChargeComplete) on owner+0x38, fires a presentation SFX cue (FUN_1402d5290 =
-//     the channel-2 SFX manager, NOT lockstep-relevant), and resets the slot mode byte to 0. Those
-//     interior effects are the env's responsibility; the deterministic core owns only the DECISION
-//     to invoke it (timer == target), which is what host tests pin.
+//   * CHARGEUP→target CALLBACK (FUN_14042f460, env-modelled). Invoked the tick a chargeup slot
+//     reaches its target. 42f460 (410 B) is itself env-heavy: behind its own gates it emits sig 0x29
+//     (kSigAbilityChargeComplete) on owner+0x38, fires a presentation SFX cue (FUN_1402d5290 = the
+//     channel-2 SFX manager, NOT lockstep-relevant), and — the key observable — RECYCLES THE SLOT
+//     INTO A COOLDOWN: it resets the mode byte to 0 (chargeup→countdown), resets the timer to a new
+//     (larger) cooldown duration, and updates the target field. So in the live binary the slot's
+//     post-tick value on a completion tick is NOT the core's clamp-to-target — it is this recycle
+//     write (DTABIL oracle: completion ta always > tgt, then the next tick counts DOWN in mode 0).
+//     Those interior effects are the env's responsibility; the deterministic core owns only the
+//     DECISION to invoke charge_complete (timer reaches target), which is what host tests pin and
+//     what the in-game oracle validates (the trigger), and the subsequent cooldown countdown is then
+//     reproduced bit-exact by the core's COUNTDOWN path.
 //
 // ── Determinism notes ────────────────────────────────────────────────────────────────────────────
 //   * No sim RNG drawn in the per-tick path. Writes only its own manager array (+ recharge stamp).

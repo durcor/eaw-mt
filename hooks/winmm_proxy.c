@@ -4169,6 +4169,145 @@ static BOOL install_b56c030_hook(void)
 }
 
 /* =========================================================================
+ * DTABIL — in-game oracle for the lifted AbilityCountdown ticker (sim/ability_countdown.cpp,
+ * from FUN_14042f910). The behavior is a self-contained INTEGER-tick cooldown/chargeup ticker over
+ * the entity's own recharge manager at entity+0x1e8: a fixed 0x4d-slot array of {timer @+0x8+i*4,
+ * chargeup-target @+0x13c+i*4, mode byte @+0x270+i (0=countdown / !=0=chargeup)}, last-serviced
+ * tick @+0x2c0. Per tick delta = param_3(tick) - mgr->last_tick; COUNTDOWN floors at 0 (and on the
+ * exact tick a slot reaches 0 emits sig 0x2c, gated), CHARGEUP ceils at the per-slot target.
+ *
+ * The oracle snapshots the slot timers BEFORE, runs the original once, snapshots AFTER, and logs
+ * (per active slot) tb/ta/mode/target/delta so the lift can reproduce ta offline with NO scalar to
+ * recover (pure integer arithmetic — no game-speed dt, unlike DTNRG). It also flags the cooldown→0
+ * EDGE (the 0x2c emit trigger) from ANY entity (latch-bypass, like DTNRGINT), since edges are the
+ * rare informative event. Trampoline runs exactly once (no determinism perturbation); only logging
+ * is gated + latched onto one entity at a time. Profile-build only; runtime-gated by EAW_DIFFTRACE=1.
+ *
+ * arg count = 3 (decomp/42f910.c): param_1=rcx behavior(this), param_2=rdx entity, param_3=r8d
+ * tick (the real sim tick the spine passes). Prologue (objdump @14042f910): 44 89 44 24 18 / 53 /
+ * 41 54 / 41 55 / 41 56 / 48 83 ec 48 = 5+1+2+2+2+4 = 16 bytes (mov [rsp+0x18],r8d + 4 pushes + sub
+ * rsp,0x48 — all relocatable; the body `call 0x4c2f70` is past +16, reached via the trampoline tail).
+ * ========================================================================= */
+#define ABIL_42F910_RVA    0x42f910ULL
+#define ABIL_SLOTS         0x4d              /* 77 ability slots — the 42f910 loop bound */
+static const BYTE abil_42f910_prologue[16] = {
+    0x44, 0x89, 0x44, 0x24, 0x18,  /* mov [rsp+0x18], r8d */
+    0x53,                          /* push rbx            */
+    0x41, 0x54,                    /* push r12            */
+    0x41, 0x55,                    /* push r13            */
+    0x41, 0x56,                    /* push r14            */
+    0x48, 0x83, 0xec, 0x48,        /* sub rsp, 0x48       */
+};
+typedef int64_t (*Abil42f910Fn)(int64_t behavior, int64_t entity, int32_t tick);
+static Abil42f910Fn g_abil_trampoline = NULL;
+static uint32_t g_abil_active_st = 0;           /* active slot-ticks (timer!=0 || mode!=0 || moved) */
+static uint32_t g_abil_cd_st     = 0;           /* countdown-mode active slot-ticks                 */
+static uint32_t g_abil_cu_st     = 0;           /* chargeup-mode active slot-ticks                  */
+static uint32_t g_abil_edge_lines = 0;          /* emitted DTABILEDGE lines (cooldown→0), capped     */
+static uint32_t g_abil_lines      = 0;          /* emitted DTABIL routine lines, capped              */
+static uint32_t g_abil_surv_last  = 0xFFFFFFFFu;
+
+static int64_t b42f910_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(entity && dt_on()))
+        return g_abil_trampoline(behavior, entity, tick_arg);
+
+    int64_t mgr = *(int64_t *)(entity + 0x1e8);
+    if (!mgr)
+        return g_abil_trampoline(behavior, entity, tick_arg);
+
+    uint32_t tick      = (uint32_t)tick_arg;
+    int32_t  last_tick = *(int32_t *)(mgr + 0x2c0);
+    int32_t  delta     = (int32_t)tick - last_tick;
+
+    /* snapshot BEFORE: each slot's timer + mode + chargeup target */
+    int32_t tb[ABIL_SLOTS]; uint8_t md[ABIL_SLOTS]; int32_t tgt[ABIL_SLOTS];
+    for (int i = 0; i < ABIL_SLOTS; ++i) {
+        tb[i]  = *(int32_t *)(mgr + 0x8   + (int64_t)i * 4);
+        md[i]  = *(uint8_t *)(mgr + 0x270 + (int64_t)i);
+        tgt[i] = *(int32_t *)(mgr + 0x13c + (int64_t)i * 4);
+    }
+
+    int64_t r = g_abil_trampoline(behavior, entity, tick_arg);
+
+    /* snapshot AFTER + per-slot accounting / edge + routine logging. Routine lines are emitted for
+     * every ACTIVE slot of ANY entity (latch-bypass, capped): a single-entity latch is unreliable
+     * here because most entities' ability arrays are all-idle, so a stuck latch on an ability-less
+     * unit (serviced every tick → never stale) yields zero data. The entity field on each line keeps
+     * the per-ability trajectories distinguishable; the cap bounds total volume. */
+    for (int i = 0; i < ABIL_SLOTS; ++i) {
+        int32_t ta = *(int32_t *)(mgr + 0x8 + (int64_t)i * 4);
+        int act = (tb[i] != 0 || md[i] != 0 || ta != tb[i]);
+        if (!act) continue;
+        g_abil_active_st++;
+        if (md[i] == 0) g_abil_cd_st++; else g_abil_cu_st++;
+
+        /* EDGE: a countdown slot that reached 0 this tick = the sig-0x2c emit trigger. The rarest
+         * informative event — capped separately so it survives even if the routine cap is hit. */
+        if (md[i] == 0 && tb[i] > 0 && ta == 0 && g_abil_edge_lines < 4000u) {
+            g_abil_edge_lines++;
+            char e[256];
+            snprintf(e, sizeof e,
+                "DTABILEDGE\ttick=%u\tent=%llx\tslot=%d\ttb=%d\tdelta=%d\n",
+                tick, (unsigned long long)entity, i, tb[i], delta);
+            log_write(e);
+        }
+
+        if (g_abil_lines < 20000u) {
+            g_abil_lines++;
+            char s[256];
+            snprintf(s, sizeof s,
+                "DTABIL\ttick=%u\tent=%llx\tslot=%d\tmode=%d\ttb=%d\tta=%d\ttgt=%d\tdelta=%d\n",
+                tick, (unsigned long long)entity, i, (int)md[i], tb[i], ta, tgt[i], delta);
+            log_write(s);
+        }
+    }
+
+    /* periodic survey — settles how active the ability arrays are in this content */
+    if (tick != g_abil_surv_last && (tick & 0x1ffu) == 0) {       /* once per 512 ticks */
+        g_abil_surv_last = tick;
+        char sv[256];
+        snprintf(sv, sizeof sv,
+            "DTABILSURVEY\ttick=%u\tactive_st=%u\tcd_st=%u\tcu_st=%u\tedges=%u\n",
+            tick, g_abil_active_st, g_abil_cd_st, g_abil_cu_st, g_abil_edge_lines);
+        log_write(sv);
+    }
+    return r;
+}
+
+static BOOL install_b42f910_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + ABIL_42F910_RVA;
+    if (memcmp(fn, abil_42f910_prologue, 16) != 0) {
+        log_write("[eaw-mt] WARN: FUN_14042f910 prologue mismatch — DTABIL not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTABIL trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, abil_42f910_prologue, 16);
+    write_abs_jmp(tramp + 16, (uint64_t)(fn + 16));
+    g_abil_trampoline = (Abil42f910Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 16, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b42f910_hook);
+    VirtualProtect(fn, 16, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 16);
+    log_write("[eaw-mt] DTABIL: FUN_14042f910 AbilityCountdown hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -7647,6 +7786,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b1ffb40_hook();   /* DTRNG: global sim RNG draw I/O (EAW_DIFFTRACE=1) */
         install_b58bd80_hook();   /* DTDMG: DamageTracking decay/expiry I/O (EAW_DIFFTRACE=1) */
         install_b56c030_hook();   /* DTNRG: EnergyPool regen I/O (EAW_DIFFTRACE=1) */
+        install_b42f910_hook();   /* DTABIL: AbilityCountdown cooldown/chargeup I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
 #endif
 
