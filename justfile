@@ -29,6 +29,14 @@ build-winmm-profile:
   nix develop --command x86_64-w64-mingw32-gcc -DEAW_PROFILE -shared -o patches/experimental/winmm.dll hooks/winmm_proxy.c -lkernel32
   cp patches/experimental/winmm.dll {{game-dir}}
 
+# ORACLE build: adds -DEAW_ORACLE → the DT* differential-oracle inline-trampoline hooks ONLY (no
+# per-function timing profiler, no body-patching subcallee hooks). Use this for oracle captures: it is
+# far less perturbative and avoids the body-patcher battle-load crash (c0000005 in b375380). Still
+# runtime-gated by EAW_DIFFTRACE=1. Shares the winmm.dll output path, so rebuild release after.
+build-winmm-oracle:
+  nix develop --command x86_64-w64-mingw32-gcc -DEAW_ORACLE -shared -o patches/experimental/winmm.dll hooks/winmm_proxy.c -lkernel32
+  cp patches/experimental/winmm.dll {{game-dir}}
+
 # Compile + run the lifted sim-core host validation tests (sim/). No game needed.
 sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \

@@ -3018,7 +3018,7 @@ static A76b0Fn g_a76b0_orig   = NULL;
 static LONG    g_a76b0_count  = 0;
 static double  g_a76b0_sum_ms = 0, g_a76b0_max_ms = 0;
 
-#ifdef EAW_PROFILE
+#if defined(EAW_PROFILE) || defined(EAW_ORACLE)
 /* =========================================================================
  * Differential-test harness (decomp Phase 1) — per-tick world-state fingerprint.
  *
@@ -4485,6 +4485,168 @@ static BOOL install_b4f6070_hook(void)
     VirtualProtect(fn, 15, old, &old);
     FlushInstructionCache(GetCurrentProcess(), fn, 15);
     log_write("[eaw-mt] DTUAI: FUN_1404f6070 UnitAI visibility hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
+ * DTNEB — in-game oracle for the lifted Nebula effect-ramp ticker (sim/nebula.cpp, from
+ * FUN_140437b60). Behavior #5 — the "clean float integrator": its per-tick STAGE 1 is a semi-implicit
+ * damped harmonic oscillator that runs UNCONDITIONALLY, so the deterministic core is continuously
+ * observable (like EnergyPool #2, but a 2nd-order spring). The state lives on the sub-object at
+ * entity+0xf0: value(+0x11c), equilibrium(+0x120), velocity(+0x124), freq(+0x12c), enter_tick(+0x104).
+ *
+ * What this oracle validates bit-exact: the SPRING STEP. Using the BEFORE state and the per-tick game
+ * dt (DAT_140b0a344), the lifted math
+ *     w=freq*2; wdt=w*dt; dx=value-eq; inv=1/(1+wdt+0.48*wdt^2+0.235*wdt^3); tmp=(dx*w+vel)*dt;
+ *     value'=(tmp+dx)*inv+eq;  velocity'=(vel-tmp*w)*inv
+ * must reproduce the AFTER value'/velocity' EXACTLY — EXCEPT on a LINGER-pin tick, where STAGE 2
+ * overwrites value->1, velocity->0, eq->1 (only when eq<1). Those are detected and counted separately
+ * (the spring still ran first; its output is just clobbered). It also CHARACTERISES the membership/
+ * throttle: enter edges (enter_tick -1 -> now), leave edges (-> -1), and the per-entry LINGER window.
+ *
+ * Snapshots BEFORE, runs the original once (trampoline — no determinism perturbation), snapshots AFTER.
+ * Raw fields are logged so the Python analyzer can re-reproduce the spring in float32 and characterise
+ * the throttle; an inline spring-mismatch counter gives an immediate PASS signal (cf. DTUAI bad_adv).
+ *
+ * arg count = 3 (uniform vfunc_6 call site: rcx=behavior, rdx=entity, r8d=tick — the nebula body uses
+ * only behavior+entity, but we keep the 3-arg shape so the call frame matches). The sub-object is read
+ * from entity(rdx)=param_2; dt/tick are the clock-region globals (DAT_140b0a344 / DAT_140b0a320).
+ * Prologue (PE @140437b60): 48 8b c4 / 48 89 58 08 / 48 89 70 18 / 48 89 78 20 = 3+4+4+4 = 15 bytes
+ * (mov rax,rsp + the MSVC home-register saves — all position-independent), ending cleanly before the
+ * push rbp at +15 (reached via the trampoline tail).
+ * ========================================================================= */
+#define NEB_437B60_RVA   0x437b60ULL
+static const BYTE neb_437b60_prologue[15] = {
+    0x48, 0x8b, 0xc4,              /* mov rax, rsp        */
+    0x48, 0x89, 0x58, 0x08,        /* mov [rax+8], rbx    */
+    0x48, 0x89, 0x70, 0x18,        /* mov [rax+0x18], rsi */
+    0x48, 0x89, 0x78, 0x20,        /* mov [rax+0x20], rdi */
+};
+typedef int64_t (*Neb437b60Fn)(int64_t behavior, int64_t entity, int32_t tick);
+static Neb437b60Fn g_neb_trampoline = NULL;
+static uint32_t g_neb_lines       = 0;      /* emitted DTNEB lines, capped                        */
+static uint32_t g_neb_ticks       = 0;      /* nebula-entity-ticks the hook processed             */
+static uint32_t g_neb_spring_ok   = 0;      /* ticks the lifted spring reproduced bit-exact        */
+static uint32_t g_neb_spring_bad  = 0;      /* ticks the spring MISMATCHED (model violation)       */
+static uint32_t g_neb_linger_pins = 0;      /* LINGER-pin ticks (value clobbered to 1; spring n/a) */
+static uint32_t g_neb_enters      = 0;      /* enter_tick -1 -> now edges                          */
+static uint32_t g_neb_leaves      = 0;      /* enter_tick set -> -1 edges                          */
+static uint32_t g_neb_active      = 0;      /* ticks where eq!=0 or value!=0 (spring non-trivial)  */
+static uint32_t g_neb_surv_last   = 0xFFFFFFFFu;
+
+static int neb_biteq(float a, float b) { return memcmp(&a, &b, sizeof(float)) == 0; }
+
+static int64_t b437b60_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(entity && g_dt_imgbase && dt_on()))
+        return g_neb_trampoline(behavior, entity, tick_arg);
+
+    int64_t sub = *(int64_t *)(entity + 0xf0);
+    if (!sub) return g_neb_trampoline(behavior, entity, tick_arg);
+
+    float   dt   = *(float   *)(g_dt_imgbase + 0xb0a344);
+    int32_t tick = *(int32_t *)(g_dt_imgbase + 0xb0a320);
+
+    /* BEFORE snapshot */
+    float   vb   = *(float   *)(sub + 0x11c);   /* value       */
+    float   eqb  = *(float   *)(sub + 0x120);   /* equilibrium */
+    float   velb = *(float   *)(sub + 0x124);   /* velocity    */
+    float   frq  = *(float   *)(sub + 0x12c);   /* freq        */
+    int32_t etb  = *(int32_t *)(sub + 0x104);   /* enter_tick  */
+
+    int64_t r = g_neb_trampoline(behavior, entity, tick_arg);
+
+    /* AFTER snapshot */
+    float   va   = *(float   *)(sub + 0x11c);
+    float   eqa  = *(float   *)(sub + 0x120);
+    float   vela = *(float   *)(sub + 0x124);
+    int32_t eta  = *(int32_t *)(sub + 0x104);
+
+    /* reproduce STAGE 1 with the lifted math, using the BEFORE equilibrium (op order = sim/nebula.cpp) */
+    float w   = frq * 2.0f;
+    float wdt = w * dt;
+    float dx  = vb - eqb;
+    float inv = 1.0f / (wdt * 0.48f * wdt + wdt + 1.0f + wdt * 0.235f * wdt * wdt);
+    float tmp = (dx * w + velb) * dt;
+    float pred_v   = (tmp + dx) * inv + eqb;
+    float pred_vel = (velb - tmp * w) * inv;
+
+    /* LINGER pin: STAGE 2 clobbered value->1, velocity->0, eq->1 (only fires when eq was < 1) */
+    int linger_pin = (eqb < 1.0f) && neb_biteq(va, 1.0f) && neb_biteq(vela, 0.0f) && neb_biteq(eqa, 1.0f);
+    int spring_ok  = linger_pin ? 1 : (neb_biteq(va, pred_v) && neb_biteq(vela, pred_vel));
+
+    int enter_edge = (etb == -1) && (eta != -1);
+    int leave_edge = (etb != -1) && (eta == -1);
+    int active     = (eqb != 0.0f) || (vb != 0.0f);
+
+    /* accounting */
+    g_neb_ticks++;
+    if (linger_pin)        g_neb_linger_pins++;
+    else if (spring_ok)    g_neb_spring_ok++;
+    else                   g_neb_spring_bad++;
+    if (enter_edge)        g_neb_enters++;
+    if (leave_edge)        g_neb_leaves++;
+    if (active)            g_neb_active++;
+
+    /* emit a line for: spring-active ticks, membership edges, linger pins, mismatches, + a sparse
+     * sample — capped. Raw fields let the analyzer re-reproduce the spring in float32. */
+    int want_line = active || enter_edge || leave_edge || linger_pin || !spring_ok || ((tick & 0x3ffu) == 0);
+    if (want_line && g_neb_lines < 20000u) {
+        g_neb_lines++;
+        char s[448];
+        snprintf(s, sizeof s,
+            "DTNEB\ttick=%d\tent=%llx\tdt=%.9g\tfreq=%.9g\tvb=%.9g\teqb=%.9g\tvelb=%.9g\tetb=%d"
+            "\tva=%.9g\teqa=%.9g\tvela=%.9g\teta=%d\tpv=%.9g\tpvel=%.9g\tspring_ok=%d\tpin=%d"
+            "\tenter=%d\tleave=%d\n",
+            tick, (unsigned long long)entity, (double)dt, (double)frq,
+            (double)vb, (double)eqb, (double)velb, etb,
+            (double)va, (double)eqa, (double)vela, eta,
+            (double)pred_v, (double)pred_vel, spring_ok, linger_pin, enter_edge, leave_edge);
+        log_write(s);
+    }
+
+    if (tick != (int32_t)g_neb_surv_last && ((uint32_t)tick & 0x1ffu) == 0) {   /* once per 512 ticks */
+        g_neb_surv_last = (uint32_t)tick;
+        char sv[256];
+        snprintf(sv, sizeof sv,
+            "DTNEBSURVEY\ttick=%d\tticks=%u\tspring_ok=%u\tspring_bad=%u\tpins=%u"
+            "\tenters=%u\tleaves=%u\tactive=%u\n",
+            tick, g_neb_ticks, g_neb_spring_ok, g_neb_spring_bad, g_neb_linger_pins,
+            g_neb_enters, g_neb_leaves, g_neb_active);
+        log_write(sv);
+    }
+    return r;
+}
+
+static BOOL install_b437b60_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + NEB_437B60_RVA;
+    if (memcmp(fn, neb_437b60_prologue, 15) != 0) {
+        log_write("[eaw-mt] WARN: FUN_140437b60 prologue mismatch — DTNEB not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTNEB trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, neb_437b60_prologue, 15);
+    write_abs_jmp(tramp + 15, (uint64_t)(fn + 15));
+    g_neb_trampoline = (Neb437b60Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 15, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b437b60_hook);
+    VirtualProtect(fn, 15, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 15);
+    log_write("[eaw-mt] DTNEB: FUN_140437b60 Nebula effect-ramp hook installed\n");
     return TRUE;
 }
 
@@ -7961,6 +8123,16 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b375380_subcallee_hooks();
         install_ga4d0_hook();
         install_galactic_slot22_hook();
+        log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
+#endif
+
+#if defined(EAW_PROFILE) || defined(EAW_ORACLE)
+        /* ---- Differential-oracle I/O hooks (inline trampolines; runtime-gated by EAW_DIFFTRACE=1).
+         * Available in the full profile build AND in the lean EAW_ORACLE build, which OMITS the
+         * measurement-only timing/body-patching hooks above. The body-patchers (install_b*_subcallee_
+         * hooks) physically rewrite E8 call sites and can fault on battle-load paths the menu demo
+         * never exercises (observed: c0000005 inside b375380); the DT hooks below are whole-function
+         * inline trampolines that only snapshot+log, so they are safe to run alone for a clean capture. */
         install_b5caaf0_hook();   /* DTSTEER: Fighter steering controller I/O (EAW_DIFFTRACE=1) */
         install_b5c95a0_hook();   /* DTYAW: Fighter yaw/roll bank-to-turn integrator I/O (EAW_DIFFTRACE=1) */
         install_b3a76b0_hook();   /* DTFIRE: hardpoint fire-budget distribution I/O (EAW_DIFFTRACE=1) */
@@ -7969,7 +8141,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b56c030_hook();   /* DTNRG: EnergyPool regen I/O (EAW_DIFFTRACE=1) */
         install_b42f910_hook();   /* DTABIL: AbilityCountdown cooldown/chargeup I/O (EAW_DIFFTRACE=1) */
         install_b4f6070_hook();   /* DTUAI: UnitAI fog/sensor-visibility I/O (EAW_DIFFTRACE=1) */
-        log_write("[eaw-mt] EAW_PROFILE build: profiler instrumentation active\n");
+        install_b437b60_hook();   /* DTNEB: Nebula effect-ramp spring I/O (EAW_DIFFTRACE=1) */
+        log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
 
         log_write("[eaw-mt] Model A: render on main thread (offload dormant)\n");

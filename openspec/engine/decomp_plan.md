@@ -761,7 +761,7 @@ sim state; out = presentation):
 | `IonStunEffectBehaviorClass` | `0x62bba0` | **IN** | ion-stun status effect |
 | `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ✅ **LIFTED + DTABIL ORACLE PASS** (behavior #3) — self-contained **integer-tick** cooldown/chargeup ticker over own `entity+0x1e8` 77-slot array; `delta=tick−last_tick`; countdown→0 emits `0x2c` (gated by `39b480`), chargeup→target calls `42f460` (recycles slot to cooldown). In-game: 19981/19981 pure-core bit-exact + 19 charge-complete + 13 emit edges |
 | `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | environmental damage |
-| `NebulaBehaviorClass` | `0x437b60` | **IN** | nebula env effects (sensors/shields) |
+| `NebulaBehaviorClass` | `0x437b60` | **IN** | ✅ **LIFTED + DTNEB ORACLE PASS** (behavior #5) — the "clean float integrator": STAGE 1 (unconditional) is a **semi-implicit damped harmonic oscillator** ramping nebula-effect intensity `(sub+0x11c)` toward equilibrium `(sub+0x120)` — `w=freq·2`, `inv=1/(1+wdt+0.48·wdt²+0.235·wdt³)`; STAGE 2 is a membership SM gated by a **time-based LINGER throttle** (`380bb0`: skip the spatial scan while `(now−enter_tick)/30 < grace`), edge-firing enter (`0x2b` ability-disable) / leave (`0x2c` re-enable). Cross-entity coupling is **READ-ONLY** (closer to Phase-A-safe than #4). In-game: spring **614503/614503 bit-exact**, 308 enters / 218 leaves; linger dormant in TR (full scan every in-nebula tick) |
 | `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | force-power target state (TR hero powers) |
 | `LureBehaviorClass` | `0x62b4c0` | **IN** | decoy/AI lure |
 | `RevealBehaviorClass` | `0x5373c0` | **IN** | fog-of-war reveal (sensor grid — MP-determinism-relevant) |
@@ -945,6 +945,50 @@ per-observer; the bit array itself is owner-private/safe. 9 host cases.
     notify count; bounds clean. The vis-matrix bit VALUE is the env LOS predicate (`35f470`,
     characterised, not reproduced); the deterministic core (throttle + transform cache) is bit-exact.
     Capture saved `logs/dtuai_oracle_pass.log` (reproducible, not committed).
+
+**✅ Behavior #5 — `NebulaBehaviorClass::vfunc_6` (`0x437b60`) LIFTED + DTNEB ORACLE PASS
+(2026-06-01)** → `sim/nebula.{h,cpp}`. The "clean float integrator" candidate. The behavior runs two
+stages every tick, in order. **STAGE 1 (unconditional)** is a textbook **semi-implicit damped harmonic
+oscillator** that drives the nebula-effect intensity `value` (`sub+0x11c`, where `sub = *(entity+0xf0)`)
+toward `equilibrium` (`sub+0x120`): `w = freq·2` (`freq = sub+0x12c`), `wdt = w·dt`, `dx = value−eq`,
+`inv = 1/(1 + wdt + 0.48·wdt² + 0.235·wdt³)`, `tmp = (dx·w + velocity)·dt`,
+`value' = (tmp+dx)·inv + eq`, `velocity' = (velocity − tmp·w)·inv` (`velocity = sub+0x124`). Pure float,
+no env/RNG/cross-entity; op order preserved bit-for-bit. Constants recovered: `2.0`/`0.48`/`0.235`/`1.0`;
+`dt = DAT_140b0a344` and the throttle constants (sim-Hz `30 = DAT_140b0a340`, grace `DAT_140b2701c`) are
+runtime-populated (oracle-recovered). **STAGE 2** is the membership SM gated by a **time-based LINGER
+throttle** (`FUN_140380bb0`: returns TRUE while `(now − enter_tick)/30 < grace`, i.e. recently entered) —
+a scan-skip optimisation: while lingering it re-pins the spring to full (`if eq<1: value=1, eq=1,
+velocity=0`); otherwise it does a sphere scan of the global object set and, on finding a nebula object
+(template `+0x57` flag), edge-fires the **enter** hook (`FUN_1404376f0`, walks 77 ability slots and emits
+`0x2b` to DISABLE sensors/abilities) and sets `eq=1`, latching `enter_tick = now`; finding none edge-fires
+the **leave** hook (`FUN_14039fb40`, emits `0x2c` to re-enable) and sets `eq=0`. **THREADING: cross-entity
+coupling is READ-ONLY** — the scan reads the live global object set + other objects' template flags, but
+the behavior WRITES only its OWN sub-object state. So unlike #4 (shared-grid writes) it is closer to
+Phase-A-safe; the only parallel hazards are reading a stable snapshot of the object set mid-sweep and the
+enter/leave signal emissions (the channel-1 CommandSink seam). 10 host cases (spring bit-exact vs an
+independent reference, relaxation-to-equilibrium, `freq=0` linear-glide degenerate, enter/leave/no-edge
+membership, linger-pin vs already-full no-op, STAGE-1-before-STAGE-2 ordering).
+  **DTNEB in-game oracle** (`hooks/winmm_proxy.c`, `EAW_DIFFTRACE=1`): inline trampoline on `0x437b60`
+  (15-byte position-independent prologue `48 8b c4 / 48 89 58 08 / 48 89 70 18 / 48 89 78 20`, FF25
+  abs-jmp to fn+15, arg count 3 `behavior,entity,tick`); snapshots `value/eq/velocity/freq/enter_tick`
+  before/after + `dt`; reproduces the spring inline and emits `DTNEB` on active/edge/pin/mismatch/sparse
+  + periodic `DTNEBSURVEY` totals. `tools/analyze_nebula_oracle.py` re-reproduces the spring in float32
+  (`struct`-coerced, op-order-identical) and validates against the captured after-state. **Result over a
+  nebula battle (133 distinct entities in the logged window, 614503 entity-ticks total):**
+  - **spring `value'`/`velocity'` reproduced BIT-EXACT on 614503/614503 ticks** (`spring_bad=0`; analyzer
+    confirms 20000/20000 logged non-pin samples in float32) — the damped oscillator matches the live
+    binary exactly through its full ramp (overshoot included).
+  - **membership: 308 enters / 218 leaves** — every logged enter edge took `eq→1`, every leave `eq→0`.
+  - **`dt` is a single per-frame global `1/30 = 0.033333335`** (the spring PASS pins it as correct).
+  - **LINGER pins = 0** — `FUN_140380bb0`'s grace window is dormant in Thrawn's Revenge (every in-nebula
+    tick took the full scan; grace likely 0), so the pin path is host-covered only — analogous to #1's
+    `0x2d` emit and the hardpoint distribution dormancy. Capture saved `logs/dtneb_oracle_pass.log`.
+  **Build note:** captured with a new **`EAW_ORACLE`** build (`just build-winmm-oracle`) that installs
+  ONLY the DT* inline-trampoline oracle hooks, OMITTING the measurement-only timing profiler and its
+  body-patching subcallee hooks. Those body-patchers (e.g. `install_b375380_subcallee_hooks`, which
+  rewrites E8 call sites inside `FUN_140375380`) fault on a battle-load path the menu-demo never exercises
+  (observed `c0000005` av-read inside `b375380`); the DT hooks are whole-function trampolines that only
+  snapshot+log, so the `EAW_ORACLE` build loads battles cleanly. Use it for all future oracle captures.
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)

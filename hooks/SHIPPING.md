@@ -10,9 +10,11 @@ and installs a set of stability/performance fixes for FoC + Thrawn's Revenge und
 |---|---|
 | `just build-winmm` | **Release** (default) — fixes only, profiler compiled out. Ship this. |
 | `just build-winmm-profile` | Adds `-DEAW_PROFILE` — full per-function timing profiler, 300-frame stats dump (`eaw-mt.log`), and the stall-sampling watchdog thread. For diagnostics only. |
+| `just build-winmm-oracle` | Adds `-DEAW_ORACLE` — the **DT\* differential-oracle** inline-trampoline hooks ONLY (runtime-gated by `EAW_DIFFTRACE=1`), with the timing profiler and its body-patching subcallee hooks **omitted**. Use this for Phase-3 oracle captures: it is far less perturbative, and it avoids a battle-load crash the full profiler triggers (`c0000005` av-read inside `b375380` — the `install_b375380_subcallee_hooks` body-patcher rewrites E8 call sites on a path the menu-demo never exercises). |
 
-Both build the same source; `#ifdef EAW_PROFILE` blocks are measurement-only and never affect the
-shipped fixes. The DLL is copied to the game's `corruption/` directory automatically.
+All three build the same source; the `#if defined(EAW_PROFILE) || defined(EAW_ORACLE)` and
+`#ifdef EAW_PROFILE` blocks are measurement-only and never affect the shipped fixes. The DLL is copied
+to the game's `corruption/` directory automatically.
 
 ## Shipped fixes (always active in both builds)
 
