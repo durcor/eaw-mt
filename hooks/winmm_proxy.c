@@ -4651,6 +4651,168 @@ static BOOL install_b437b60_hook(void)
 }
 
 /* =========================================================================
+ * DTAST — in-game oracle for the lifted AsteroidFieldDamage probabilistic damage trigger
+ * (sim/asteroid_field_damage.cpp, from FUN_140437310). Behavior #6 — the SIBLING of Nebula #5
+ * (adjacent RVA, same sub-object at entity+0xf0). Per tick: gate (mode/predicate/config) -> sphere
+ * scan -> per in-range asteroid-field object draw one sim-LCG roll (range_f(0,1)) and apply collision
+ * damage if roll <= prob (DAT_140b16d64); stamp sub+0x10c = now if any found, else -1. apply (436920)
+ * damages self + spawns fx into the GOM + draws MORE RNG (a float + an int, with rejection).
+ *
+ * Unlike Nebula's spring, the deterministic core here is the sim-RNG + the proximity stamp, so the
+ * oracle validates two things across the BEFORE/AFTER snapshot of the trampoline:
+ *   (1) PROXIMITY BICONDITIONAL — every "stamp now" is preceded by >=1 roll and vice-versa, so
+ *       (seed advanced this tick)  <=>  (sub+0x10c == now). A violation means the +0x10c SM and the
+ *       RNG consumption disagree (model break). Counts bicond_ok/bad.
+ *   (2) LCG RECURRENCE + DRAW COUNT — brute-force forward-step the lifted recurrence
+ *       s' = s*0x41c64e6d + 0xbdf from seed_before; the number of steps k to reach seed_after is the
+ *       per-tick draw count (membership-dependent: the determinism-contract quantity). k found within
+ *       the bound => lcg_ok (the recurrence + constants match the live seed transition); else lcg_bad.
+ * The first gate roll is reproduced (range_f(seed_before,0,1)) and logged for spot inspection (the
+ * apply decision itself is env — 436920's self-damage + spawn — and not externally observable, so the
+ * roll VALUE and the k draw-count are what we validate, not the per-asteroid apply count).
+ *
+ * arg count = 3 (uniform vfunc_6 call site rcx/rdx/r8d; body uses behavior=rcx, entity=rdx). Globals:
+ * sim-RNG seed DAT_140a13e24 (imgbase+0xa13e24), probability DAT_140b16d64 (imgbase+0xb16d64), tick
+ * counter DAT_140b0a320. Prologue (PE @140437310): 48 89 5c 24 18 / 55 / 56 / 41 55 / 41 56 / 41 57 /
+ * 48 8d 6c 24 c9 = 5+1+1+2+2+2+5 = 18 bytes (mov-home + 5 pushes + lea rbp — all position-independent),
+ * cut before the SUB RSP at +0x12 (reached via the trampoline tail).
+ * ========================================================================= */
+#define AST_437310_RVA   0x437310ULL
+static const BYTE ast_437310_prologue[18] = {
+    0x48, 0x89, 0x5c, 0x24, 0x18,  /* mov [rsp+0x18], rbx */
+    0x55,                          /* push rbp            */
+    0x56,                          /* push rsi            */
+    0x41, 0x55,                    /* push r13            */
+    0x41, 0x56,                    /* push r14            */
+    0x41, 0x57,                    /* push r15            */
+    0x48, 0x8d, 0x6c, 0x24, 0xc9,  /* lea rbp, [rsp-0x37] */
+};
+typedef int64_t (*Ast437310Fn)(int64_t behavior, int64_t entity, int32_t tick);
+static Ast437310Fn g_ast_trampoline = NULL;
+static uint32_t g_ast_lines      = 0;   /* emitted DTAST lines, capped                            */
+static uint32_t g_ast_ticks      = 0;   /* asteroid-field-entity-ticks the hook processed         */
+static uint32_t g_ast_active     = 0;   /* ticks that stamped now (>=1 asteroid in range)         */
+static uint32_t g_ast_clear      = 0;   /* ticks with sub+0x10c == -1 after (no asteroid found)   */
+static uint32_t g_ast_bicond_ok  = 0;   /* (seed advanced) == (stamp now) held                    */
+static uint32_t g_ast_bicond_bad = 0;   /* biconditional VIOLATED (model break)                   */
+static uint32_t g_ast_lcg_ok     = 0;   /* seed transition reproduced by k forward LCG steps      */
+static uint32_t g_ast_lcg_bad    = 0;   /* seed transition NOT reachable within the step bound    */
+static uint32_t g_ast_draw_min   = 0xFFFFFFFFu; /* min per-tick LCG draw count (over advanced ticks)*/
+static uint32_t g_ast_draw_max   = 0;   /* max per-tick LCG draw count                            */
+static uint32_t g_ast_surv_last  = 0xFFFFFFFFu;
+
+static int64_t b437310_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(entity && g_dt_imgbase && dt_on()))
+        return g_ast_trampoline(behavior, entity, tick_arg);
+
+    int64_t sub = *(int64_t *)(entity + 0xf0);
+    if (!sub) return g_ast_trampoline(behavior, entity, tick_arg);
+
+    int32_t  now  = *(int32_t  *)(g_dt_imgbase + 0xb0a320);
+    float    prob = *(float    *)(g_dt_imgbase + 0xb16d64);
+
+    /* BEFORE snapshot */
+    uint32_t seed_b = *(volatile uint32_t *)(g_dt_imgbase + 0xa13e24);
+    int32_t  tickb  = *(int32_t  *)(sub + 0x10c);
+
+    int64_t r = g_ast_trampoline(behavior, entity, tick_arg);
+
+    /* AFTER snapshot */
+    uint32_t seed_a = *(volatile uint32_t *)(g_dt_imgbase + 0xa13e24);
+    int32_t  ticka  = *(int32_t  *)(sub + 0x10c);
+
+    int advanced  = (seed_a != seed_b);
+    int stamp_now = (ticka == now);
+    int bicond_ok = (advanced == stamp_now);
+
+    /* brute-force the LCG draw count: forward-step the lifted recurrence to seed_after */
+    uint32_t k = 0, s = seed_b;
+    if (advanced) {
+        for (k = 1; k <= 256u; ++k) {
+            s = s * 0x41c64e6du + 0xbdfu;
+            if (s == seed_a) break;
+        }
+    }
+    int lcg_ok = !advanced || (k <= 256u);
+
+    /* reproduce the FIRST gate roll from seed_before (range_f(0,1) = (field/32767) in [0,1)) */
+    uint32_t s1 = seed_b * 0x41c64e6du + 0xbdfu;
+    float roll0 = (float)(uint32_t)((s1 >> 10) & 0x7fffu) / 32767.0f;
+    int apply0_pred = roll0 <= prob;   /* predicted apply on asteroid 0 (env-only; not observable) */
+
+    /* accounting */
+    g_ast_ticks++;
+    if (stamp_now)       g_ast_active++;
+    if (ticka == -1)     g_ast_clear++;
+    if (bicond_ok)       g_ast_bicond_ok++; else g_ast_bicond_bad++;
+    if (advanced) {
+        if (lcg_ok)      g_ast_lcg_ok++; else g_ast_lcg_bad++;
+        if (lcg_ok) {
+            if (k < g_ast_draw_min) g_ast_draw_min = k;
+            if (k > g_ast_draw_max) g_ast_draw_max = k;
+        }
+    }
+
+    int want_line = advanced || stamp_now || !bicond_ok || (ticka != tickb) || ((now & 0x3ffu) == 0);
+    if (want_line && g_ast_lines < 20000u) {
+        g_ast_lines++;
+        char ln[384];
+        snprintf(ln, sizeof ln,
+            "DTAST\ttick=%d\tent=%llx\tseedb=%08x\tseeda=%08x\tk=%u\tprob=%.9g\troll0=%.9g"
+            "\tapply0=%d\ttickb=%d\tticka=%d\tnow=%d\tadv=%d\tstampnow=%d\tbicond=%d\tlcg=%d\n",
+            now, (unsigned long long)entity, seed_b, seed_a, k, (double)prob, (double)roll0,
+            apply0_pred, tickb, ticka, now, advanced, stamp_now, bicond_ok, lcg_ok);
+        log_write(ln);
+    }
+
+    if (now != (int32_t)g_ast_surv_last && ((uint32_t)now & 0x1ffu) == 0) {   /* once per 512 ticks */
+        g_ast_surv_last = (uint32_t)now;
+        char sv[256];
+        snprintf(sv, sizeof sv,
+            "DTASTSURVEY\ttick=%d\tticks=%u\tactive=%u\tclear=%u\tbicond_ok=%u\tbicond_bad=%u"
+            "\tlcg_ok=%u\tlcg_bad=%u\tdraw_min=%u\tdraw_max=%u\n",
+            now, g_ast_ticks, g_ast_active, g_ast_clear, g_ast_bicond_ok, g_ast_bicond_bad,
+            g_ast_lcg_ok, g_ast_lcg_bad,
+            (g_ast_draw_min == 0xFFFFFFFFu ? 0u : g_ast_draw_min), g_ast_draw_max);
+        log_write(sv);
+    }
+    return r;
+}
+
+static BOOL install_b437310_hook(void)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + AST_437310_RVA;
+    if (memcmp(fn, ast_437310_prologue, 18) != 0) {
+        log_write("[eaw-mt] WARN: FUN_140437310 prologue mismatch — DTAST not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_write("[eaw-mt] WARN: VirtualAlloc for DTAST trampoline failed\n");
+        return FALSE;
+    }
+    memcpy(tramp, ast_437310_prologue, 18);
+    write_abs_jmp(tramp + 18, (uint64_t)(fn + 18));
+    g_ast_trampoline = (Ast437310Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 18, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)b437310_hook);
+    VirtualProtect(fn, 18, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 18);
+    log_write("[eaw-mt] DTAST: FUN_140437310 AsteroidFieldDamage hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -8142,6 +8304,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b42f910_hook();   /* DTABIL: AbilityCountdown cooldown/chargeup I/O (EAW_DIFFTRACE=1) */
         install_b4f6070_hook();   /* DTUAI: UnitAI fog/sensor-visibility I/O (EAW_DIFFTRACE=1) */
         install_b437b60_hook();   /* DTNEB: Nebula effect-ramp spring I/O (EAW_DIFFTRACE=1) */
+        install_b437310_hook();   /* DTAST: AsteroidFieldDamage roll + proximity I/O (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
 

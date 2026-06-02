@@ -760,7 +760,7 @@ sim state; out = presentation):
 | `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | ✅ **LIFTED** (behavior #2) — pure self-contained Phase-A regen ticker: `value' = clamp(value + rate·dt, 0, max)` on own pool `(entity+0xf0)+0xf8`; no RNG/cross-entity/CommandSink |
 | `IonStunEffectBehaviorClass` | `0x62bba0` | **IN** | ion-stun status effect |
 | `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ✅ **LIFTED + DTABIL ORACLE PASS** (behavior #3) — self-contained **integer-tick** cooldown/chargeup ticker over own `entity+0x1e8` 77-slot array; `delta=tick−last_tick`; countdown→0 emits `0x2c` (gated by `39b480`), chargeup→target calls `42f460` (recycles slot to cooldown). In-game: 19981/19981 pure-core bit-exact + 19 charge-complete + 13 emit edges |
-| `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | ✅ **LIFTED (behavior #6, host-validated; DTAST oracle pending)** — the Nebula **sibling** (adjacent RVA, same `entity+0xf0` sub-object + last-event-tick field `+0x10c`): a **probabilistic per-tick damage trigger**. GATE (game mode ∈ {1,2,0x20} + unit predicate + non-zero config). SCAN: sphere query over the global set; per in-range asteroid-field object, draw `roll=rng_uniform(0,1)` (`1ffbb0` sim LCG) and apply collision damage if `roll ≤ prob` (`DAT_140b16d64`); stamp `sub+0x10c=now` if any found, else `-1`. apply (`436920`) damages SELF + spawns the impact fx into the GOM + draws more RNG. **NOT Phase-A-safe** — not a foreign gameplay write (the damage is to self) but the **shared sim-RNG seed is advanced a membership-dependent number of times** (draw order must serialise) and apply spawns into the global GOM. First IN behavior whose non-safety is purely the RNG + spawn seam |
+| `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | ✅ **LIFTED + DTAST ORACLE PASS (behavior #6)** — the Nebula **sibling** (adjacent RVA, same `entity+0xf0` sub-object + last-event-tick field `+0x10c`): a **probabilistic per-tick damage trigger**. GATE (game mode ∈ {1,2,0x20} + unit predicate + non-zero config). SCAN: sphere query over the global set; per in-range asteroid-field object, draw `roll=rng_uniform(0,1)` (`1ffbb0` sim LCG) and apply collision damage if `roll ≤ prob` (`DAT_140b16d64`); stamp `sub+0x10c=now` if any found, else `-1`. apply (`436920`) damages SELF + spawns the impact fx into the GOM + draws more RNG. **NOT Phase-A-safe** — not a foreign gameplay write (the damage is to self) but the **shared sim-RNG seed is advanced a membership-dependent number of times** (draw order must serialise) and apply spawns into the global GOM. First IN behavior whose non-safety is purely the RNG + spawn seam. In-game (asteroid-field battle, 10 entities, 5886 active ticks): proximity biconditional **5906/5906**, LCG recurrence **5886/5886** (0 k-mismatches), first roll **5886/5886 bit-exact**, draw count **k=1..13** (membership-dependent), applies ≈21.3% ≈ prob 0.2 |
 | `NebulaBehaviorClass` | `0x437b60` | **IN** | ✅ **LIFTED + DTNEB ORACLE PASS** (behavior #5) — the "clean float integrator": STAGE 1 (unconditional) is a **semi-implicit damped harmonic oscillator** ramping nebula-effect intensity `(sub+0x11c)` toward equilibrium `(sub+0x120)` — `w=freq·2`, `inv=1/(1+wdt+0.48·wdt²+0.235·wdt³)`; STAGE 2 is a membership SM gated by a **time-based LINGER throttle** (`380bb0`: skip the spatial scan while `(now−enter_tick)/30 < grace`), edge-firing enter (`0x2b` ability-disable) / leave (`0x2c` re-enable). Cross-entity coupling is **READ-ONLY** (closer to Phase-A-safe than #4). In-game: spring **614503/614503 bit-exact**, 308 enters / 218 leaves; linger dormant in TR (full scan every in-nebula tick) |
 | `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | force-power target state (TR hero powers) |
 | `LureBehaviorClass` | `0x62b4c0` | **IN** | decoy/AI lure |
@@ -989,6 +989,55 @@ membership, linger-pin vs already-full no-op, STAGE-1-before-STAGE-2 ordering).
   rewrites E8 call sites inside `FUN_140375380`) fault on a battle-load path the menu-demo never exercises
   (observed `c0000005` av-read inside `b375380`); the DT hooks are whole-function trampolines that only
   snapshot+log, so the `EAW_ORACLE` build loads battles cleanly. Use it for all future oracle captures.
+
+**✅ Behavior #6 — `AsteroidFieldDamageBehaviorClass::vfunc_6` (`0x437310`) LIFTED + DTAST ORACLE PASS
+(2026-06-01)** → `sim/asteroid_field_damage.{h,cpp}`. The **SIBLING of Nebula #5** (adjacent RVA, same
+component slot at `entity+0xf0`, and a last-event-tick field `+0x10c` mirroring Nebula's `+0x104`
+enter_tick). Where Nebula is a smooth float integrator, AsteroidFieldDamage is a **probabilistic per-tick
+collision-damage trigger** for ships sitting inside an asteroid field. **GATE** (`437310.c:40-53`): live
+only when the entity has a sub-object, the game mode `FUN_140397900(owner) ∈ {1,2,0x20}`, a unit predicate
+chain passes, and both config scalars are non-zero — per-tick hit **probability `DAT_140b16d64`** and
+damage **amount `DAT_140b16d60`**. **SCAN + ROLL** (`437310.c:55-108`): a sphere query (`FUN_1405d7c00`)
+over the global object set gathers objects near the ship; for each that carries the asteroid-field flag
+(`object->template[+0x298]` byte `+0x54`): draw `roll = rng_uniform(0,1)` (`FUN_1401ffbb0`, the sim LCG —
+ONE draw per asteroid), apply collision damage if `roll ≤ probability` (`FUN_140436920`), and stamp
+`sub+0x10c = now`; if none found, `sub+0x10c = -1`. The apply (`436920`) damages the **ship itself** at a
+randomly-chosen hardpoint (drawing a 2nd float + an int roll, with rejection) and spawns an impact-fx
+entity into the GOM (`FUN_14029f810` on the object manager `DAT_140b15418+0x18`). **THREADING: NOT
+Phase-A-safe, but for a NEW reason vs UnitAI #4.** #4's hazard is a FOREIGN gameplay write (the shared
+sensor grid). Here the gameplay write (damage) lands on SELF; the hazards are instead (a) the **shared
+sim-RNG seed `DAT_140a13e24` is advanced a membership-dependent number of times** (so draw ORDER across
+entities must be serialised — the sim_rng.h determinism contract), and (b) the apply spawns an effect
+entity into the global GOM. Both route through Phase-B seams. First IN behavior whose non-safety is
+purely the RNG + GOM-spawn seam. Reuses the lifted `eaw::SimRng` (`range_f = FUN_1401ffbb0`). 5 host
+cases (gate roll bit-exact vs an independent reference LCG + single advance, `roll≤prob` apply
+boundaries, proximity stamp now/-1, full-tick draw count == in-range asteroid count, inactive tick =
+no-op leaving RNG + state untouched).
+  **DTAST in-game oracle** (`hooks/winmm_proxy.c`, `EAW_DIFFTRACE=1`): inline trampoline on `0x437310`
+  (18-byte position-independent prologue `48 89 5c 24 18 / 55 / 56 / 41 55 / 41 56 / 41 57 / 48 8d 6c 24
+  c9`, FF25 abs-jmp to fn+0x12, arg count 3 `behavior,entity,tick`); snapshots the sim-RNG seed
+  (`DAT_140a13e24`) and `sub+0x10c` BEFORE/AFTER the real call — the only draws between the snapshots are
+  this behavior's — and brute-force forward-steps the LCG to count the per-tick draws. Emits `DTAST` on
+  advance/stamp/edge/sparse + periodic `DTASTSURVEY`. `tools/analyze_asteroid_oracle.py` independently
+  reproduces the model from the raw seeds. **Result over an asteroid-field battle (10 distinct entities,
+  30542 entity-ticks total; 5886 active in-field):**
+  - **PROXIMITY BICONDITIONAL `(seed advanced) ⟺ (sub+0x10c == now)` held on 5906/5906 logged ticks**
+    (`bicond_bad=0`) — the `+0x10c` proximity SM and the RNG consumption agree exactly (every "stamp now"
+    is preceded by ≥1 roll and vice-versa).
+  - **LCG RECURRENCE reproduced on 5886/5886 advanced ticks** (`lcg_bad=0`): forward-stepping
+    `s' = s·0x41c64e6d + 0xbdf` from `seed_before` reaches `seed_after` within the bound, and the step
+    count matched the hook's `k` on **0 mismatches** — the recurrence + constants match the live seed
+    transitions.
+  - **per-tick draw count is MEMBERSHIP-DEPENDENT** — histogram `k = 1..13` (k=1: single asteroid, roll
+    failed → no apply-side draws; higher k: multiple asteroids and/or applies adding 436920's draws),
+    directly exhibiting the determinism hazard (the exact draw count varies with neighbour membership).
+  - **first gate roll `range_f(seed_before,0,1)` reproduced BIT-EXACT on 5886/5886** ticks (`struct`-coerced
+    float32, op-order-identical), 0 out of the closed `[0,1]` range (1.0 is attainable: `32767/32767`).
+  - **predicted applies (roll0 ≤ prob) ≈ 1252/5886 = 21.3% ≈ the configured `prob = 0.2`** — the gate
+    triggers at the configured rate. The apply DECISION's downstream (436920's self-damage + GOM spawn)
+    is env (not externally observable); the oracle validates the roll VALUE + the draw COUNT, which is the
+    full deterministic core. Capture saved `logs/dtast_oracle_pass.log`. Captured with the `EAW_ORACLE`
+    build (as #5).
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
