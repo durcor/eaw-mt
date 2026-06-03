@@ -48,6 +48,13 @@ SURVEY_HOLD = re.compile(
 HOLD = re.compile(
     r"DTTKHOLD\ttick=(-?\d+)\tent=([0-9a-fA-F]+)\tspin_t=(\S+)\tangle=(\S+)\tdue=(\d+)"
     r"\tpose_ok=(\d+)\tsched_ok=(\d+)\tval80=(\S+)\tpredz=(\S+)\tnxt_after=(\S+)\tpred_nxt=(\S+)")
+# RELEASE totals are an optional tail on the survey line (part-3 build); parsed separately.
+SURVEY_REL = re.compile(
+    r"rel_edges=(\d+)\trel_term\(ok/bad\)=(\d+)/(\d+)\trel_sent\(ok/bad\)=(\d+)/(\d+)\trel_disarm\(ok/bad\)=(\d+)/(\d+)")
+# Part-3 per-edge RELEASE teardown record (mode 3 completion): (6) terminus 0, (7) sentinel, (8) disarm.
+REL = re.compile(
+    r"DTTKREL\ttick=(-?\d+)\tent=([0-9a-fA-F]+)\tmode_after=(-?\d+)\tterm_ok=(\d+)\tsent=(\S+)"
+    r"\tsent_ok=(\d+)\tdmg_after=(\S+)\tnxt_after=(\S+)\tdisarm_ok=(\d+)")
 
 MODE_NAME = {1: "GRAB(63f210)", 2: "HOLD(63f730)", 3: "RELEASE(63f470)"}
 
@@ -56,8 +63,10 @@ def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
     rows = []
     hold_rows = []
+    rel_rows = []
     last_survey = None
     last_survey_hold = None
+    last_survey_rel = None
     with open(path, "r", errors="replace") as fh:
         for line in fh:
             m = LINE.search(line)
@@ -68,13 +77,19 @@ def main():
             if h:
                 hold_rows.append(h.groups())
                 continue
+            rr = REL.search(line)
+            if rr:
+                rel_rows.append(rr.groups())
+                continue
             s = SURVEY.search(line)
             if s:
                 last_survey = s.groups()
                 sh = SURVEY_HOLD.search(line)
                 last_survey_hold = sh.groups() if sh else None
+                sr = SURVEY_REL.search(line)
+                last_survey_rel = sr.groups() if sr else None
 
-    if not rows and not hold_rows:
+    if not rows and not hold_rows and not rel_rows:
         print(f"NO DTTK LINES in {path} — was EAW_DIFFTRACE=1 set, and did a battle with a telekinesis "
               f"(Force force-grip) cast run? The behavior only interp-ticks while a unit is gripped.")
         return 1
@@ -131,6 +146,24 @@ def main():
         if hdue == "1":
             hold_fires += 1
 
+    # ── part 3 (RELEASE, FUN_14063f470): (6) terminus 0 + (7) sentinel + (8) damage disarm ───────────
+    rel_term_ok = rel_term_bad = 0
+    rel_sent_ok = rel_sent_bad = 0
+    rel_disarm_ok = rel_disarm_bad = 0
+    for (rtick, rent, rmode_after, rterm, rsent, rsent_ok, rdmg, rnxt, rdisarm) in rel_rows:
+        if rterm == "1":
+            rel_term_ok += 1
+        else:
+            rel_term_bad += 1
+        if rsent_ok == "1":
+            rel_sent_ok += 1
+        else:
+            rel_sent_bad += 1
+        if rdisarm == "1":
+            rel_disarm_ok += 1
+        else:
+            rel_disarm_bad += 1
+
     print("DTTK oracle — Telekinesis interp-timeline core (FUN_14063f210)")
     print(f"  log: {path}")
     print(f"  telekinesis interp-ticks (logged): {n}   distinct entities: {len(entities)}")
@@ -151,6 +184,15 @@ def main():
     print("  (5) DAMAGE-DEADLINE REBASE BIT-EXACT  (on fire: slot+0x48_after == interval + slot+0x48)")
     print(f"        hold_sched_ok={hold_sched_ok}   hold_sched_bad={hold_sched_bad}   damage fires: {hold_fires}")
     print()
+    print("  --- part 3: RELEASE teardown end-state (FUN_14063f470) ---")
+    print(f"  RELEASE completion edges (logged): {len(rel_rows)}")
+    print("  (6) MODE TERMINUS  (slot+0x8_after == 0 — lifecycle over, not just changed)")
+    print(f"        rel_term_ok={rel_term_ok}   rel_term_bad={rel_term_bad}")
+    print("  (7) SENTINEL  (slot+0x4c_after == 0x3fffff)")
+    print(f"        rel_sent_ok={rel_sent_ok}   rel_sent_bad={rel_sent_bad}")
+    print("  (8) DAMAGE DISARM  (slot+0x40_after == slot+0x48_after == 0 — HOLD clock off)")
+    print(f"        rel_disarm_ok={rel_disarm_ok}   rel_disarm_bad={rel_disarm_bad}")
+    print()
     print("  DISTRIBUTION")
     print("        mode:  " +
           "  ".join(f"{MODE_NAME.get(m, 'mode='+str(m))}:{c}" for m, c in sorted(mode_hist.items())))
@@ -161,6 +203,10 @@ def main():
         if last_survey_hold:
             (hpo, hpb, hso, hsb, hf) = last_survey_hold
             extra = (f" hold_pose(ok/bad)={hpo}/{hpb} hold_sched(ok/bad)={hso}/{hsb} hold_fires={hf}")
+        if last_survey_rel:
+            (re_, rto, rtb, rso, rsb, rdo, rdb) = last_survey_rel
+            extra += (f" rel_edges={re_} rel_term(ok/bad)={rto}/{rtb} rel_sent(ok/bad)={rso}/{rsb} "
+                      f"rel_disarm(ok/bad)={rdo}/{rdb}")
         print(f"  DTTKSURVEY (in-hook totals, last @tick {st}): ticks={sticks} noslot={sno} "
               f"mode(grab/hold/rel/idle)={sg}/{sh}/{sr}/{si} interp(ok/bad)={sio}/{sib} "
               f"comp_edges={sce} bicond(ok/bad)={sbo}/{sbb} rebase(ok/bad)={sro}/{srb}{extra}")
@@ -175,11 +221,17 @@ def main():
     # check still validates the spin/bob math every HOLD tick.)
     p2_present = len(hold_rows) > 0
     p2_pass = (hold_pose_bad == 0 and hold_sched_bad == 0 and hold_pose_ok > 0)
+    # Part-3 PASS: every RELEASE completion edge hit the terminus 0, wrote the 0x3fffff sentinel, and
+    # disarmed the damage fields — bit-for-bit. Needs at least one RELEASE edge to be a real PASS (a grip
+    # must have been let go within the capture; HOLD without a release just leaves part 3 n/a).
+    p3_present = len(rel_rows) > 0
+    p3_pass = (rel_term_bad == 0 and rel_sent_bad == 0 and rel_disarm_bad == 0 and rel_term_ok > 0)
     print(f"  PART 1 (interp timeline): {'PASS' if p1_pass else 'FAIL' if p1_present else 'n/a (no interp ticks)'}")
     print(f"  PART 2 (HOLD spin+damage): {'PASS' if p2_pass else 'FAIL' if p2_present else 'n/a (no HOLD ticks)'}")
+    print(f"  PART 3 (RELEASE teardown): {'PASS' if p3_pass else 'FAIL' if p3_present else 'n/a (no RELEASE edges)'}")
     # Overall PASS requires every PRESENT part to pass, and at least one part exercised.
-    verdict_pass = ((not p1_present or p1_pass) and (not p2_present or p2_pass)
-                    and (p1_present or p2_present))
+    verdict_pass = ((not p1_present or p1_pass) and (not p2_present or p2_pass) and (not p3_present or p3_pass)
+                    and (p1_present or p2_present or p3_present))
     print("  VERDICT:", "PASS" if verdict_pass else "FAIL")
     return 0 if verdict_pass else 1
 

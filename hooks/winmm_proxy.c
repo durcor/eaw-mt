@@ -5056,6 +5056,17 @@ static void install_b633a30_hook(void)
  *       (slot+0x48 <= now && slot+0x48 != 0), and on fire slot+0x48_after == interval(slot+0x44) + slot+0x48.
  *       The gameplay damage write is to SELF (cf. AsteroidFieldDamage #6); only the event dispatch
  *       FUN_1402d5320 is the deferred cross-boundary seam. Emitted as DTTKHOLD lines.
+ *
+ * PART 3 (RELEASE, FUN_14063f470 — mode 3): the lifecycle terminus. Its interp timeline + lerp +
+ * biconditional + rebase are the SHARED part-1 path (RELEASE lerps toward the raw slot+0x14). What is
+ * NEW is the completion TEARDOWN (63f470.c:38-48) — on a mode-3 completion edge the slot is reset to a
+ * canonical inert end-state, checked here:
+ *   (6) MODE TERMINUS — slot+0x8_after == 0 (not just "changed"): the grip is fully over; the next
+ *       vfunc_6 hits the Idle fall-through (the slot ptr stays non-null but every mode branch is false).
+ *   (7) SENTINEL — slot+0x4c_after == 0x3fffff (the lone non-zero, non-`now` teardown write).
+ *   (8) DAMAGE DISARM — slot+0x40_after == slot+0x48_after == 0: HOLD's self-clocked damage is switched
+ *       off. Emitted as DTTKREL lines. (The ability re-enable cascade + the GOM dispatch FUN_1402d5320
+ *       that complete the teardown stay deferred — the same Phase-B env seam as HOLD.)
  * Plus DTTKSURVEY periodic totals + a mode distribution (how often GRAB/HOLD/RELEASE/idle run).
  *
  * arg count = 3 (uniform vfunc_6 rcx=behavior, rdx=entity, r8d=tick). Prologue (PE, 63f210):
@@ -5090,6 +5101,14 @@ static uint32_t g_tk_hold_pose_ok  = 0, g_tk_hold_pose_bad  = 0;  /* (4) z-bob p
 static uint32_t g_tk_hold_sched_ok = 0, g_tk_hold_sched_bad = 0;  /* (5) damage-deadline rebase bit-exact */
 static uint32_t g_tk_hold_fires    = 0;                          /* damage-fire ticks observed */
 static uint32_t g_tk_hold_lines    = 0;
+/* RELEASE (mode 3, FUN_14063f470) part-3 oracle — the completion teardown end-state. The interp lerp +
+ * biconditional + rebase for mode 3 are already covered by the shared part-1 path; these check the
+ * RELEASE-SPECIFIC teardown on the completion edge: mode terminus 0, the 0x3fffff sentinel, damage disarm. */
+static uint32_t g_tk_rel_term_ok = 0, g_tk_rel_term_bad = 0;       /* (6) mode_after == 0 (lifecycle terminus) */
+static uint32_t g_tk_rel_sent_ok = 0, g_tk_rel_sent_bad = 0;       /* (7) slot+0x4c == 0x3fffff (sentinel)    */
+static uint32_t g_tk_rel_disarm_ok = 0, g_tk_rel_disarm_bad = 0;   /* (8) slot+0x40 == slot+0x48 == 0 (disarm) */
+static uint32_t g_tk_rel_edges = 0;                               /* RELEASE completion edges observed */
+static uint32_t g_tk_rel_lines = 0;
 typedef float (*TkEngTrigFn)(float);   /* FUN_140776650 = engine sin(float)->float, xmm0 in/out (leaf) */
 static TkEngTrigFn g_tk_eng_sin = NULL;
 
@@ -5161,6 +5180,8 @@ static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
     float start_after = *(float *)(slot + 0x24);
     float val80       = *(float *)(entity + 0x80);
     float nxt_after   = *(float *)(slot + 0x48);
+    uint32_t sent_after = *(uint32_t *)(slot + 0x4c);   /* RELEASE sentinel (63f470.c:48)  */
+    float    dmg_after  = *(float *)(slot + 0x40);      /* RELEASE damage-amount disarm    */
 
     /* Only modes 1 (GRAB) and 3 (RELEASE) run the interp timeline; 2 (HOLD) and others don't. */
     int is_interp = (mode == 1 || mode == 3);
@@ -5212,6 +5233,33 @@ static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
         }
     }
 
+    /* RELEASE (mode 3) part-3 validation: on a completion edge the slot is torn down to its canonical inert
+     * end-state. The shared path above already checked the biconditional + rebase; here we confirm the
+     * RELEASE-SPECIFIC writes the lift predicts (63f470.c:39,46-48): mode terminus 0, the 0x3fffff sentinel,
+     * and the damage disarm (amount slot+0x40 and deadline slot+0x48 both zeroed — HOLD's clock switched off).
+     * The ability re-enable cascade + the GOM event dispatch FUN_1402d5320 that follow stay deferred (env). */
+    int rel_term_ok = 0, rel_sent_ok = 0, rel_disarm_ok = 0, rel_want = 0;
+    if (mode == 3 && act_complete) {
+        g_tk_rel_edges++;
+        rel_term_ok   = (mode_after == 0);
+        if (rel_term_ok)   g_tk_rel_term_ok++;   else g_tk_rel_term_bad++;
+        rel_sent_ok   = (sent_after == 0x3fffffu);
+        if (rel_sent_ok)   g_tk_rel_sent_ok++;   else g_tk_rel_sent_bad++;
+        rel_disarm_ok = (dmg_after == 0.0f) && (nxt_after == 0.0f);
+        if (rel_disarm_ok) g_tk_rel_disarm_ok++; else g_tk_rel_disarm_bad++;
+        rel_want = !rel_term_ok || !rel_sent_ok || !rel_disarm_ok || (g_tk_rel_edges <= 40);
+        if (rel_want && g_tk_rel_lines < 20000u) {
+            g_tk_rel_lines++;
+            char rl[320];
+            snprintf(rl, sizeof rl,
+                "DTTKREL\ttick=%d\tent=%llx\tmode_after=%d\tterm_ok=%d\tsent=%#x\tsent_ok=%d"
+                "\tdmg_after=%.9g\tnxt_after=%.9g\tdisarm_ok=%d\n",
+                nowt, (unsigned long long)entity, mode_after, rel_term_ok, sent_after, rel_sent_ok,
+                (double)dmg_after, (double)nxt_after, rel_disarm_ok);
+            log_write(rl);
+        }
+    }
+
     if (want && g_tk_lines < 20000u) {
         g_tk_lines++;
         char ln[360];
@@ -5228,12 +5276,15 @@ static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
         snprintf(sv, sizeof sv,
             "DTTKSURVEY\ttick=%d\tticks=%u\tnoslot=%u\tmode(grab/hold/rel/idle)=%u/%u/%u/%u"
             "\tinterp(ok/bad)=%u/%u\tcomp_edges=%u\tbicond(ok/bad)=%u/%u\trebase(ok/bad)=%u/%u"
-            "\thold_pose(ok/bad)=%u/%u\thold_sched(ok/bad)=%u/%u\thold_fires=%u\n",
+            "\thold_pose(ok/bad)=%u/%u\thold_sched(ok/bad)=%u/%u\thold_fires=%u"
+            "\trel_edges=%u\trel_term(ok/bad)=%u/%u\trel_sent(ok/bad)=%u/%u\trel_disarm(ok/bad)=%u/%u\n",
             nowt, g_tk_ticks, g_tk_noslot, g_tk_grab, g_tk_hold, g_tk_release, g_tk_idle,
             g_tk_interp_ok, g_tk_interp_bad, g_tk_comp_edges,
             g_tk_bicond_ok, g_tk_bicond_bad, g_tk_rebase_ok, g_tk_rebase_bad,
             g_tk_hold_pose_ok, g_tk_hold_pose_bad, g_tk_hold_sched_ok, g_tk_hold_sched_bad,
-            g_tk_hold_fires);
+            g_tk_hold_fires,
+            g_tk_rel_edges, g_tk_rel_term_ok, g_tk_rel_term_bad, g_tk_rel_sent_ok, g_tk_rel_sent_bad,
+            g_tk_rel_disarm_ok, g_tk_rel_disarm_bad);
         log_write(sv);
     }
     return r;

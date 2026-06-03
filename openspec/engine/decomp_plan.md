@@ -762,7 +762,7 @@ sim state; out = presentation):
 | `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ✅ **LIFTED + DTABIL ORACLE PASS** (behavior #3) — self-contained **integer-tick** cooldown/chargeup ticker over own `entity+0x1e8` 77-slot array; `delta=tick−last_tick`; countdown→0 emits `0x2c` (gated by `39b480`), chargeup→target calls `42f460` (recycles slot to cooldown). In-game: 19981/19981 pure-core bit-exact + 19 charge-complete + 13 emit edges |
 | `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | ✅ **LIFTED + DTAST ORACLE PASS (behavior #6)** — the Nebula **sibling** (adjacent RVA, same `entity+0xf0` sub-object + last-event-tick field `+0x10c`): a **probabilistic per-tick damage trigger**. GATE (game mode ∈ {1,2,0x20} + unit predicate + non-zero config). SCAN: sphere query over the global set; per in-range asteroid-field object, draw `roll=rng_uniform(0,1)` (`1ffbb0` sim LCG) and apply collision damage if `roll ≤ prob` (`DAT_140b16d64`); stamp `sub+0x10c=now` if any found, else `-1`. apply (`436920`) damages SELF + spawns the impact fx into the GOM + draws more RNG. **NOT Phase-A-safe** — not a foreign gameplay write (the damage is to self) but the **shared sim-RNG seed is advanced a membership-dependent number of times** (draw order must serialise) and apply spawns into the global GOM. First IN behavior whose non-safety is purely the RNG + spawn seam. In-game (asteroid-field battle, 10 entities, 5886 active ticks): proximity biconditional **5906/5906**, LCG recurrence **5886/5886** (0 k-mismatches), first roll **5886/5886 bit-exact**, draw count **k=1..13** (membership-dependent), applies ≈21.3% ≈ prob 0.2 |
 | `NebulaBehaviorClass` | `0x437b60` | **IN** | ✅ **LIFTED + DTNEB ORACLE PASS** (behavior #5) — the "clean float integrator": STAGE 1 (unconditional) is a **semi-implicit damped harmonic oscillator** ramping nebula-effect intensity `(sub+0x11c)` toward equilibrium `(sub+0x120)` — `w=freq·2`, `inv=1/(1+wdt+0.48·wdt²+0.235·wdt³)`; STAGE 2 is a membership SM gated by a **time-based LINGER throttle** (`380bb0`: skip the spatial scan while `(now−enter_tick)/30 < grace`), edge-firing enter (`0x2b` ability-disable) / leave (`0x2c` re-enable). Cross-entity coupling is **READ-ONLY** (closer to Phase-A-safe than #4). In-game: spring **614503/614503 bit-exact**, 308 enters / 218 leaves; linger dormant in TR (full scan every in-nebula tick) |
-| `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | 🟡 **INTERP-CORE LIFTED (behavior #8, part 1) + DTTK ORACLE PASS** — the Force force-grip effect (`<Type>FORCE_TELEKINESIS</Type>`; Palpatine/Luke-Darkside/Tremayne/Brakiss lifting an enemy *vehicle*): a **3-mode lifecycle SM** over slot `*(entity+0x160)` (mode at `slot+0x8`): 1 GRAB (interp to grip pose, `t>=1`→2), 2 HOLD (`63f730`: spin + 10%/0.2s damage + GOM), 3 RELEASE (`63f470`: interp back, `t>=1`→zero slot + re-enable abilities + GOM); else Idle; `slot==0`→NoOp `0x80650001`. Part 1 lifts the **shared interp-timeline core + dispatch** (`sim/telekinesis_target.{h,cpp}`): `now=sim_clock/hz`, `t=max((now−start)/dur,0)`, `complete=(1.0<=t)`; GRAB lerps `entity+0x80`→`DAT_140b15ac0+slot+0x14`, RELEASE→`slot+0x14`; on completion rebase `slot+0x24:=now` + change `slot+0x8`. RELEASE (`63f470`) sub-body (cross-boundary Phase-B seam) **DEFERRED**. **Part 2 lifts the HOLD body** (`63f730`, mode 2): spin/z-bob pose `pos_z = slot+0x14 + (sin(spin_t·omega)·bob_amp + height_offset)` (→`entity+0x80`) + a self-clocked periodic-damage scheduler (due iff `slot+0x48<=now && !=0`; rebase `+= slot+0x44`; damage to SELF; only the event dispatch `1402d5320` deferred). 11 host cases + **DTTK ORACLE PASS** (land battle): completion biconditional **405/405** + rebase **17/17** + interp lerp **388/388** (part 1); z-bob pose bit-exact **174/174** + damage-deadline rebase **174/174**, 33 fires (part 2). *(Part-2 caught a sub-ULP FP-non-associativity bug: codegen groups `slot_z+(sin·bob+off)`, not the decompile's flattened left-assoc.)* |
+| `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | 🟡 **ALL 3 MODES LIFTED (behavior #8, parts 1-3) + DTTK ORACLE PASS** — the Force force-grip effect (`<Type>FORCE_TELEKINESIS</Type>`; Palpatine/Luke-Darkside/Tremayne/Brakiss lifting an enemy *vehicle*): a **3-mode lifecycle SM** over slot `*(entity+0x160)` (mode at `slot+0x8`): 1 GRAB (interp to grip pose, `t>=1`→2), 2 HOLD (`63f730`: spin + 10%/0.2s damage + GOM), 3 RELEASE (`63f470`: interp back, `t>=1`→zero slot + re-enable abilities + GOM); else Idle; `slot==0`→NoOp `0x80650001`. Part 1 lifts the **shared interp-timeline core + dispatch** (`sim/telekinesis_target.{h,cpp}`): `now=sim_clock/hz`, `t=max((now−start)/dur,0)`, `complete=(1.0<=t)`; GRAB lerps `entity+0x80`→`DAT_140b15ac0+slot+0x14`, RELEASE→`slot+0x14`; on completion rebase `slot+0x24:=now` + change `slot+0x8`. **Part 2 lifts the HOLD body** (`63f730`, mode 2): spin/z-bob pose `pos_z = slot+0x14 + (sin(spin_t·omega)·bob_amp + height_offset)` (→`entity+0x80`) + a self-clocked periodic-damage scheduler (due iff `slot+0x48<=now && !=0`; rebase `+= slot+0x44`; damage to SELF; only the event dispatch `1402d5320` deferred). **Part 3 lifts the RELEASE body** (`63f470`, mode 3, the lifecycle terminus): shares the part-1 interp core (lerps toward the raw `slot+0x14`), adds the completion **teardown** — mode terminus `slot+0x8:=0`, sentinel `slot+0x4c:=0x3fffff`, damage disarm (`slot+0x40`/`0x48:=0`); the ability re-enable cascade + GOM dispatch `1402d5320` remain the **deferred** Phase-B env seam. 13 host cases + **DTTK ORACLE PASS** (land battles): completion biconditional **405/405** + rebase **17/17** + interp lerp **388/388** (part 1); z-bob pose bit-exact **174/174** + damage-deadline rebase **174/174**, 33 fires (part 2); RELEASE teardown terminus/sentinel/disarm **1/1/1** bit-exact (part 3 — edge count 1 because gripped units die to the grip's own damage before timed release; the teardown is a constant write so 1 confirms it). *(Part-2 caught a sub-ULP FP-non-associativity bug: codegen groups `slot_z+(sin·bob+off)`, not the decompile's flattened left-assoc.)* **All 3 modes now lifted.** |
 | `LureBehaviorClass` | `0x62b4c0` | **IN** | decoy/AI lure |
 | `RevealBehaviorClass` | `0x5373c0` | **IN** | fog-of-war reveal (sensor grid — MP-determinism-relevant) |
 | `SelectBehaviorClass` | `0x3c2310` | **out** | UI selection-indicator animation (damped-spring on a *displayed* value) |
@@ -1157,7 +1157,41 @@ does two independent things, both lifted into `sim/telekinesis_target.{h,cpp}` a
     `slot_z + (sin·bob + off)` — FP add is non-associative, so the wrong grouping is off by a sub-ULP at
     the bob extrema. Re-parenthesizing the lift + oracle to match the binary → **0 mismatches**. Logged a
     new host test for the non-associativity. Capture saved `logs/dttkhold_oracle_pass.log`; `EAW_ORACLE`
-    build. RELEASE (`63f470`, mode 3) sub-body remains DEFERRED.
+    build.
+
+**🟡 Behavior #8 (part 3) — `TelekinesisTargetBehaviorClass` RELEASE body (`FUN_14063f470`, mode 3) LIFTED
++ DTTK ORACLE PASS.** RELEASE is the lifecycle **terminus**. Its interp timeline + scalar lerp +
+completion biconditional + start-rebase are the SAME shared core already lifted/validated in part 1 (the
+only numeric difference: RELEASE lerps the z-component toward the **raw** `slot+0x14`, with **no**
+`angle_base` added — vs GRAB's `angle_base + slot+0x14`; the part-1 hook's mode-aware `to` already
+predicts this). What part 3 adds is the **completion TEARDOWN** (`63f470.c:38-48`) — on a mode-3
+completion edge the slot is reset to a canonical inert end-state, lifted into `sim/telekinesis_target.{h,cpp}`
+(`telekinesis_release_target` + `telekinesis_release_end`):
+  - **mode terminus** `slot+0x8 := 0` — the grip is fully over; the next `vfunc_6` hits the Idle
+    fall-through (the slot ptr stays non-null at `entity+0x160` but every mode branch is false).
+  - **sentinel** `slot+0x4c := 0x3fffff` — the lone non-zero, non-`now` teardown write (a fixed marker).
+  - **damage disarm** — the dynamic span is zeroed, in particular the damage amount `slot+0x40` and
+    deadline `slot+0x48` (HOLD's self-clocked damage from part 2 is switched off).
+  The **ability re-enable cascade** (vtable getters #1/9/10/0xb/7/0x20 → vfunc `0x208`/`0xb8`, un-suppressing
+  the released unit's abilities) and the **GOM event dispatch** `FUN_1402d5320` that complete the teardown
+  remain **DEFERRED** — the same cross-boundary Phase-B env seam as HOLD.
+
+  **DTTK RELEASE oracle** (extends the part-1 hook; mode-3 completion edges emit `DTTKREL` lines + `rel_*`
+  survey totals): **(6) mode terminus** `slot+0x8_after == 0`; **(7) sentinel** `slot+0x4c_after ==
+  0x3fffff`; **(8) damage disarm** `slot+0x40_after == slot+0x48_after == 0`. **Result over a land battle
+  with the Emperor gripping enemy vehicles: terminus 1/1, sentinel 1/1, disarm 1/1 — all bit-exact, 0 bad.**
+  - **Edge count = 1 (by nature, not by gap):** the gripped vehicles mostly **died to the grip's own
+    periodic HOLD damage** before the ability timed out, so they tore down via the death path rather than
+    reaching the timed mode-3 RELEASE (survey: 23 mode-3 ticks, only 1 reaching the full teardown across
+    repeated grips; `hold_fires` climbing confirms the damage was killing them). Unlike the z-bob (which
+    varies with the spin angle and needed many samples to hit the FP-grouping extrema), the RELEASE
+    teardown is a **constant write** — every release stamps the IDENTICAL end-state with zero
+    input-dependent variance, so one bit-exact confirmation across all three sub-checks validates the same
+    specification any number would. The 15 completion edges in the same capture (all rebasing bit-exact)
+    independently confirm the shared timeline reliably reaches completion. Capture saved
+    `logs/dttkrel_oracle_pass.log`; `EAW_ORACLE` build. **Behavior #8 is now fully lifted (all 3 modes);
+    only the shared Phase-B env seam — the GOM dispatch `1402d5320` + RELEASE's ability re-enable — is
+    deferred, common to the remaining sub-bodies.**
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
