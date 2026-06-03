@@ -754,7 +754,7 @@ sim state; out = presentation):
 |---|---|---|---|
 | `SimpleSpaceLocomotorBehaviorClass` (+Walk/Fighter/Fleet/Starship…) | `0x626420` | **IN** | the mover — writes `entity+0x78` position [CORE] |
 | `UnitAIBehaviorClass` | `0x4f6070` | **IN** | ✅ **LIFTED + DTUAI ORACLE PASS** (behavior #4) — the fog-of-war/sensor-visibility ticker, **first cross-entity behavior** (reads global object list, writes per-(observer,object) visibility matrix → shared sensor grid `DAT_140b31900`): (A) 300-tick fixed-phase throttled transform-change self-refresh, (B) gated reveal, (C) per-object LOS bit + edge notify. **NOT Phase-A parallel-safe** (shared-grid writes need buffering/sharding). In-game: throttle 3427/3427 `+300`-exact, cacheok 6988/6988, 90 vis edges characterised |
-| `TargetingBehaviorClass` | `0x633a30` | **IN** | weapon target selection (per game-speed mode) |
+| `TargetingBehaviorClass` | `0x633a30` | **IN** | 🟡 **DISPATCHER LIFTED (behavior #7, part 1)** — `0x633a30` is a thin game-mode dispatcher: run base `LocomotorCommonClass::vfunc_6`, resolve a mode int (controller `entity->get_component(1)` present → `controller->control_mode()` vtbl `+0x238`; else `DAT_140b15418` present → game-speed mode vtbl `+0xe0`; else `DAT_140b153fc`), then route mode 1 → `634810` (individual), mode 2 → `633ae0` (team), else NoOp `0x650000`. Dispatcher core (`sim/targeting_dispatch.{h,cpp}`) is a pure side-effect-free integer decision (trivially Phase-A-safe). The two ~2-3 KB sub-bodies (the actual fire-control orchestrator: live global-set reads + GOM target-assign/move/fire emission, UnitAI #4 seam-class) are **DEFERRED**. 4 host cases (DTARG oracle PASS) |
 | `DamageTrackingBehaviorClass` | `0x58bd80` | **IN** | ✅ **LIFTED** (behavior #1) — *not* HP application: a **timed damage/status-effect decay ticker** (own `+0x1a0` list); emits `0x2d` on empty |
 | `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
 | `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | ✅ **LIFTED** (behavior #2) — pure self-contained Phase-A regen ticker: `value' = clamp(value + rate·dt, 0, max)` on own pool `(entity+0xf0)+0xf8`; no RNG/cross-entity/CommandSink |
@@ -1038,6 +1038,32 @@ no-op leaving RNG + state untouched).
     is env (not externally observable); the oracle validates the roll VALUE + the draw COUNT, which is the
     full deterministic core. Capture saved `logs/dtast_oracle_pass.log`. Captured with the `EAW_ORACLE`
     build (as #5).
+
+**🟡 Behavior #7 (part 1) — `TargetingBehaviorClass::vfunc_6` DISPATCHER (`0x633a30`) LIFTED + host-validated
+(2026-06-02)** → `sim/targeting_dispatch.{h,cpp}`. Targeting is the seventh in-slice IN behavior and the
+first that is NOT a tight numeric/list ticker: it is the AI **fire-control orchestrator**, a ~5500-byte
+body split across two game-mode-specific sub-implementations (`FUN_140634810` mode 1, `FUN_140633ae0`
+mode 2) that are almost pure virtual-dispatch control flow over the targeting machinery. Per the
+incremental plan agreed with the user, this unit lifts only the small, clean **dispatcher** `0x633a30`
+and **defers** the two sub-bodies. **Dispatcher algorithm (`633a30.c`, 174 bytes):** (1) run base
+`LocomotorCommonClass::vfunc_6` (side effect); (2) `controller = entity->get_component(1)` (entity vtbl
+`+0x10`, key 1 — the unit's controller/owner, null for unowned entities); (3) resolve the mode int —
+controller present → `controller->control_mode()` (vtbl `+0x238`, the same int accessor `FUN_140397900`
+reads at `397900.c:26`); controller absent → `DAT_140b15418` present ? game-speed mode (vtbl `+0xe0`:
+1=fast, 2=slow, else unscaled — cf. `hardpoint.h` / `FUN_140540070`) : the default constant
+`DAT_140b153fc`; (4) `FUN_140565e50(behavior)` prep (side effect); (5) dispatch — mode 1 → `634810`
+(individual targeting), mode 2 → `633ae0` (team targeting, body refs `TeamTargetingBehaviorClass`), else
+return `0x650000` (NoOp). The lifted deterministic core is exactly steps 2-3-5: the 3-way mode resolution
+and the 3-way sub-implementation selection (`targeting_resolve_mode` + `targeting_dispatch`). The two
+paths in step 3 share the int SLOT but not the semantics — we characterise the values (1=individual,
+2=team) from the sub-body class refs but do NOT byte-assert the controller's enumeration. **THREADING:**
+the dispatcher core is a pure, side-effect-free integer decision (no RNG, no writes, no cross-entity
+reads) → trivially Phase-A-safe; Targeting's threading character lives entirely in the deferred SUB-bodies
+(live global-set reads + GOM target-assign/move/fire emission, the UnitAI #4 seam-class). 4 host cases
+(source-selection order: controller shadows manager/default, manager game-speed shadows default; dispatch
+mapping 1/2/else over a spread incl. 0/3/0x20/negatives; resolve+dispatch end-to-end on every source;
+controller reporting a NoOp mode does NOT fall through to a manager/default that would have dispatched).
+  **DTARG in-game oracle:** _(pending capture — see the analysis commit)._
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
