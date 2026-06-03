@@ -111,4 +111,24 @@ float telekinesis_damage_rebase(float next_deadline, float interval) {
     return interval + next_deadline;
 }
 
+// ── Mode-3 (RELEASE) core — FUN_14063f470 ───────────────────────────────────────────────────────────
+
+// 63f470.c line 91: local_60 = (slot[0x14] - slot[0x30]) * t + slot[0x30]. The "to" is the raw slot[0x14]
+// — RELEASE does NOT add angle_base (contrast telekinesis_target). Pair with telekinesis_lerp(from,to,t).
+float telekinesis_release_target(float slot_z) {
+    return slot_z;
+}
+
+// 63f470.c lines 38-48: the completion teardown end-state. start := now (63f470.c:38), mode := 0
+// (63f470.c:39 zeros the 8 bytes at slot+0x8, the low 4 of which are the mode), every other dynamic
+// field 0 (so the damage amount/deadline are disarmed), and the lone sentinel slot+0x4c := 0x3fffff.
+TelekinesisReleaseEnd telekinesis_release_end(float now) {
+    TelekinesisReleaseEnd e;
+    e.mode            = kTeleReleaseTermMode;   // 0
+    e.sentinel        = kTeleReleaseSentinel;   // 0x3fffff
+    e.start           = now;
+    e.damage_disarmed = true;                   // slot+0x40 == slot+0x48 == 0
+    return e;
+}
+
 } // namespace sim

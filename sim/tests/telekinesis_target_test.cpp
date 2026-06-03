@@ -203,6 +203,43 @@ static void test_hold_damage_scheduler() {
     }
 }
 
+// ── Mode-3 (RELEASE) core ──────────────────────────────────────────────────────────────────────────
+
+static void test_release_target_and_lerp() {
+    std::printf("test_release_target_and_lerp\n");
+    // RELEASE's lerp "to" is the RAW slot+0x14 — no angle_base added (the GRAB-vs-RELEASE distinction).
+    CHECK(feq(telekinesis_release_target(7.5f), 7.5f));
+    CHECK(feq(telekinesis_release_target(-2.0f), -2.0f));
+    // Contrast with GRAB: same slot_z, GRAB adds the base, RELEASE does not.
+    {
+        const float slot_z = 5.0f, base = 100.0f;
+        CHECK(feq(telekinesis_target(base, slot_z), 105.0f));
+        CHECK(feq(telekinesis_release_target(slot_z), 5.0f));
+    }
+    // The RELEASE z-component is the shared lerp from slot+0x30 toward the raw slot+0x14 (63f470.c:91).
+    {
+        const float from = 40.0f, to = telekinesis_release_target(/*slot_z*/10.0f);
+        CHECK(feq(telekinesis_lerp(from, to, 0.0f), 40.0f));   // t=0 -> from
+        CHECK(feq(telekinesis_lerp(from, to, 1.0f), 10.0f));   // t=1 -> raw slot+0x14
+        CHECK(feq(telekinesis_lerp(from, to, 0.5f), 25.0f));   // midpoint
+    }
+}
+
+static void test_release_teardown() {
+    std::printf("test_release_teardown\n");
+    // The completion end-state: mode -> terminus 0, sentinel 0x3fffff, start rebased to now, damage disarmed.
+    TelekinesisReleaseEnd e = telekinesis_release_end(/*now*/12.5f);
+    CHECK(e.mode == 0);
+    CHECK(e.mode == kTeleReleaseTermMode);
+    CHECK(e.sentinel == 0x3fffffu);
+    CHECK(e.sentinel == kTeleReleaseSentinel);
+    CHECK(feq(e.start, 12.5f));        // slot+0x24 := now (same rebase as GRAB)
+    CHECK(e.damage_disarmed);          // slot+0x40 == slot+0x48 == 0 — HOLD's self-clocked damage is off
+    // start tracks `now` exactly (it is the only computed field; the rest are fixed).
+    CHECK(feq(telekinesis_release_end(0.0f).start, 0.0f));
+    CHECK(feq(telekinesis_release_end(99.25f).start, 99.25f));
+}
+
 int main() {
     std::printf("telekinesis_target_test\n");
     test_dispatch();
@@ -216,6 +253,8 @@ int main() {
     test_hold_trig_guard();
     test_hold_pos_z();
     test_hold_damage_scheduler();
+    test_release_target_and_lerp();
+    test_release_teardown();
     if (g_fail == 0) std::printf("ALL PASS\n");
     else             std::printf("%d FAILURES\n", g_fail);
     return g_fail ? 1 : 0;

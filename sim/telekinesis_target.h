@@ -172,4 +172,52 @@ bool telekinesis_damage_due(float next_deadline, float now);
 // Op order preserved (interval first). interval = slot+0x44, amount (applied, not computed here) = slot+0x40.
 float telekinesis_damage_rebase(float next_deadline, float interval);
 
+// ── Mode-3 (RELEASE) core — FUN_14063f470 (decomp/63f470.c) ─────────────────────────────────────────
+// RELEASE is the lifecycle terminus, reached from HOLD (the ability/effect that set the grip clears it,
+// advancing slot+0x8 := 3). It REUSES the shared interp timeline (telekinesis_timeline) and the shared
+// scalar lerp (telekinesis_lerp) — those are NOT re-lifted here. RELEASE differs from GRAB in exactly two
+// deterministic, oracle-observable ways:
+//
+//   (A) THE LERP TARGET. GRAB interpolates toward telekinesis_target() = angle_base + slot+0x14; RELEASE
+//       interpolates the z-component toward the RAW stored slot+0x14 (no angle_base added). 63f470.c line
+//       91: local_60 = (slot[0x14] - slot[0x30]) * t + slot[0x30] = telekinesis_lerp(slot+0x30, slot+0x14, t).
+//       (x,y are passthroughs of slot+0xc/0x10; the orientation goes through the same FUN_14063ea50 vector
+//       lerp as GRAB.) The part-1 oracle already validates this via its mode-aware `to` select.
+//
+//   (B) THE COMPLETION TEARDOWN (63f470.c lines 35-87). Where GRAB-complete ADVANCES the SM (slot+0x8 := 2,
+//       writes the gated angles, arms the damage deadline), RELEASE-complete TEARS THE SLOT DOWN to a
+//       canonical inert end-state and then runs the env seam:
+//         * snap pose to final (FUN_1403a8f90 slot+0xc, FUN_1403a8710 slot+0x18) — env
+//         * rebase start: slot+0x24 := now                                    (same as GRAB; already validated)
+//         * mode terminus: slot+0x8 := 0  -> next vfunc_6 hits the Idle fall-through (slot ptr stays
+//           non-null at entity+0x160, but every mode branch is false), the grip is over.
+//         * disarm: zero the dynamic span — slot+0x8/0xc/0x10/0x14/0x18/0x1c/0x20/0x28/0x2c/0x30/0x34/
+//           0x38/0x3c/0x40/0x44/0x48 all := 0 (in particular the damage amount slot+0x40 and deadline
+//           slot+0x48 — the HOLD self-clocked damage from part 2 is switched off).
+//         * sentinel: slot+0x4c := 0x3fffff (the one non-zero, non-`now` write — a fixed marker).
+//       ENV SEAM (deferred, NOT lifted): the ability re-enable cascade (vtable getters #1/9/10/0xb/7/0x20
+//       then vfunc 0x208/0xb8 — un-suppresses the grabbed unit's abilities) and the GOM event dispatch
+//       FUN_1402d5320 (the SAME cross-boundary emit as HOLD). These are the Phase-B seam, as before.
+//
+// The deterministic quantities lifted here: the RELEASE lerp target (A) and the teardown END-STATE (B) —
+// specifically the terminal mode 0, the sentinel 0x3fffff, and the damage-disarm. The in-game oracle
+// checks, on a mode-3 completion edge: mode_after == 0, slot+0x4c == 0x3fffff, slot+0x40 == slot+0x48 == 0.
+constexpr int      kTeleReleaseTermMode = 0;          // slot+0x8 after RELEASE completes (lifecycle terminus)
+constexpr uint32_t kTeleReleaseSentinel = 0x3fffffu;  // slot+0x4c written on RELEASE completion (63f470.c:48)
+
+// RELEASE lerp target (the z-component "to"): the RAW stored slot+0x14, with NO angle_base added — the
+// distinguishing contrast with GRAB's telekinesis_target(). 63f470.c line 91. (Pair with telekinesis_lerp.)
+float telekinesis_release_target(float slot_z);
+
+// The canonical slot end-state after a RELEASE completion (63f470.c lines 38-48). All dynamic fields are
+// zeroed EXCEPT start (rebased to `now`) and the fixed sentinel; mode goes to the terminus 0. This is the
+// deterministic teardown the oracle confirms; the ability re-enable + GOM dispatch that follow are env.
+struct TelekinesisReleaseEnd {
+    int      mode     = kTeleReleaseTermMode;  // slot+0x8  := 0
+    uint32_t sentinel = kTeleReleaseSentinel;  // slot+0x4c := 0x3fffff
+    float    start    = 0.0f;                   // slot+0x24 := now
+    bool     damage_disarmed = true;            // slot+0x40 (amount) == slot+0x48 (deadline) == 0
+};
+TelekinesisReleaseEnd telekinesis_release_end(float now);
+
 } // namespace sim
