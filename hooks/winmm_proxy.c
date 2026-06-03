@@ -5044,6 +5044,18 @@ static void install_b633a30_hook(void)
  *       slot+0x24 := fVar5 = now). A rock-solid explicit slot store.
  *   (3) INTERP LERP BIT-EXACT — on a NON-completion tick, entity+0x80_after == predicted
  *       lerp(slot+0x30_before, to, t), bit-for-bit (the continuously-observable quantity, Nebula-class).
+ *
+ * PART 2 (HOLD, FUN_14063f730 — mode 2): once GRAB completes (slot+0x8 := 2), each tick spins the
+ * orientation + bobs the z-position by a phase angle = spin_t*omega (spin_t = max(elapsed/spin_per,0)),
+ * and runs a self-clocked periodic-damage scheduler. Two more checks on mode-2 ticks:
+ *   (4) Z-BOB POSE BIT-EXACT — entity+0x80_after == slot+0x14 + sin(angle)*bob_amp + height_offset,
+ *       where sin uses the engine's OWN FUN_140776650 (called in-process for bit-exactness) but only when
+ *       the angle clears the small-angle guard (exp field > 0x1d), else sin -> angle. height_offset is the
+ *       SAME grip-height const DAT_140b15ac0 GRAB adds; the z-bob has no ramp (only the orientation does).
+ *   (5) DAMAGE-DEADLINE REBASE BIT-EXACT — the damage cadence is a pure self-clocked function: due iff
+ *       (slot+0x48 <= now && slot+0x48 != 0), and on fire slot+0x48_after == interval(slot+0x44) + slot+0x48.
+ *       The gameplay damage write is to SELF (cf. AsteroidFieldDamage #6); only the event dispatch
+ *       FUN_1402d5320 is the deferred cross-boundary seam. Emitted as DTTKHOLD lines.
  * Plus DTTKSURVEY periodic totals + a mode distribution (how often GRAB/HOLD/RELEASE/idle run).
  *
  * arg count = 3 (uniform vfunc_6 rcx=behavior, rdx=entity, r8d=tick). Prologue (PE, 63f210):
@@ -5073,6 +5085,13 @@ static uint32_t g_tk_comp_edges = 0;                       /* completion edges o
 static uint32_t g_tk_bicond_ok  = 0, g_tk_bicond_bad = 0;  /* (1) completion biconditional */
 static uint32_t g_tk_rebase_ok  = 0, g_tk_rebase_bad = 0;  /* (2) rebase start==now on completion */
 static uint32_t g_tk_surv_last  = 0xFFFFFFFFu;
+/* HOLD (mode 2, FUN_14063f730) part-2 oracle — see the b63f210_hook HOLD block below. */
+static uint32_t g_tk_hold_pose_ok  = 0, g_tk_hold_pose_bad  = 0;  /* (4) z-bob pose bit-exact (entity+0x80) */
+static uint32_t g_tk_hold_sched_ok = 0, g_tk_hold_sched_bad = 0;  /* (5) damage-deadline rebase bit-exact */
+static uint32_t g_tk_hold_fires    = 0;                          /* damage-fire ticks observed */
+static uint32_t g_tk_hold_lines    = 0;
+typedef float (*TkEngTrigFn)(float);   /* FUN_140776650 = engine sin(float)->float, xmm0 in/out (leaf) */
+static TkEngTrigFn g_tk_eng_sin = NULL;
 
 static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
 {
@@ -5081,6 +5100,8 @@ static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
         if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
                    g_dt_imgbase = (uintptr_t)exe; }
     }
+    if (!g_tk_eng_sin && g_dt_imgbase)
+        g_tk_eng_sin = (TkEngTrigFn)(g_dt_imgbase + 0x776650);   /* engine sin for the HOLD z-bob */
     if (!(entity && g_dt_imgbase && dt_on()))
         return g_tk_trampoline(behavior, entity, tick_arg);
 
@@ -5100,6 +5121,12 @@ static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
     float    start     = *(float *)(slot + 0x24);
     float    slot_off  = *(float *)(slot + 0x14);
     float    from      = *(float *)(slot + 0x30);
+    /* HOLD (mode 2) inputs + config (63f730.c). slot_off == slot+0x14 is also the z-bob base. */
+    float    spin_per  = *(float *)(g_dt_imgbase + 0xb15ac8);   /* _DAT_140b15ac8 spin period */
+    float    omega     = *(float *)(g_dt_imgbase + 0x819b3c);   /* DAT_140819b3c angular freq  */
+    float    bob_amp   = *(float *)(g_dt_imgbase + 0xb15ad4);   /* _DAT_140b15ad4 z-bob amp    */
+    float    nxt_dmg   = *(float *)(slot + 0x48);               /* next-damage deadline (sec)  */
+    float    dmg_ivl   = *(float *)(slot + 0x44);               /* damage interval (sec)       */
 
     float    now   = (float)sim_clock / (float)hz;
     float    t_raw = (now - start) / duration;
@@ -5109,11 +5136,31 @@ static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
     float    to       = (mode == 1) ? (angle_base + slot_off) : slot_off;
     float    lerp_val = (to - from) * t + from;
 
+    /* HOLD (mode 2) predictions (63f730.c). z-bob: pos_z = slot+0x14 + sin(angle)*bob_amp + height_off,
+     * where height_off == angle_base (DAT_140b15ac0, the SAME grip-height constant GRAB adds), angle =
+     * spin_t*omega, spin_t = max(elapsed/spin_per,0). sin is the engine's own FUN_140776650 BUT only when
+     * the angle clears the small-angle guard (exp field > 0x1d); else sin -> angle (small-angle limit).
+     * Damage: a self-clocked deadline at slot+0x48 — due iff (deadline<=now && deadline!=0), and on fire
+     * the deadline advances by interval (slot+0x44). pos_z lands in entity+0x80 (same channel as GRAB). */
+    float hold_elapsed = now - start;
+    float hold_spin_t  = hold_elapsed / spin_per;
+    if (!(0.0f <= hold_spin_t)) hold_spin_t = 0.0f;
+    float hold_angle   = hold_spin_t * omega;
+    uint32_t ang_bits;  memcpy(&ang_bits, &hold_angle, sizeof ang_bits);
+    float hold_sin     = ((ang_bits & 0x7f800000u) > 0x1d000000u && g_tk_eng_sin)
+                             ? g_tk_eng_sin(hold_angle) : hold_angle;
+    /* Grouping matches the binary codegen (63f730 @0x63f8d3-0x63f905): slot_z + (sin*bob + offset), NOT
+     * the decompile's flattened left-assoc — FP add is non-associative, off by a sub-ULP at bob extrema. */
+    float hold_pred_z  = slot_off + (hold_sin * bob_amp + angle_base);
+    int   hold_due     = (nxt_dmg <= now) && (nxt_dmg != 0.0f);
+    float hold_pred_nxt= hold_due ? (dmg_ivl + nxt_dmg) : nxt_dmg;
+
     int64_t r = g_tk_trampoline(behavior, entity, tick_arg);
 
     int   mode_after  = *(int32_t *)(slot + 8);
     float start_after = *(float *)(slot + 0x24);
     float val80       = *(float *)(entity + 0x80);
+    float nxt_after   = *(float *)(slot + 0x48);
 
     /* Only modes 1 (GRAB) and 3 (RELEASE) run the interp timeline; 2 (HOLD) and others don't. */
     int is_interp = (mode == 1 || mode == 3);
@@ -5140,6 +5187,31 @@ static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
     }
 
     int32_t nowt = (int32_t)sim_clock;
+
+    /* HOLD (mode 2) part-2 validation: (4) z-bob pose entity+0x80 bit-exact, (5) damage-deadline
+     * rebase bit-exact (proves the damage cadence is a pure self-clocked function — the gameplay
+     * write is to SELF, only the event dispatch FUN_1402d5320 is the deferred cross-boundary seam). */
+    int hold_pose_ok = 0, hold_sched_ok = 0, hold_want = 0;
+    if (mode == 2) {
+        hold_pose_ok  = neb_biteq(val80, hold_pred_z);
+        if (hold_pose_ok)  g_tk_hold_pose_ok++;  else g_tk_hold_pose_bad++;
+        hold_sched_ok = neb_biteq(nxt_after, hold_pred_nxt);
+        if (hold_sched_ok) g_tk_hold_sched_ok++; else g_tk_hold_sched_bad++;
+        if (hold_due) g_tk_hold_fires++;
+        hold_want = !hold_pose_ok || !hold_sched_ok || hold_due || (g_tk_hold <= 40);
+        if (hold_want && g_tk_hold_lines < 20000u) {
+            g_tk_hold_lines++;
+            char hl[400];
+            snprintf(hl, sizeof hl,
+                "DTTKHOLD\ttick=%d\tent=%llx\tspin_t=%.9g\tangle=%.9g\tdue=%d\tpose_ok=%d\tsched_ok=%d"
+                "\tval80=%.9g\tpredz=%.9g\tnxt_after=%.9g\tpred_nxt=%.9g\n",
+                nowt, (unsigned long long)entity, (double)hold_spin_t, (double)hold_angle, hold_due,
+                hold_pose_ok, hold_sched_ok, (double)val80, (double)hold_pred_z,
+                (double)nxt_after, (double)hold_pred_nxt);
+            log_write(hl);
+        }
+    }
+
     if (want && g_tk_lines < 20000u) {
         g_tk_lines++;
         char ln[360];
@@ -5155,10 +5227,13 @@ static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
         char sv[360];
         snprintf(sv, sizeof sv,
             "DTTKSURVEY\ttick=%d\tticks=%u\tnoslot=%u\tmode(grab/hold/rel/idle)=%u/%u/%u/%u"
-            "\tinterp(ok/bad)=%u/%u\tcomp_edges=%u\tbicond(ok/bad)=%u/%u\trebase(ok/bad)=%u/%u\n",
+            "\tinterp(ok/bad)=%u/%u\tcomp_edges=%u\tbicond(ok/bad)=%u/%u\trebase(ok/bad)=%u/%u"
+            "\thold_pose(ok/bad)=%u/%u\thold_sched(ok/bad)=%u/%u\thold_fires=%u\n",
             nowt, g_tk_ticks, g_tk_noslot, g_tk_grab, g_tk_hold, g_tk_release, g_tk_idle,
             g_tk_interp_ok, g_tk_interp_bad, g_tk_comp_edges,
-            g_tk_bicond_ok, g_tk_bicond_bad, g_tk_rebase_ok, g_tk_rebase_bad);
+            g_tk_bicond_ok, g_tk_bicond_bad, g_tk_rebase_ok, g_tk_rebase_bad,
+            g_tk_hold_pose_ok, g_tk_hold_pose_bad, g_tk_hold_sched_ok, g_tk_hold_sched_bad,
+            g_tk_hold_fires);
         log_write(sv);
     }
     return r;

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""DTTK in-game oracle: validate the lifted TELEKINESIS interp-timeline core
-(sim/telekinesis_target.cpp, from FUN_14063f210) against the live binary. Behavior #8 (part 1).
+"""DTTK in-game oracle: validate the lifted TELEKINESIS core (sim/telekinesis_target.cpp) against the
+live binary. Behavior #8: part 1 = interp timeline (FUN_14063f210), part 2 = HOLD (FUN_14063f730).
 
 TelekinesisTargetBehaviorClass::vfunc_6 (0x63f210) is the Force force-grip effect: a 3-mode lifecycle
 SM over a per-entity telekinesis slot (slot = entity+0x160; mode int at slot+0x8). mode 1 GRAB and
@@ -41,6 +41,13 @@ LINE = re.compile(
 SURVEY = re.compile(
     r"DTTKSURVEY\ttick=(-?\d+)\tticks=(\d+)\tnoslot=(\d+)\tmode\(grab/hold/rel/idle\)=(\d+)/(\d+)/(\d+)/(\d+)"
     r"\tinterp\(ok/bad\)=(\d+)/(\d+)\tcomp_edges=(\d+)\tbicond\(ok/bad\)=(\d+)/(\d+)\trebase\(ok/bad\)=(\d+)/(\d+)")
+# HOLD totals are an optional tail on the survey line (part-2 build); parsed separately so old logs still match.
+SURVEY_HOLD = re.compile(
+    r"hold_pose\(ok/bad\)=(\d+)/(\d+)\thold_sched\(ok/bad\)=(\d+)/(\d+)\thold_fires=(\d+)")
+# Part-2 per-tick HOLD record (mode 2): (4) z-bob pose entity+0x80, (5) damage-deadline rebase.
+HOLD = re.compile(
+    r"DTTKHOLD\ttick=(-?\d+)\tent=([0-9a-fA-F]+)\tspin_t=(\S+)\tangle=(\S+)\tdue=(\d+)"
+    r"\tpose_ok=(\d+)\tsched_ok=(\d+)\tval80=(\S+)\tpredz=(\S+)\tnxt_after=(\S+)\tpred_nxt=(\S+)")
 
 MODE_NAME = {1: "GRAB(63f210)", 2: "HOLD(63f730)", 3: "RELEASE(63f470)"}
 
@@ -48,18 +55,26 @@ MODE_NAME = {1: "GRAB(63f210)", 2: "HOLD(63f730)", 3: "RELEASE(63f470)"}
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "eaw-mt.log"
     rows = []
+    hold_rows = []
     last_survey = None
+    last_survey_hold = None
     with open(path, "r", errors="replace") as fh:
         for line in fh:
             m = LINE.search(line)
             if m:
                 rows.append(m.groups())
                 continue
+            h = HOLD.search(line)
+            if h:
+                hold_rows.append(h.groups())
+                continue
             s = SURVEY.search(line)
             if s:
                 last_survey = s.groups()
+                sh = SURVEY_HOLD.search(line)
+                last_survey_hold = sh.groups() if sh else None
 
-    if not rows:
+    if not rows and not hold_rows:
         print(f"NO DTTK LINES in {path} — was EAW_DIFFTRACE=1 set, and did a battle with a telekinesis "
               f"(Force force-grip) cast run? The behavior only interp-ticks while a unit is gripped.")
         return 1
@@ -100,6 +115,22 @@ def main():
             else:
                 interp_bad += 1
 
+    # ── part 2 (HOLD, FUN_14063f730): (4) z-bob pose + (5) damage-deadline rebase ───────────────────
+    hold_pose_ok = hold_pose_bad = 0
+    hold_sched_ok = hold_sched_bad = 0
+    hold_fires = 0
+    for (htick, hent, hspin, hang, hdue, hpose, hsched, hv80, hpz, hnxt, hpnxt) in hold_rows:
+        if hpose == "1":
+            hold_pose_ok += 1
+        else:
+            hold_pose_bad += 1
+        if hsched == "1":
+            hold_sched_ok += 1
+        else:
+            hold_sched_bad += 1
+        if hdue == "1":
+            hold_fires += 1
+
     print("DTTK oracle — Telekinesis interp-timeline core (FUN_14063f210)")
     print(f"  log: {path}")
     print(f"  telekinesis interp-ticks (logged): {n}   distinct entities: {len(entities)}")
@@ -113,20 +144,42 @@ def main():
     print("  (3) INTERP LERP BIT-EXACT  (non-completion: entity+0x80 == lerp(slot+0x30, to, t))")
     print(f"        interp_ok={interp_ok}   interp_bad={interp_bad}")
     print()
+    print("  --- part 2: HOLD spin/bob + damage scheduler (FUN_14063f730) ---")
+    print(f"  HOLD ticks (logged): {len(hold_rows)}")
+    print("  (4) Z-BOB POSE BIT-EXACT  (entity+0x80 == slot+0x14 + sin(spin_t*omega)*bob + height_offset)")
+    print(f"        hold_pose_ok={hold_pose_ok}   hold_pose_bad={hold_pose_bad}")
+    print("  (5) DAMAGE-DEADLINE REBASE BIT-EXACT  (on fire: slot+0x48_after == interval + slot+0x48)")
+    print(f"        hold_sched_ok={hold_sched_ok}   hold_sched_bad={hold_sched_bad}   damage fires: {hold_fires}")
+    print()
     print("  DISTRIBUTION")
     print("        mode:  " +
           "  ".join(f"{MODE_NAME.get(m, 'mode='+str(m))}:{c}" for m, c in sorted(mode_hist.items())))
     print()
     if last_survey:
         (st, sticks, sno, sg, sh, sr, si, sio, sib, sce, sbo, sbb, sro, srb) = last_survey
+        extra = ""
+        if last_survey_hold:
+            (hpo, hpb, hso, hsb, hf) = last_survey_hold
+            extra = (f" hold_pose(ok/bad)={hpo}/{hpb} hold_sched(ok/bad)={hso}/{hsb} hold_fires={hf}")
         print(f"  DTTKSURVEY (in-hook totals, last @tick {st}): ticks={sticks} noslot={sno} "
               f"mode(grab/hold/rel/idle)={sg}/{sh}/{sr}/{si} interp(ok/bad)={sio}/{sib} "
-              f"comp_edges={sce} bicond(ok/bad)={sbo}/{sbb} rebase(ok/bad)={sro}/{srb}")
+              f"comp_edges={sce} bicond(ok/bad)={sbo}/{sbb} rebase(ok/bad)={sro}/{srb}{extra}")
     print()
-    # PASS: every biconditional held, every observed completion rebased exactly, every interp lerp was
-    # bit-exact, and we actually saw interp ticks. (comp_edges may legitimately be 0 if no grab completed
-    # within the capture — like #1's 0x2d emit / #5's LINGER pins; that does not fail the run.)
-    verdict_pass = (bicond_bad == 0 and rebase_bad == 0 and interp_bad == 0 and bicond_ok > 0)
+    # Part-1 PASS: every biconditional held, every observed completion rebased exactly, every interp lerp
+    # was bit-exact, and we saw interp ticks. (comp_edges may legitimately be 0 if no grab completed within
+    # the capture — like #1's 0x2d emit / #5's LINGER pins; that does not fail the run.)
+    p1_present = len(rows) > 0
+    p1_pass = (bicond_bad == 0 and rebase_bad == 0 and interp_bad == 0 and bicond_ok > 0)
+    # Part-2 PASS: every HOLD z-bob pose was bit-exact, every damage-deadline rebase was bit-exact, and we
+    # observed HOLD ticks. (damage fires may be 0 if no grip held long enough to cross a deadline; the pose
+    # check still validates the spin/bob math every HOLD tick.)
+    p2_present = len(hold_rows) > 0
+    p2_pass = (hold_pose_bad == 0 and hold_sched_bad == 0 and hold_pose_ok > 0)
+    print(f"  PART 1 (interp timeline): {'PASS' if p1_pass else 'FAIL' if p1_present else 'n/a (no interp ticks)'}")
+    print(f"  PART 2 (HOLD spin+damage): {'PASS' if p2_pass else 'FAIL' if p2_present else 'n/a (no HOLD ticks)'}")
+    # Overall PASS requires every PRESENT part to pass, and at least one part exercised.
+    verdict_pass = ((not p1_present or p1_pass) and (not p2_present or p2_pass)
+                    and (p1_present or p2_present))
     print("  VERDICT:", "PASS" if verdict_pass else "FAIL")
     return 0 if verdict_pass else 1
 
