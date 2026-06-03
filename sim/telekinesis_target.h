@@ -102,4 +102,74 @@ float telekinesis_angle_gate(float stored);
 // Slot-mode dispatch (63f210.c lines 32-91): no slot -> NoSlot; else route the mode int 1/2/3/else.
 TelekinesisImpl telekinesis_dispatch(bool has_slot, int mode);
 
+// ── Mode-2 (HOLD) core — FUN_14063f730 (decomp/63f730.c) ────────────────────────────────────────────
+// HOLD is reached after GRAB completes (slot+0x8 := 2). Each tick it does two independent things:
+//   (A) POSE: spin the entity's orientation in a circle + bob its z-position vertically, both driven by
+//       a single phase angle = spin_t * omega, with the orientation radius ramped in over a short window.
+//   (B) DAMAGE: a self-scheduled periodic damage clock — when the sim time reaches the next-damage
+//       deadline (slot+0x48), apply slot+0x40 damage to SELF and advance the deadline by slot+0x44.
+//
+// Only the deterministic numeric CORE is lifted here (mirroring the part-1 GRAB scope): the timeline
+// scalars, the phase angle, the small-angle trig guard *predicate*, the z-bob composition, and the
+// damage scheduler (due-predicate + deadline rebase). The trig *value* (engine FUN_140776150 cos /
+// FUN_140776650 sin) and the actual damage application (FUN_1403a9e30) + event dispatch (FUN_1402d5320)
+// are the ENV seam, supplied/observed externally — host tests feed libm trig, the in-process oracle
+// calls the engine's own trig for bit-exactness.
+//
+//   elapsed  = now - start                                   // start = slot+0x24 (rebased on GRAB-complete)
+//   spin_t   = max(elapsed / spin_period, 0.0)               // spin_period = _DAT_140b15ac8; clamp-low
+//   ramp     = (elapsed < ramp_dur) ? elapsed/ramp_dur : 1.0 // ramp_dur = DAT_140b15acc; clamps to 1.0
+//   angle    = spin_t * omega                                // omega = DAT_140819b3c (angular frequency)
+//   pose: orient_x = wrap360(slot+0x34 + cos(angle)*radius*ramp)   radius = DAT_140b15ad0
+//         orient_y = wrap360(slot+0x38 + sin(angle)*radius*ramp)   (wrap360 = FUN_14020b710, mod 360.0)
+//         orient_z = slot+0x3c (passthrough)
+//         pos_x = slot+0xc, pos_y = slot+0x10
+//         pos_z = slot+0x14 + sin(angle)*bob_amp + height_offset   bob_amp = _DAT_140b15ad4,
+//                                                                  height_offset = DAT_140b15ac0
+//   NOTE: the z-bob has NO ramp (unlike the orientation radius); height_offset is the SAME grip-height
+//   constant DAT_140b15ac0 that GRAB adds in telekinesis_target(). pos_z lands in entity+0x80 — the SAME
+//   observable the part-1 oracle validates for GRAB (FUN_1403a8f90 writes entity+0x78/0x7c/0x80).
+constexpr float kTeleWrapMod = 360.0f;   // DAT_1408007f4 — FUN_14020b710 wrap modulus (orientation)
+
+// elapsed since the (rebased) timeline start. 63f730.c line 27: (float)clock/hz - slot[0x24].
+float telekinesis_hold_elapsed(float now, float start);
+
+// spin_t = max(elapsed / spin_period, 0.0). 63f730.c lines 28-31 — clamp-low only (like the GRAB t).
+float telekinesis_spin_t(float elapsed, float spin_period);
+
+// ramp = (elapsed < ramp_dur) ? elapsed/ramp_dur : 1.0. 63f730.c lines 32-35 — a ramp-in to 1.0 that
+// scales the orientation spin radius (NOT the z-bob). DAT_1407ffaf8 = 1.0 is the clamped ceiling.
+float telekinesis_ramp(float elapsed, float ramp_dur);
+
+// phase angle = spin_t * omega. 63f730.c line 42 (fVar4 = fVar6 * DAT_140819b3c).
+float telekinesis_hold_angle(float spin_t, float omega);
+
+// The engine guards every cos/sin behind a small-angle bypass: it calls the real trig ONLY when the
+// argument's IEEE-754 exponent field exceeds 0x1d (i.e. (bits & 0x7f800000) > 0x1d000000); otherwise
+// cos collapses to 1.0 and sin collapses to the angle itself (the small-angle limits). 63f730.c lines
+// 37/44/52. Returns true iff the real trig routine should be called for this angle.
+bool telekinesis_use_real_trig(float angle);
+
+// pos_z = slot_z + (sin_term*bob_amp + height_offset). 63f730.c line 57. NB the parenthesization is
+// load-bearing: the binary groups (sin*bob + offset) first, then adds slot_z (verified in the codegen,
+// not the flattened decompile) — FP add is non-associative so the wrong grouping is off by a sub-ULP at
+// the bob extrema. `sin_term` is sin(angle) when telekinesis_use_real_trig(angle), else the small-angle
+// value `angle`. Pure arithmetic — the bit-exact quantity written to entity+0x80; the caller supplies
+// sin_term (engine trig / libm / small-angle).
+float telekinesis_hold_pos_z(float slot_z, float sin_term, float bob_amp, float height_offset);
+
+// ── HOLD damage scheduler (the self-clocked periodic-damage seam) — 63f730.c lines 59-73 ───────────
+// The damage is applied to SELF (the gripped entity, param_2) — like AsteroidFieldDamage #6 the gameplay
+// write is self-directed; the cross-boundary part is only the event dispatch FUN_1402d5320 (deferred).
+// The cadence is a pure deterministic clock: fire when sim time has reached the deadline, then push the
+// deadline forward by one interval. A zero deadline means "no damage scheduled" (GRAB only arms it when
+// the per-tick damage amount slot+0x40 > 0), so it is explicitly excluded.
+//
+// due iff (next_deadline <= now) && (next_deadline != 0.0).   63f730.c line 59.
+bool telekinesis_damage_due(float next_deadline, float now);
+
+// on fire: next_deadline := interval + next_deadline. 63f730.c line 63 (slot[0x48] = slot[0x44]+slot[0x48]).
+// Op order preserved (interval first). interval = slot+0x44, amount (applied, not computed here) = slot+0x40.
+float telekinesis_damage_rebase(float next_deadline, float interval);
+
 } // namespace sim

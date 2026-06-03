@@ -2,6 +2,8 @@
 // See telekinesis_target.h for the full identification and determinism notes.
 #include "telekinesis_target.h"
 
+#include <cstring>
+
 namespace sim {
 
 // now = (float)sim_clock / (float)hz. 63f210.c line 51: fVar5 = (float)DAT_140b0a320 / (float)DAT_140b0a340.
@@ -51,6 +53,62 @@ TelekinesisImpl telekinesis_dispatch(bool has_slot, int mode) {
     if (mode == 2) return TelekinesisImpl::Hold;
     if (mode == 3) return TelekinesisImpl::Release;
     return TelekinesisImpl::Idle;
+}
+
+// ── Mode-2 (HOLD) core — FUN_14063f730 ──────────────────────────────────────────────────────────────
+
+// 63f730.c line 27: fVar5 = (float)DAT_140b0a320 / (float)DAT_140b0a340 - slot[0x24].
+float telekinesis_hold_elapsed(float now, float start) {
+    return now - start;
+}
+
+// 63f730.c lines 28-31: fVar6 = 0.0; if (0.0 <= fVar5/_DAT_140b15ac8) fVar6 = fVar5/_DAT_140b15ac8.
+// Clamp-low only — the division is computed first, then the sign-gate keeps it or substitutes 0.0.
+float telekinesis_spin_t(float elapsed, float spin_period) {
+    const float s = elapsed / spin_period;
+    return (0.0f <= s) ? s : 0.0f;
+}
+
+// 63f730.c lines 32-35: fVar7 = DAT_1407ffaf8 (1.0); if (fVar5 < DAT_140b15acc) fVar7 = fVar5/DAT_140b15acc.
+// Below the ramp duration the factor grows linearly from 0; at/after it pins to 1.0. The comparison is on
+// the raw elapsed seconds (not the clamped spin_t), so a future-dated start (elapsed<0) yields a negative
+// ramp here — faithfully preserved (the engine does not clamp the ramp low).
+float telekinesis_ramp(float elapsed, float ramp_dur) {
+    return (elapsed < ramp_dur) ? (elapsed / ramp_dur) : kTeleComplete;
+}
+
+// 63f730.c line 42: fVar4 = fVar6 * DAT_140819b3c.
+float telekinesis_hold_angle(float spin_t, float omega) {
+    return spin_t * omega;
+}
+
+// 63f730.c lines 37/44/52: the real trig routine runs only when ((uint)angle & 0x7f800000) > 0x1d000000,
+// i.e. the IEEE-754 biased exponent exceeds 0x3a. Reinterpret the float's bits and apply the same mask
+// + compare exactly. (The sign bit is outside the 0x7f800000 mask, so this is magnitude-only.)
+bool telekinesis_use_real_trig(float angle) {
+    uint32_t bits;
+    std::memcpy(&bits, &angle, sizeof(bits));
+    return (bits & 0x7f800000u) > 0x1d000000u;
+}
+
+// 63f730.c line 57: local_50 = slot[0x14] + fVar6 * _DAT_140b15ad4 + DAT_140b15ac0.
+// CAUTION — the decompiler flattens this to a left-assoc `slot_z + sin*bob + off`, but the ACTUAL codegen
+// (FUN_14063f730 @0x63f8d3-0x63f905) groups it as slot_z + (sin*bob + off): it computes xmm6 = sin*bob,
+// xmm6 += off, THEN xmm0(slot_z) += xmm6. FP add is non-associative, so the grouping matters — the wrong
+// (left-assoc) grouping is off by a sub-ULP at large |sin*bob| (the engine's z-bob extrema). `sin_term` =
+// sin(angle) when telekinesis_use_real_trig, else `angle`. Parenthesized to match the binary bit-for-bit.
+float telekinesis_hold_pos_z(float slot_z, float sin_term, float bob_amp, float height_offset) {
+    return slot_z + (sin_term * bob_amp + height_offset);
+}
+
+// 63f730.c line 59: if ((slot[0x48] <= (float)clock/hz) && (slot[0x48] != 0.0)).
+bool telekinesis_damage_due(float next_deadline, float now) {
+    return (next_deadline <= now) && (next_deadline != 0.0f);
+}
+
+// 63f730.c line 63: slot[0x48] = slot[0x44] + slot[0x48] — interval added on the LEFT, preserved.
+float telekinesis_damage_rebase(float next_deadline, float interval) {
+    return interval + next_deadline;
 }
 
 } // namespace sim
