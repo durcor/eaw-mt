@@ -754,7 +754,7 @@ sim state; out = presentation):
 |---|---|---|---|
 | `SimpleSpaceLocomotorBehaviorClass` (+Walk/Fighter/Fleet/Starship…) | `0x626420` | **IN** | the mover — writes `entity+0x78` position [CORE] |
 | `UnitAIBehaviorClass` | `0x4f6070` | **IN** | ✅ **LIFTED + DTUAI ORACLE PASS** (behavior #4) — the fog-of-war/sensor-visibility ticker, **first cross-entity behavior** (reads global object list, writes per-(observer,object) visibility matrix → shared sensor grid `DAT_140b31900`): (A) 300-tick fixed-phase throttled transform-change self-refresh, (B) gated reveal, (C) per-object LOS bit + edge notify. **NOT Phase-A parallel-safe** (shared-grid writes need buffering/sharding). In-game: throttle 3427/3427 `+300`-exact, cacheok 6988/6988, 90 vis edges characterised |
-| `TargetingBehaviorClass` | `0x633a30` | **IN** | 🟡 **DISPATCHER LIFTED (behavior #7, part 1)** — `0x633a30` is a thin game-mode dispatcher: run base `LocomotorCommonClass::vfunc_6`, resolve a mode int (controller `entity->get_component(1)` present → `controller->control_mode()` vtbl `+0x238`; else `DAT_140b15418` present → game-speed mode vtbl `+0xe0`; else `DAT_140b153fc`), then route mode 1 → `634810` (individual), mode 2 → `633ae0` (team), else NoOp `0x650000`. Dispatcher core (`sim/targeting_dispatch.{h,cpp}`) is a pure side-effect-free integer decision (trivially Phase-A-safe). The two ~2-3 KB sub-bodies (the actual fire-control orchestrator: live global-set reads + GOM target-assign/move/fire emission, UnitAI #4 seam-class) are **DEFERRED**. 4 host cases + **DTARG ORACLE PASS** (space battle, 8 entities, 20000 ticks): dispatch biconditional `pred==act` **20000/20000** (`bicond_bad=0`, `multi=0`); all controller-sourced mode 2 → team targeting `633ae0` (mode-1/NoOp/fallback host-covered, in-game dormant) |
+| `TargetingBehaviorClass` | `0x633a30` | **IN** | 🟡 **DISPATCHER (part 1) + AIM-GEOMETRY (part 2) LIFTED (behavior #7)** — **part 1:** `0x633a30` is a thin game-mode dispatcher: run base `LocomotorCommonClass::vfunc_6`, resolve a mode int (controller `entity->get_component(1)` present → `controller->control_mode()` vtbl `+0x238`; else `DAT_140b15418` present → game-speed mode vtbl `+0xe0`; else `DAT_140b153fc`), then route mode 1 → `634810` (individual), mode 2 → `633ae0` (team), else NoOp `0x650000`. Dispatcher core (`sim/targeting_dispatch.{h,cpp}`) is a pure side-effect-free integer decision (trivially Phase-A-safe). **DTARG ORACLE PASS** (space battle, 8 entities, 20000 ticks): dispatch biconditional `pred==act` **20000/20000** (`bicond_bad=0`, `multi=0`); all controller-sourced mode 2 → team targeting `633ae0`. **part 2:** the two ~2-3 KB sub-bodies (`634810`/`633ae0`) are target-selection / fire-control orchestration FSMs — the deferred Phase-B emit seam (GOM target-assign/move/fire, UnitAI #4 class) — with ONE embedded pure bit-matchable numeric core: the **aim geometry `FUN_14020acd0`** = direction(self→tgt) → Euler `{roll=0, pitch, yaw}` (deg). Lifted to `sim/targeting_aim.{h,cpp}` (+`wrap_180` `FUN_14020b6d0`, +the 633ae0 tail facing-vector `{cos,sin,0}` from `deg2rad(yaw)`); reuses engine atan2 `FUN_14078437c`/sqrt `FUN_140776d48`/sin·cos as intrinsics. 4 host case-groups + **DTARG2 ORACLE PASS** (battle, **2,056,597 aim ticks**): yaw/pitch/roll **all bit-exact 2056597/0**, all 4 branch paths exercised (both-computed 2.05M, both-deg 1336, yaw-only 411, pitch-only 5). The selection/emit FSM around the geometry stays **DEFERRED** (same serialise-or-shard seam) |
 | `DamageTrackingBehaviorClass` | `0x58bd80` | **IN** | ✅ **LIFTED** (behavior #1) — *not* HP application: a **timed damage/status-effect decay ticker** (own `+0x1a0` list); emits `0x2d` on empty |
 | `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
 | `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | ✅ **LIFTED** (behavior #2) — pure self-contained Phase-A regen ticker: `value' = clamp(value + rate·dt, 0, max)` on own pool `(entity+0xf0)+0xf8`; no RNG/cross-entity/CommandSink |
@@ -1084,6 +1084,47 @@ controller reporting a NoOp mode does NOT fall through to a manager/default that
     catch them in a scenario that exercises mode 1. This is decisive for the dominant in-combat path: the
     full resolution chain (controller present → `control_mode()` → mode → dispatch) reproduced bit-for-bit
     over 20000 ticks. Capture saved `logs/dtarg_oracle_pass.log`. Captured with the `EAW_ORACLE` build.
+
+**🟡 Behavior #7 (part 2) — Targeting team-targeting AIM GEOMETRY core (`FUN_14020acd0`) LIFTED + DTARG2
+ORACLE PASS (2026-06-03)** → `sim/targeting_aim.{h,cpp}`. Part 1 deferred the two ~2-3 KB sub-bodies
+(`634810` mode 1 individual, `633ae0` mode 2 team). On decode these are categorically different from the
+#1-6 tickers and even from #8: they are **target-selection / fire-control orchestration FSMs** — acquire
+target → validate (`vfunc 0x160`/`0x168`) → assign (`vfunc 0xd0`) → set-firing-state (`vfunc 0xf8`) →
+face, plus GOM target-assign/move/fire emission. That orchestration *is* the deferred Phase-B seam (UnitAI
+#4 / AsteroidFieldDamage #6 class: live global-set reads + cross-boundary emit); it has no numeric core to
+bit-match. The decode found exactly **one** embedded pure, bit-matchable numeric core, in the DTARG-
+confirmed dominant in-combat path `633ae0` (lines 381-418): the **aim geometry** turning a self→target
+direction into the yaw/pitch the unit must face. Three pure primitives lifted (all reusing the engine's own
+math intrinsics — atan2 `FUN_14078437c`, sqrt `FUN_140776d48`, sin `FUN_140776650`, cos `FUN_140776150` —
+called in-process for bit-exactness, libm on host):
+  - **`targeting_aim_angles` (`FUN_14020acd0`):** `delta = tgt - self`; `yaw = (dx==0&&dy==0) ? 0 :
+    normalize360(atan2(dy,dx)·rad2deg)`; `pitch = (dz==0&&dx==0) ? 0 : −(atan2(dz, sqrt(dy·dy+dx·dx))·
+    rad2deg)`; `roll = 0`. **Per the #8-part-2 FP-grouping lesson, verified against the 14020acd0 asm:**
+    `rad2deg = 360.0/(PI·2.0)` is a RUNTIME float32 mul-then-div (reused for yaw+pitch, *not* a precomputed
+    constant); `horiz = sqrt(dy·dy + dx·dx)` (dy² first); pitch negated via `^0x80000000` (sign-bit XOR,
+    not unary minus). Constants from .rdata: `PI=0x40490fdb`, `2.0`, `360.0`, sign mask `0x80000000`.
+  - **`targeting_wrap_180` (`FUN_14020b6d0`):** `while(180<d) d-=360; while(d<=-180) d+=360` → `(-180,180]`.
+  - **`targeting_face_from_yaw` (633ae0 tail):** `turn = (PI·2.0)/360.0 · yaw` (reciprocal grouping);
+    `facing = { guard?cos(turn):1.0, guard?sin(turn):turn, 0 }` with the SAME small-angle guard
+    `(bits(turn)&0x7f800000) > 0x1d000000` proven bit-exact by the #8-part-2 DTTK z-bob (same engine
+    sin/cos) — so its in-game bit-exactness is inherited, not separately oracled.
+  The heading-error gate that decides *whether* to re-emit a face command (`|wrap_180(err)| > 10.0°`,
+  `DAT_140805898`) and the lead-prediction `FUN_140396ce0` (reads the target's foreign motion state) are
+  ENV, not part of the geometry. **THREADING:** the geometry is pure (reads its 3 args + .rdata, no writes,
+  no cross-entity, no RNG) → trivially Phase-A-safe; Targeting's threading character remains entirely in the
+  deferred selection/emit FSM. 4 host case-groups (axis directions, the +360 yaw-normalize, pitch sign-flip,
+  translation-invariance, wrap_180 range, the small-angle facing guard). **DTARG2 in-game oracle**
+  (`hooks/winmm_proxy.c`, `EAW_DIFFTRACE=1`): inline trampoline on `0x20acd0` (25-byte position-independent
+  prologue cut at +0x19, before the first rip-rel at +0x35; entry `rcx`=out/`rdx`=self/`r8`=tgt, 3 ptr args).
+  Snapshots self/tgt xyz BEFORE, runs the real call, then recomputes the prediction calling the engine's own
+  atan2/sqrt in-process with PI/2.0/360.0 read from .rdata (so rad2deg's division is the binary's runtime
+  op), and bit-compares `{roll,pitch,yaw}` (`neb_biteq`). `tools/analyze_targeting_aim_oracle.py` aggregates.
+  **Result over a battle (2,056,597 aim-geometry calls):** yaw/pitch/roll **all bit-exact 2056597/0** (0 bad,
+  any component); **all four branch paths exercised** — both-computed 2,054,845, both-degenerate 1336,
+  yaw-only 411, pitch-only 5 — so every degenerate edge AND the full atan2/sqrt path validated bit-for-bit.
+  Capture saved `logs/dtarg2_oracle_pass.log`. Captured with the `EAW_ORACLE` build. **Note: unlike the
+  dormant-path captures (#1's 0x2d emit, #5's LINGER pins), every branch here is in-game-exercised — the aim
+  geometry is the single hottest pure-numeric primitive lifted so far (2M+ calls in one battle).**
 
 **🟡 Behavior #8 (part 1) — `TelekinesisTargetBehaviorClass::vfunc_6` interp-timeline core (`0x63f210`) LIFTED
 + DTTK ORACLE PASS (2026-06-02)** → `sim/telekinesis_target.{h,cpp}`. The eighth in-slice IN behavior is

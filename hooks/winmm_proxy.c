@@ -5021,6 +5021,140 @@ static void install_b633a30_hook(void)
 }
 
 /* =========================================================================
+ * DTARG2 — in-game oracle for the lifted Targeting team-targeting AIM GEOMETRY core
+ * (sim/targeting_aim.cpp, from FUN_14020acd0). Behavior #7 (part 2).
+ *
+ * The mode-2 fire-control body FUN_140633ae0 (the DTARG-confirmed dominant in-combat path) is a
+ * target-selection / fire-control orchestration FSM (the deferred Phase-B emit seam). Its ONE embedded,
+ * pure, bit-matchable numeric core is the aim geometry FUN_14020acd0: direction(self->tgt) -> Euler
+ * {roll=0, pitch, yaw} (deg). 14020acd0 has its own stable entry point and is a leaf-ish pure function
+ * (reads only its 3 pointer args + .rdata constants, calls atan2/sqrt), so we oracle it directly:
+ *   * snapshot self.xyz (rdx) + tgt.xyz (r8) BEFORE the trampoline,
+ *   * run the real 14020acd0 once (fills out[0..2] = {roll, pitch, yaw}),
+ *   * recompute the prediction in-process calling the engine's OWN atan2 (FUN_14078437c) + sqrt
+ *     (FUN_140776d48) -> BIT-EXACT vs the binary (neb_biteq), with PI/2.0/360.0 read from .rdata so the
+ *     rad2deg = 360 / (PI*2.0) division is the binary's runtime float32 op (no compile-time fold).
+ *   * compare roll/pitch/yaw bit-for-bit.
+ *
+ * Prologue (25 bytes, all position-independent; first rip-rel is at +0x35):
+ *   48 8b c4 / 48 89 58 08 / 48 89 68 10 / 48 89 70 18 / 48 89 78 20 / 41 56 / 48 83 ec 50
+ *   = mov rax,rsp; mov[rax+8],rbx; mov[rax+10],rbp; mov[rax+18],rsi; mov[rax+20],rdi; push r14;
+ *     sub rsp,0x50  — cut at +0x19. Entry rcx=out, rdx=self, r8=tgt (3 ptr args, MS x64). */
+#define AIM_14020ACD0_RVA  0x20acd0ULL
+static const BYTE aim_14020acd0_prologue[25] = {
+    0x48, 0x8b, 0xc4,              /* mov rax, rsp        */
+    0x48, 0x89, 0x58, 0x08,        /* mov [rax+0x08], rbx */
+    0x48, 0x89, 0x68, 0x10,        /* mov [rax+0x10], rbp */
+    0x48, 0x89, 0x70, 0x18,        /* mov [rax+0x18], rsi */
+    0x48, 0x89, 0x78, 0x20,        /* mov [rax+0x20], rdi */
+    0x41, 0x56,                    /* push r14            */
+    0x48, 0x83, 0xec, 0x50,        /* sub rsp, 0x50       */
+};
+typedef void *(*Aim14020acd0Fn)(void *out, float *self, float *tgt);
+typedef float (*AimAtan2Fn)(float y, float x);   /* FUN_14078437c atan2(y,x), xmm0/xmm1 in, xmm0 out */
+typedef float (*AimSqrtFn)(float s);             /* FUN_140776d48 sqrt(s),    xmm0 in/out            */
+static Aim14020acd0Fn g_aim_trampoline = NULL;
+static AimAtan2Fn     g_aim_atan2 = NULL;
+static AimSqrtFn      g_aim_sqrt  = NULL;
+static uint32_t g_aim_ticks   = 0;
+static uint32_t g_aim_yaw_ok = 0,   g_aim_yaw_bad = 0;
+static uint32_t g_aim_pitch_ok = 0, g_aim_pitch_bad = 0;
+static uint32_t g_aim_roll_ok = 0,  g_aim_roll_bad = 0;
+static uint32_t g_aim_path[4] = {0, 0, 0, 0};  /* branch dist: 0=both degenerate,1=pitch-only,2=yaw-only,3=both computed */
+static uint32_t g_aim_lines = 0;
+static uint32_t g_aim_surv_last = 0xFFFFFFFFu;
+
+static void *b14020acd0_hook(void *out, float *self, float *tgt)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!g_aim_atan2 && g_dt_imgbase) {
+        g_aim_atan2 = (AimAtan2Fn)(g_dt_imgbase + 0x78437c);   /* engine atan2 */
+        g_aim_sqrt  = (AimSqrtFn) (g_dt_imgbase + 0x776d48);   /* engine sqrt  */
+    }
+    if (!(out && self && tgt && g_dt_imgbase && g_aim_atan2 && g_aim_sqrt && dt_on()))
+        return g_aim_trampoline(out, self, tgt);
+
+    /* Snapshot inputs (the function reads them; copy before, in case it writes through aliasing out). */
+    float sx = self[0], sy = self[1], sz = self[2];
+    float tx = tgt[0],  ty = tgt[1],  tz = tgt[2];
+
+    void *r = g_aim_trampoline(out, self, tgt);   /* fills out[0..2] = {roll, pitch, yaw} */
+
+    float *o = (float *)out;
+    float roll_a = o[0], pitch_a = o[1], yaw_a = o[2];
+
+    /* Predict with the engine's own atan2/sqrt + .rdata constants (forces the binary's runtime float32
+     * groupings: rad2deg = 360 / (PI*2.0), horiz = sqrt(dy*dy + dx*dx); pitch negated via ^0x80000000). */
+    float aim_pi  = *(float *)(g_dt_imgbase + 0x8007dc);
+    float aim_two = *(float *)(g_dt_imgbase + 0x8007d4);
+    float aim_360 = *(float *)(g_dt_imgbase + 0x8007f4);
+    float rad2deg = aim_360 / (aim_pi * aim_two);
+    float dx = tx - sx, dy = ty - sy, dz = tz - sz;
+
+    int yaw_comp, pitch_comp;   /* 0 = degenerate (skipped, angle forced 0), 1 = computed via atan2 */
+    float yaw_p;
+    if (dx == 0.0f && dy == 0.0f) { yaw_p = 0.0f; yaw_comp = 0; }
+    else { yaw_p = g_aim_atan2(dy, dx) * rad2deg; if (yaw_p < 0.0f) yaw_p += aim_360; yaw_comp = 1; }
+    float pitch_p;
+    if (dz == 0.0f && dx == 0.0f) { pitch_p = 0.0f; pitch_comp = 0; }
+    else {
+        float horiz = g_aim_sqrt(dy * dy + dx * dx);
+        float p = g_aim_atan2(dz, horiz) * rad2deg;
+        uint32_t pb; memcpy(&pb, &p, 4); pb ^= 0x80000000u; memcpy(&pitch_p, &pb, 4);
+        pitch_comp = 1;
+    }
+    float roll_p = 0.0f;
+    int path = (yaw_comp << 1) | pitch_comp;   /* 0=both degenerate, 1=pitch only, 2=yaw only, 3=both */
+
+    int yaw_ok   = neb_biteq(yaw_a, yaw_p);
+    int pitch_ok = neb_biteq(pitch_a, pitch_p);
+    int roll_ok  = neb_biteq(roll_a, roll_p);
+
+    g_aim_ticks++;
+    if (yaw_ok)   g_aim_yaw_ok++;   else g_aim_yaw_bad++;
+    if (pitch_ok) g_aim_pitch_ok++; else g_aim_pitch_bad++;
+    if (roll_ok)  g_aim_roll_ok++;  else g_aim_roll_bad++;
+    g_aim_path[path & 3]++;
+
+    int32_t now = (int32_t)*g_dt_frame_ctr;
+    int want = !yaw_ok || !pitch_ok || !roll_ok || (g_aim_ticks <= 40) || ((now & 0x3ff) == 0);
+    if (want && g_aim_lines < 20000u) {
+        g_aim_lines++;
+        char ln[384];
+        snprintf(ln, sizeof ln,
+            "DTARG2\ttick=%d\tpath=%d\tyaw(a/p)=%.6f/%.6f\tpitch(a/p)=%.6f/%.6f\troll(a/p)=%.6f/%.6f"
+            "\tyaw_ok=%d\tpitch_ok=%d\troll_ok=%d\n",
+            now, path, yaw_a, yaw_p, pitch_a, pitch_p, roll_a, roll_p, yaw_ok, pitch_ok, roll_ok);
+        log_write(ln);
+    }
+    if (now != (int32_t)g_aim_surv_last && ((uint32_t)now & 0x1ffu) == 0) {
+        g_aim_surv_last = (uint32_t)now;
+        char sv[384];
+        snprintf(sv, sizeof sv,
+            "DTARG2SURVEY\ttick=%d\tticks=%u\tyaw(ok/bad)=%u/%u\tpitch(ok/bad)=%u/%u\troll(ok/bad)=%u/%u"
+            "\tpath(deg/pitch/yaw/full)=%u/%u/%u/%u\n",
+            now, g_aim_ticks, g_aim_yaw_ok, g_aim_yaw_bad, g_aim_pitch_ok, g_aim_pitch_bad,
+            g_aim_roll_ok, g_aim_roll_bad, g_aim_path[0], g_aim_path[1], g_aim_path[2], g_aim_path[3]);
+        log_write(sv);
+    }
+    return r;
+}
+
+static void install_b14020acd0_hook(void)
+{
+    void *t = NULL;
+    if (install_targ_tramp(AIM_14020ACD0_RVA, aim_14020acd0_prologue, sizeof aim_14020acd0_prologue,
+                           (void *)b14020acd0_hook, &t, "FUN_14020acd0")) {
+        g_aim_trampoline = (Aim14020acd0Fn)t;
+        log_write("[eaw-mt] DTARG2: Targeting aim-geometry (FUN_14020acd0) oracle installed\n");
+    }
+}
+
+/* =========================================================================
  * DTTK — in-game oracle for the lifted TELEKINESIS interp-timeline core
  * (sim/telekinesis_target.cpp, from FUN_14063f210). Behavior #8 (part 1).
  *
@@ -8794,6 +8928,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b437b60_hook();   /* DTNEB: Nebula effect-ramp spring I/O (EAW_DIFFTRACE=1) */
         install_b437310_hook();   /* DTAST: AsteroidFieldDamage roll + proximity I/O (EAW_DIFFTRACE=1) */
         install_b633a30_hook();   /* DTARG: Targeting dispatcher mode-resolution biconditional (EAW_DIFFTRACE=1) */
+        install_b14020acd0_hook();/* DTARG2: Targeting team-targeting aim-geometry bit-exact (EAW_DIFFTRACE=1) */
         install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
