@@ -4813,6 +4813,214 @@ static BOOL install_b437310_hook(void)
 }
 
 /* =========================================================================
+ * DTARG — in-game oracle for the lifted Targeting game-mode DISPATCHER
+ * (sim/targeting_dispatch.cpp, from FUN_140633a30). Behavior #7 (part 1).
+ *
+ * Targeting is the AI fire-control orchestrator; 0x633a30 is its thin dispatcher: run the base
+ * LocomotorCommonClass::vfunc_6 (FUN_1404c2f70 — a 15-byte stub that only writes behavior+0x30, so it
+ * touches NEITHER the entity NOR the controller), resolve a mode int, then route mode 1 -> FUN_140634810
+ * (individual targeting), mode 2 -> FUN_140633ae0 (team targeting), else NoOp (return 0x650000). Mode
+ * resolution: controller = entity->get_component(1) (entity vtbl +0x10); controller present ->
+ * controller->control_mode() (vtbl +0x238); else DAT_140b15418 present ? game-speed mode (vtbl +0xe0)
+ * : default DAT_140b153fc.
+ *
+ * The dispatcher core is a trivial integer decision, so the oracle validates it as a BICONDITIONAL
+ * predicted == actual:
+ *   * PREDICTED: the hook replicates the resolution (reads the mode the SAME way the dispatcher does —
+ *     faithful because the base vfunc_6 runs after this read but cannot change the entity/controller)
+ *     and maps it: pred = mode==1?1 : mode==2?2 : 0(NoOp).
+ *   * ACTUAL: tiny entry MARKERS on FUN_140634810 / FUN_140633ae0 bump per-impl run counters; snapshot
+ *     them BEFORE/AFTER the dispatcher trampoline -> the delta says which sub-impl actually ran
+ *     (d1 -> Mode1, d2 -> Mode2, neither -> NoOp). `multi` (both ran) is an invariant violation.
+ * bicond holds iff pred == act. The oracle also reports the empirical DISTRIBUTION (which source feeds
+ * the mode, and how often mode 1 vs 2 vs other occurs in live combat — useful for prioritising the
+ * deferred sub-body lifts).
+ *
+ * arg count = 3 (uniform vfunc_6 call site rcx=behavior, rdx=entity, r8d=tick). Prologues (PE):
+ *   633a30 dispatcher: 48 89 5c 24 08 / 48 89 6c 24 10 / 48 89 74 24 18 / 57 / 48 83 ec 20 / 41 8b e8 /
+ *     48 8b f2 / 48 8b f9 = 29 bytes, cut BEFORE the E8 CALL (LocomotorCommonClass::vfunc_6) at +0x1d.
+ *   634810 mode1: 44 89 44 24 18 / 55 / 53 / 56 / 57 / 41 54 / 41 55 / 41 56 / 41 57 / 48 8d 6c 24 e1
+ *     = 22 bytes, cut at +0x16 (before SUB RSP); 633ae0 mode2: 44 89 44 24 18 / 55 / 56 / 57 / 41 56 /
+ *     41 57 / 48 8d 6c 24 e0 = 17 bytes, cut at +0x11. All position-independent (no rel call/jmp copied).
+ * ========================================================================= */
+#define TARG_633A30_RVA  0x633a30ULL
+#define TARG_634810_RVA  0x634810ULL
+#define TARG_633AE0_RVA  0x633ae0ULL
+static const BYTE targ_633a30_prologue[29] = {
+    0x48, 0x89, 0x5c, 0x24, 0x08,  /* mov [rsp+0x08], rbx */
+    0x48, 0x89, 0x6c, 0x24, 0x10,  /* mov [rsp+0x10], rbp */
+    0x48, 0x89, 0x74, 0x24, 0x18,  /* mov [rsp+0x18], rsi */
+    0x57,                          /* push rdi            */
+    0x48, 0x83, 0xec, 0x20,        /* sub rsp, 0x20       */
+    0x41, 0x8b, 0xe8,              /* mov ebp, r8d        */
+    0x48, 0x8b, 0xf2,              /* mov rsi, rdx        */
+    0x48, 0x8b, 0xf9,              /* mov rdi, rcx        */
+};
+static const BYTE targ_634810_prologue[22] = {
+    0x44, 0x89, 0x44, 0x24, 0x18,  /* mov [rsp+0x18], r8d */
+    0x55, 0x53, 0x56, 0x57,        /* push rbp/rbx/rsi/rdi */
+    0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,  /* push r12/r13/r14/r15 */
+    0x48, 0x8d, 0x6c, 0x24, 0xe1,  /* lea rbp, [rsp-0x1f] */
+};
+static const BYTE targ_633ae0_prologue[17] = {
+    0x44, 0x89, 0x44, 0x24, 0x18,  /* mov [rsp+0x18], r8d */
+    0x55, 0x56, 0x57,              /* push rbp/rsi/rdi    */
+    0x41, 0x56, 0x41, 0x57,        /* push r14/r15        */
+    0x48, 0x8d, 0x6c, 0x24, 0xe0,  /* lea rbp, [rsp-0x20] */
+};
+typedef int64_t (*TargSubFn)(int64_t behavior, int64_t entity, int32_t tick);
+typedef int64_t (*Targ633a30Fn)(int64_t behavior, int64_t entity, int32_t tick);
+static TargSubFn    g_targ_m1_tramp = NULL;  /* FUN_140634810 (mode 1) past-prologue continuation */
+static TargSubFn    g_targ_m2_tramp = NULL;  /* FUN_140633ae0 (mode 2) past-prologue continuation */
+static Targ633a30Fn g_targ_trampoline = NULL;
+static volatile uint32_t g_targ_m1_runs = 0; /* bumped at FUN_140634810 entry  */
+static volatile uint32_t g_targ_m2_runs = 0; /* bumped at FUN_140633ae0 entry  */
+static uint32_t g_targ_lines     = 0;
+static uint32_t g_targ_ticks     = 0;   /* targeting-entity-ticks the dispatcher hook processed   */
+static uint32_t g_targ_pred_m1   = 0, g_targ_pred_m2 = 0, g_targ_pred_noop = 0;
+static uint32_t g_targ_act_m1    = 0, g_targ_act_m2 = 0, g_targ_act_noop  = 0;
+static uint32_t g_targ_src_ctrl  = 0, g_targ_src_mgr = 0, g_targ_src_def   = 0;
+static uint32_t g_targ_bicond_ok = 0, g_targ_bicond_bad = 0;
+static uint32_t g_targ_multi     = 0;   /* both sub-impls ran in one dispatch (invariant violation) */
+static uint32_t g_targ_surv_last = 0xFFFFFFFFu;
+
+static int64_t b634810_marker(int64_t behavior, int64_t entity, int32_t tick)
+{
+    g_targ_m1_runs++;
+    return g_targ_m1_tramp(behavior, entity, tick);
+}
+static int64_t b633ae0_marker(int64_t behavior, int64_t entity, int32_t tick)
+{
+    g_targ_m2_runs++;
+    return g_targ_m2_tramp(behavior, entity, tick);
+}
+
+static int64_t b633a30_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(entity && g_dt_imgbase && dt_on()))
+        return g_targ_trampoline(behavior, entity, tick_arg);
+
+    /* Replicate the dispatcher's mode resolution (633a30.c:12-21). Faithful: the base vfunc_6
+     * (FUN_1404c2f70) runs inside the trampoline AFTER this read but only writes behavior+0x30. */
+    int src = 2, mode = 0, read_ok = 0;
+    int64_t vtbl = *(int64_t *)entity;
+    if (vtbl) {
+        typedef int64_t (*GetCompFn)(int64_t, int32_t);
+        GetCompFn gc = (GetCompFn)(*(int64_t *)(vtbl + 0x10));
+        int64_t controller = gc ? gc(entity, 1) : 0;
+        if (controller) {
+            int64_t cvt = *(int64_t *)controller;
+            typedef int32_t (*ModeFn)(int64_t);
+            ModeFn cmode = cvt ? (ModeFn)(*(int64_t *)(cvt + 0x238)) : 0;
+            mode = cmode ? cmode(controller) : 0;
+            src = 0; read_ok = 1;
+        } else {
+            int64_t mgr = *(int64_t *)(g_dt_imgbase + 0xb15418);
+            if (mgr) {
+                int64_t mvt = *(int64_t *)mgr;
+                typedef int32_t (*GsmFn)(int64_t);
+                GsmFn gsm = mvt ? (GsmFn)(*(int64_t *)(mvt + 0xe0)) : 0;
+                mode = gsm ? gsm(mgr) : 0;
+                src = 1; read_ok = 1;
+            } else {
+                mode = *(int32_t *)(g_dt_imgbase + 0xb153fc);
+                src = 2; read_ok = 1;
+            }
+        }
+    }
+    int pred = (mode == 1) ? 1 : (mode == 2) ? 2 : 0;
+
+    uint32_t m1b = g_targ_m1_runs, m2b = g_targ_m2_runs;
+    int64_t r = g_targ_trampoline(behavior, entity, tick_arg);
+    uint32_t d1 = g_targ_m1_runs - m1b, d2 = g_targ_m2_runs - m2b;
+
+    int multi = (d1 && d2);
+    int act   = multi ? -1 : d1 ? 1 : d2 ? 2 : 0;
+    int bicond_ok = (act >= 0) && (pred == act);
+
+    g_targ_ticks++;
+    if (pred == 1) g_targ_pred_m1++; else if (pred == 2) g_targ_pred_m2++; else g_targ_pred_noop++;
+    if (act  == 1) g_targ_act_m1++;  else if (act  == 2) g_targ_act_m2++;  else if (act == 0) g_targ_act_noop++;
+    if (src  == 0) g_targ_src_ctrl++; else if (src == 1) g_targ_src_mgr++;  else g_targ_src_def++;
+    if (multi)     g_targ_multi++;
+    if (bicond_ok) g_targ_bicond_ok++; else g_targ_bicond_bad++;
+
+    int32_t now = (int32_t)*g_dt_frame_ctr;
+    int want = !bicond_ok || multi || (g_targ_ticks <= 40) || (pred == 2) || (act == 2) ||
+               ((now & 0x3ff) == 0);
+    if (want && g_targ_lines < 20000u) {
+        g_targ_lines++;
+        char ln[320];
+        snprintf(ln, sizeof ln,
+            "DTARG\ttick=%d\tent=%llx\tmode=%d\tsrc=%d\tpred=%d\tact=%d\td1=%u\td2=%u"
+            "\tbicond=%d\tmulti=%d\treadok=%d\n",
+            now, (unsigned long long)entity, mode, src, pred, act, d1, d2, bicond_ok, multi, read_ok);
+        log_write(ln);
+    }
+    if (now != (int32_t)g_targ_surv_last && ((uint32_t)now & 0x1ffu) == 0) {
+        g_targ_surv_last = (uint32_t)now;
+        char sv[320];
+        snprintf(sv, sizeof sv,
+            "DTARGSURVEY\ttick=%d\tticks=%u\tpred(m1/m2/noop)=%u/%u/%u\tact(m1/m2/noop)=%u/%u/%u"
+            "\tsrc(ctrl/mgr/def)=%u/%u/%u\tbicond_ok=%u\tbicond_bad=%u\tmulti=%u\n",
+            now, g_targ_ticks, g_targ_pred_m1, g_targ_pred_m2, g_targ_pred_noop,
+            g_targ_act_m1, g_targ_act_m2, g_targ_act_noop,
+            g_targ_src_ctrl, g_targ_src_mgr, g_targ_src_def,
+            g_targ_bicond_ok, g_targ_bicond_bad, g_targ_multi);
+        log_write(sv);
+    }
+    return r;
+}
+
+/* Install one inline trampoline (whole-instruction prologue copy + FF25 abs jmp). */
+static BOOL install_targ_tramp(uint64_t rva, const BYTE *prologue, size_t n, void *hookfn,
+                               void **out_tramp, const char *tag)
+{
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + rva;
+    if (memcmp(fn, prologue, n) != 0) {
+        char w[160];
+        snprintf(w, sizeof w, "[eaw-mt] WARN: %s prologue mismatch — DTARG part not installed\n", tag);
+        log_write(w);
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_write("[eaw-mt] WARN: VirtualAlloc for DTARG trampoline failed\n"); return FALSE; }
+    memcpy(tramp, prologue, n);
+    write_abs_jmp(tramp + n, (uint64_t)(fn + n));
+    *out_tramp = tramp;
+    DWORD old;
+    VirtualProtect(fn, n, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)hookfn);
+    VirtualProtect(fn, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, n);
+    return TRUE;
+}
+
+static void install_b633a30_hook(void)
+{
+    void *t1 = NULL, *t2 = NULL, *t3 = NULL;
+    /* Markers first so the dispatcher's biconditional sees them on its first call. */
+    if (install_targ_tramp(TARG_634810_RVA, targ_634810_prologue, sizeof targ_634810_prologue,
+                           (void *)b634810_marker, &t1, "FUN_140634810"))
+        g_targ_m1_tramp = (TargSubFn)t1;
+    if (install_targ_tramp(TARG_633AE0_RVA, targ_633ae0_prologue, sizeof targ_633ae0_prologue,
+                           (void *)b633ae0_marker, &t2, "FUN_140633ae0"))
+        g_targ_m2_tramp = (TargSubFn)t2;
+    if (install_targ_tramp(TARG_633A30_RVA, targ_633a30_prologue, sizeof targ_633a30_prologue,
+                           (void *)b633a30_hook, &t3, "FUN_140633a30")) {
+        g_targ_trampoline = (Targ633a30Fn)t3;
+        log_write("[eaw-mt] DTARG: TargetingBehaviorClass dispatcher + sub-impl markers installed\n");
+    }
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -8305,6 +8513,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b4f6070_hook();   /* DTUAI: UnitAI fog/sensor-visibility I/O (EAW_DIFFTRACE=1) */
         install_b437b60_hook();   /* DTNEB: Nebula effect-ramp spring I/O (EAW_DIFFTRACE=1) */
         install_b437310_hook();   /* DTAST: AsteroidFieldDamage roll + proximity I/O (EAW_DIFFTRACE=1) */
+        install_b633a30_hook();   /* DTARG: Targeting dispatcher mode-resolution biconditional (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
 

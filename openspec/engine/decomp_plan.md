@@ -754,7 +754,7 @@ sim state; out = presentation):
 |---|---|---|---|
 | `SimpleSpaceLocomotorBehaviorClass` (+Walk/Fighter/Fleet/Starship…) | `0x626420` | **IN** | the mover — writes `entity+0x78` position [CORE] |
 | `UnitAIBehaviorClass` | `0x4f6070` | **IN** | ✅ **LIFTED + DTUAI ORACLE PASS** (behavior #4) — the fog-of-war/sensor-visibility ticker, **first cross-entity behavior** (reads global object list, writes per-(observer,object) visibility matrix → shared sensor grid `DAT_140b31900`): (A) 300-tick fixed-phase throttled transform-change self-refresh, (B) gated reveal, (C) per-object LOS bit + edge notify. **NOT Phase-A parallel-safe** (shared-grid writes need buffering/sharding). In-game: throttle 3427/3427 `+300`-exact, cacheok 6988/6988, 90 vis edges characterised |
-| `TargetingBehaviorClass` | `0x633a30` | **IN** | 🟡 **DISPATCHER LIFTED (behavior #7, part 1)** — `0x633a30` is a thin game-mode dispatcher: run base `LocomotorCommonClass::vfunc_6`, resolve a mode int (controller `entity->get_component(1)` present → `controller->control_mode()` vtbl `+0x238`; else `DAT_140b15418` present → game-speed mode vtbl `+0xe0`; else `DAT_140b153fc`), then route mode 1 → `634810` (individual), mode 2 → `633ae0` (team), else NoOp `0x650000`. Dispatcher core (`sim/targeting_dispatch.{h,cpp}`) is a pure side-effect-free integer decision (trivially Phase-A-safe). The two ~2-3 KB sub-bodies (the actual fire-control orchestrator: live global-set reads + GOM target-assign/move/fire emission, UnitAI #4 seam-class) are **DEFERRED**. 4 host cases (DTARG oracle PASS) |
+| `TargetingBehaviorClass` | `0x633a30` | **IN** | 🟡 **DISPATCHER LIFTED (behavior #7, part 1)** — `0x633a30` is a thin game-mode dispatcher: run base `LocomotorCommonClass::vfunc_6`, resolve a mode int (controller `entity->get_component(1)` present → `controller->control_mode()` vtbl `+0x238`; else `DAT_140b15418` present → game-speed mode vtbl `+0xe0`; else `DAT_140b153fc`), then route mode 1 → `634810` (individual), mode 2 → `633ae0` (team), else NoOp `0x650000`. Dispatcher core (`sim/targeting_dispatch.{h,cpp}`) is a pure side-effect-free integer decision (trivially Phase-A-safe). The two ~2-3 KB sub-bodies (the actual fire-control orchestrator: live global-set reads + GOM target-assign/move/fire emission, UnitAI #4 seam-class) are **DEFERRED**. 4 host cases + **DTARG ORACLE PASS** (space battle, 8 entities, 20000 ticks): dispatch biconditional `pred==act` **20000/20000** (`bicond_bad=0`, `multi=0`); all controller-sourced mode 2 → team targeting `633ae0` (mode-1/NoOp/fallback host-covered, in-game dormant) |
 | `DamageTrackingBehaviorClass` | `0x58bd80` | **IN** | ✅ **LIFTED** (behavior #1) — *not* HP application: a **timed damage/status-effect decay ticker** (own `+0x1a0` list); emits `0x2d` on empty |
 | `ShieldBehaviorClass` | `0x5495e0` | **IN** | shield regen/state |
 | `EnergyPoolBehaviorClass` | `0x56c030` | **IN** | ✅ **LIFTED** (behavior #2) — pure self-contained Phase-A regen ticker: `value' = clamp(value + rate·dt, 0, max)` on own pool `(entity+0xf0)+0xf8`; no RNG/cross-entity/CommandSink |
@@ -1063,7 +1063,27 @@ reads) → trivially Phase-A-safe; Targeting's threading character lives entirel
 (source-selection order: controller shadows manager/default, manager game-speed shadows default; dispatch
 mapping 1/2/else over a spread incl. 0/3/0x20/negatives; resolve+dispatch end-to-end on every source;
 controller reporting a NoOp mode does NOT fall through to a manager/default that would have dispatched).
-  **DTARG in-game oracle:** _(pending capture — see the analysis commit)._
+  **DTARG in-game oracle** (`hooks/winmm_proxy.c`, `EAW_DIFFTRACE=1`): the dispatcher core is a trivial
+  integer decision, so it is validated as a BICONDITIONAL `predicted == actual`. The hook on `0x633a30`
+  (29-byte position-independent prologue cut before the `E8 CALL LocomotorCommonClass::vfunc_6` at
+  `+0x1d`, arg count 3) **replicates the resolution** (reads the mode the same way the dispatcher does —
+  faithful because the base vfunc_6 runs after this read but only writes `behavior+0x30`) to compute the
+  PREDICTED impl; two tiny entry MARKERS on `0x634810`/`0x633ae0` (22-byte / 17-byte prologues) bump
+  per-impl run counters snapshotted BEFORE/AFTER the dispatcher trampoline to give the ACTUAL impl that
+  ran. `tools/analyze_targeting_oracle.py` re-derives pred from the logged mode. **Result over a space
+  battle (8 distinct entities, 20000 logged targeting-entity-ticks; survey total 19617):**
+  - **DISPATCH BICONDITIONAL `pred == act` held 20000/20000** (`bicond_bad=0`) — the lifted
+    resolve+dispatch reproduces which sub-implementation the binary actually invoked, on every tick.
+  - **MUTUAL EXCLUSION** clean: `multi` (both sub-impls in one dispatch) `=0`; `read_ok` failures `=0`;
+    resolution-consistency (pred recomputed from mode == hook pred) mismatches `=0`.
+  - **DISTRIBUTION:** every tick resolved via the **controller** source (`src=ctrl 20000/20000`, mgr/def
+    `=0`) reporting **mode 2 → Mode2 team targeting (`633ae0`)** (`pred=m2 20000`, `act=m2 20000`). The
+    **mode-1 (individual `634810`), NoOp, and manager-game-speed / default-fallback paths were DORMANT**
+    in this battle — every combat unit was controller-sourced team-targeted. They are host-covered only
+    (like #1's `0x2d` emit / #5's LINGER pins), and the oracle stays armed in the `EAW_ORACLE` build to
+    catch them in a scenario that exercises mode 1. This is decisive for the dominant in-combat path: the
+    full resolution chain (controller present → `control_mode()` → mode → dispatch) reproduced bit-for-bit
+    over 20000 ticks. Capture saved `logs/dtarg_oracle_pass.log`. Captured with the `EAW_ORACLE` build.
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
