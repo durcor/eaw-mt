@@ -84,6 +84,9 @@ sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/telekinesis_target_test.cpp sim/telekinesis_target.cpp -o /tmp/eaw_telekinesis_target_test
   /tmp/eaw_telekinesis_target_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/targeting_aim_test.cpp sim/targeting_aim.cpp -o /tmp/eaw_targeting_aim_test
+  /tmp/eaw_targeting_aim_test
 
 ghidra-script script:
   nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
