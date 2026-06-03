@@ -5021,6 +5021,160 @@ static void install_b633a30_hook(void)
 }
 
 /* =========================================================================
+ * DTTK — in-game oracle for the lifted TELEKINESIS interp-timeline core
+ * (sim/telekinesis_target.cpp, from FUN_14063f210). Behavior #8 (part 1).
+ *
+ * TelekinesisTargetBehaviorClass::vfunc_6 (0x63f210) is the Force force-grip effect: a 3-mode
+ * lifecycle SM over a per-entity telekinesis slot (slot = entity+0x160; mode int at slot+0x8).
+ * mode 1 GRAB / mode 3 RELEASE share one interp timeline; mode 2 HOLD (63f730) is a spin + damage
+ * body (deferred). The timeline (63f210.c:51-57, 63f470.c:28-35):
+ *     now      = (float)sim_clock / (float)hz      (DAT_140b0a320 / DAT_140b0a340)
+ *     t        = max((now - start)/duration, 0)     (start=slot+0x24, dur=_DAT_140b15ac4; clamp-low)
+ *     complete = (1.0 <= t)
+ * GRAB lerps toward target = DAT_140b15ac0 + slot+0x14; RELEASE lerps toward slot+0x14 directly. The
+ * interpolated value is pushed as the Z of the set-position apply (FUN_1403a8f90 -> entity+0x80). On
+ * completion both modes rebase slot+0x24 := now and CHANGE slot+0x8 (GRAB 1->2, RELEASE 3->0) — the
+ * ONLY writes to slot+0x8 in either body, so a mode change across the tick == a completion edge.
+ *
+ * Validated (this hook reads the slot fields + config globals BEFORE the trampoline — the base
+ * vfunc_6 runs inside it but only writes behavior+0x30, so the inputs are faithful):
+ *   (1) COMPLETION BICONDITIONAL — predicted complete (1.0<=t) == actual (slot+0x8 changed across the
+ *       tick). The lifted timeline decides the snap-to-final edge exactly when the binary does.
+ *   (2) REBASE BIT-EXACT — on a completion, slot+0x24_after == predicted now (the engine writes
+ *       slot+0x24 := fVar5 = now). A rock-solid explicit slot store.
+ *   (3) INTERP LERP BIT-EXACT — on a NON-completion tick, entity+0x80_after == predicted
+ *       lerp(slot+0x30_before, to, t), bit-for-bit (the continuously-observable quantity, Nebula-class).
+ * Plus DTTKSURVEY periodic totals + a mode distribution (how often GRAB/HOLD/RELEASE/idle run).
+ *
+ * arg count = 3 (uniform vfunc_6 rcx=behavior, rdx=entity, r8d=tick). Prologue (PE, 63f210):
+ *   48 89 5c 24 08 / 48 89 74 24 10 / 48 89 7c 24 18 / 55 / 48 8d 6c 24 a9 / 48 81 ec b0 00 00 00 /
+ *   48 8b fa / 48 8b f1 = 34 bytes, cut BEFORE the E8 CALL (LocomotorCommonClass::vfunc_6) at +0x22.
+ *   All position-independent (rsp-relative movs, push, lea, sub — no rel call/jmp copied).
+ * ========================================================================= */
+#define TK_63F210_RVA  0x63f210ULL
+static const BYTE tk_63f210_prologue[34] = {
+    0x48, 0x89, 0x5c, 0x24, 0x08,        /* mov [rsp+0x08], rbx */
+    0x48, 0x89, 0x74, 0x24, 0x10,        /* mov [rsp+0x10], rsi */
+    0x48, 0x89, 0x7c, 0x24, 0x18,        /* mov [rsp+0x18], rdi */
+    0x55,                                /* push rbp            */
+    0x48, 0x8d, 0x6c, 0x24, 0xa9,        /* lea rbp, [rsp-0x57] */
+    0x48, 0x81, 0xec, 0xb0, 0x00, 0x00, 0x00,  /* sub rsp, 0xb0 */
+    0x48, 0x8b, 0xfa,                    /* mov rdi, rdx        */
+    0x48, 0x8b, 0xf1,                    /* mov rsi, rcx        */
+};
+typedef int64_t (*Tk63f210Fn)(int64_t behavior, int64_t entity, int32_t tick);
+static Tk63f210Fn g_tk_trampoline = NULL;
+static uint32_t g_tk_lines     = 0;
+static uint32_t g_tk_ticks     = 0;   /* telekinesis-entity-ticks the hook processed (slot present) */
+static uint32_t g_tk_noslot    = 0;   /* slot==0 (no telekinesis active)                            */
+static uint32_t g_tk_grab = 0, g_tk_hold = 0, g_tk_release = 0, g_tk_idle = 0;   /* mode distribution */
+static uint32_t g_tk_interp_ok = 0, g_tk_interp_bad = 0;   /* (3) interp lerp bit-exact */
+static uint32_t g_tk_comp_edges = 0;                       /* completion edges observed */
+static uint32_t g_tk_bicond_ok  = 0, g_tk_bicond_bad = 0;  /* (1) completion biconditional */
+static uint32_t g_tk_rebase_ok  = 0, g_tk_rebase_bad = 0;  /* (2) rebase start==now on completion */
+static uint32_t g_tk_surv_last  = 0xFFFFFFFFu;
+
+static int64_t b63f210_hook(int64_t behavior, int64_t entity, int32_t tick_arg)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(entity && g_dt_imgbase && dt_on()))
+        return g_tk_trampoline(behavior, entity, tick_arg);
+
+    int64_t slot = *(int64_t *)(entity + 0x160);
+    if (!slot) {
+        g_tk_noslot++;
+        return g_tk_trampoline(behavior, entity, tick_arg);   /* NoSlot path: 0x80650001, nothing to validate */
+    }
+    int mode = *(int32_t *)(slot + 8);
+
+    /* Config globals + slot inputs, read BEFORE the trampoline (faithful — base vfunc_6 only
+     * writes behavior+0x30). 63f210.c:39,51-56. */
+    uint32_t sim_clock = *g_dt_frame_ctr;
+    int      hz        = *(int32_t *)(g_dt_imgbase + 0xb0a340);
+    float    angle_base= *(float *)(g_dt_imgbase + 0xb15ac0);
+    float    duration  = *(float *)(g_dt_imgbase + 0xb15ac4);
+    float    start     = *(float *)(slot + 0x24);
+    float    slot_off  = *(float *)(slot + 0x14);
+    float    from      = *(float *)(slot + 0x30);
+
+    float    now   = (float)sim_clock / (float)hz;
+    float    t_raw = (now - start) / duration;
+    float    t     = (0.0f <= t_raw) ? t_raw : 0.0f;
+    int      pred_complete = (1.0f <= t);
+    /* GRAB (mode 1) lerps toward angle_base+slot_off; RELEASE (mode 3) toward slot_off directly. */
+    float    to       = (mode == 1) ? (angle_base + slot_off) : slot_off;
+    float    lerp_val = (to - from) * t + from;
+
+    int64_t r = g_tk_trampoline(behavior, entity, tick_arg);
+
+    int   mode_after  = *(int32_t *)(slot + 8);
+    float start_after = *(float *)(slot + 0x24);
+    float val80       = *(float *)(entity + 0x80);
+
+    /* Only modes 1 (GRAB) and 3 (RELEASE) run the interp timeline; 2 (HOLD) and others don't. */
+    int is_interp = (mode == 1 || mode == 3);
+    int act_complete = (mode_after != mode);    /* slot+0x8 changes only on a completion edge */
+    int bicond_ok = 0, rebase_ok = 0, interp_ok = 0, want = 0;
+
+    g_tk_ticks++;
+    if (mode == 1) g_tk_grab++; else if (mode == 2) g_tk_hold++;
+    else if (mode == 3) g_tk_release++; else g_tk_idle++;
+
+    if (is_interp) {
+        bicond_ok = (pred_complete == act_complete);
+        if (bicond_ok) g_tk_bicond_ok++; else g_tk_bicond_bad++;
+        if (act_complete) {
+            g_tk_comp_edges++;
+            rebase_ok = neb_biteq(start_after, now);     /* slot+0x24 := now on completion */
+            if (rebase_ok) g_tk_rebase_ok++; else g_tk_rebase_bad++;
+        } else {
+            interp_ok = neb_biteq(val80, lerp_val);       /* entity+0x80 == lerp this tick */
+            if (interp_ok) g_tk_interp_ok++; else g_tk_interp_bad++;
+        }
+        want = !bicond_ok || (act_complete && !rebase_ok) || (!act_complete && !interp_ok) ||
+               act_complete || (g_tk_ticks <= 40);
+    }
+
+    int32_t nowt = (int32_t)sim_clock;
+    if (want && g_tk_lines < 20000u) {
+        g_tk_lines++;
+        char ln[360];
+        snprintf(ln, sizeof ln,
+            "DTTK\ttick=%d\tent=%llx\tmode=%d\tmode_after=%d\tt=%.9g\tpred_comp=%d\tact_comp=%d"
+            "\tbicond=%d\trebase_ok=%d\tinterp_ok=%d\tval80=%.9g\tlerp=%.9g\n",
+            nowt, (unsigned long long)entity, mode, mode_after, (double)t, pred_complete, act_complete,
+            bicond_ok, rebase_ok, interp_ok, (double)val80, (double)lerp_val);
+        log_write(ln);
+    }
+    if (nowt != (int32_t)g_tk_surv_last && ((uint32_t)nowt & 0x1ffu) == 0) {
+        g_tk_surv_last = (uint32_t)nowt;
+        char sv[360];
+        snprintf(sv, sizeof sv,
+            "DTTKSURVEY\ttick=%d\tticks=%u\tnoslot=%u\tmode(grab/hold/rel/idle)=%u/%u/%u/%u"
+            "\tinterp(ok/bad)=%u/%u\tcomp_edges=%u\tbicond(ok/bad)=%u/%u\trebase(ok/bad)=%u/%u\n",
+            nowt, g_tk_ticks, g_tk_noslot, g_tk_grab, g_tk_hold, g_tk_release, g_tk_idle,
+            g_tk_interp_ok, g_tk_interp_bad, g_tk_comp_edges,
+            g_tk_bicond_ok, g_tk_bicond_bad, g_tk_rebase_ok, g_tk_rebase_bad);
+        log_write(sv);
+    }
+    return r;
+}
+
+static void install_b63f210_hook(void)
+{
+    void *t = NULL;
+    if (install_targ_tramp(TK_63F210_RVA, tk_63f210_prologue, sizeof tk_63f210_prologue,
+                           (void *)b63f210_hook, &t, "FUN_14063f210")) {
+        g_tk_trampoline = (Tk63f210Fn)t;
+        log_write("[eaw-mt] DTTK: TelekinesisTargetBehaviorClass interp-timeline oracle installed\n");
+    }
+}
+
+/* =========================================================================
  * Runtime-watch offset dumper (decomp Phase 2) — find the entity transform offset.
  *
  * The entity world position is method-accessed, not a flat field; the engine stores
@@ -8514,6 +8668,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b437b60_hook();   /* DTNEB: Nebula effect-ramp spring I/O (EAW_DIFFTRACE=1) */
         install_b437310_hook();   /* DTAST: AsteroidFieldDamage roll + proximity I/O (EAW_DIFFTRACE=1) */
         install_b633a30_hook();   /* DTARG: Targeting dispatcher mode-resolution biconditional (EAW_DIFFTRACE=1) */
+        install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
 

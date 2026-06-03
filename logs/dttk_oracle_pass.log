@@ -1,0 +1,64 @@
+DTTKSURVEY	tick=512	ticks=3571	noslot=0	mode(grab/hold/rel/idle)=0/0/0/3571	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=1024	ticks=7155	noslot=0	mode(grab/hold/rel/idle)=0/0/0/7155	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=1536	ticks=10739	noslot=0	mode(grab/hold/rel/idle)=0/0/0/10739	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=24064	ticks=12179	noslot=0	mode(grab/hold/rel/idle)=0/0/0/12179	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=24576	ticks=14227	noslot=0	mode(grab/hold/rel/idle)=0/0/0/14227	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=25088	ticks=16275	noslot=0	mode(grab/hold/rel/idle)=0/0/0/16275	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=25600	ticks=17557	noslot=0	mode(grab/hold/rel/idle)=0/0/0/17557	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=26112	ticks=18248	noslot=0	mode(grab/hold/rel/idle)=0/0/0/18248	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=26624	ticks=18760	noslot=0	mode(grab/hold/rel/idle)=0/0/0/18760	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=27136	ticks=19272	noslot=0	mode(grab/hold/rel/idle)=0/0/0/19272	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=27648	ticks=19784	noslot=0	mode(grab/hold/rel/idle)=0/0/0/19784	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=28160	ticks=20296	noslot=0	mode(grab/hold/rel/idle)=0/0/0/20296	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=28672	ticks=20808	noslot=0	mode(grab/hold/rel/idle)=0/0/0/20808	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=30208	ticks=21238	noslot=0	mode(grab/hold/rel/idle)=0/0/0/21238	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=30720	ticks=22774	noslot=0	mode(grab/hold/rel/idle)=0/0/0/22774	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=31232	ticks=25723	noslot=0	mode(grab/hold/rel/idle)=0/0/0/25723	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=1131520	ticks=32701	noslot=0	mode(grab/hold/rel/idle)=0/0/0/32701	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=1132032	ticks=37821	noslot=0	mode(grab/hold/rel/idle)=0/0/0/37821	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=1132544	ticks=42941	noslot=0	mode(grab/hold/rel/idle)=0/0/0/42941	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTKSURVEY	tick=1133056	ticks=48061	noslot=0	mode(grab/hold/rel/idle)=0/0/0/48061	interp(ok/bad)=0/0	comp_edges=0	bicond(ok/bad)=0/0	rebase(ok/bad)=0/0
+DTTK	tick=1133378	ent=3efc4ae0	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=69.3066406	lerp=69.4108047
+DTTKSURVEY	tick=1133568	ticks=53034	noslot=0	mode(grab/hold/rel/idle)=24/42/0/52968	interp(ok/bad)=23/0	comp_edges=1	bicond(ok/bad)=24/0	rebase(ok/bad)=1/0
+DTTK	tick=1133709	ent=3efc53e0	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=69.3066406	lerp=69.4108047
+DTTKSURVEY	tick=1134080	ticks=57314	noslot=0	mode(grab/hold/rel/idle)=47/84/0/57183	interp(ok/bad)=45/0	comp_edges=2	bicond(ok/bad)=47/0	rebase(ok/bad)=2/0
+DTTKSURVEY	tick=1134592	ticks=61605	noslot=0	mode(grab/hold/rel/idle)=47/84/0/61474	interp(ok/bad)=45/0	comp_edges=2	bicond(ok/bad)=47/0	rebase(ok/bad)=2/0
+DTTKSURVEY	tick=1135104	ticks=66213	noslot=0	mode(grab/hold/rel/idle)=47/84/0/66082	interp(ok/bad)=45/0	comp_edges=2	bicond(ok/bad)=47/0	rebase(ok/bad)=2/0
+DTTKSURVEY	tick=1135616	ticks=70821	noslot=0	mode(grab/hold/rel/idle)=47/84/0/70690	interp(ok/bad)=45/0	comp_edges=2	bicond(ok/bad)=47/0	rebase(ok/bad)=2/0
+DTTKSURVEY	tick=1136128	ticks=75840	noslot=0	mode(grab/hold/rel/idle)=47/84/0/75709	interp(ok/bad)=45/0	comp_edges=2	bicond(ok/bad)=47/0	rebase(ok/bad)=2/0
+DTTK	tick=1136292	ent=3ef4c5a0	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=110.078125	lerp=110.182289
+DTTK	tick=1136321	ent=3ef4c5a0	mode=3	mode_after=0	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=105.078125	lerp=104.926971
+DTTKSURVEY	tick=1136640	ticks=80960	noslot=0	mode(grab/hold/rel/idle)=70/90/23/80777	interp(ok/bad)=89/0	comp_edges=4	bicond(ok/bad)=93/0	rebase(ok/bad)=4/0
+DTTK	tick=1137147	ent=3ef4bca0	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=205	lerp=205.104172
+DTTKSURVEY	tick=1137152	ticks=86080	noslot=0	mode(grab/hold/rel/idle)=94/94/23/85869	interp(ok/bad)=112/0	comp_edges=5	bicond(ok/bad)=117/0	rebase(ok/bad)=5/0
+DTTK	tick=1137273	ent=3ef4c5a0	mode=3	mode_after=0	t=1.02604163	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=200	lerp=199.976944
+DTTKSURVEY	tick=1137664	ticks=90505	noslot=0	mode(grab/hold/rel/idle)=98/132/46/90229	interp(ok/bad)=138/0	comp_edges=6	bicond(ok/bad)=144/0	rebase(ok/bad)=6/0
+DTTKSURVEY	tick=1138176	ticks=93875	noslot=0	mode(grab/hold/rel/idle)=98/132/46/93599	interp(ok/bad)=138/0	comp_edges=6	bicond(ok/bad)=144/0	rebase(ok/bad)=6/0
+DTTKSURVEY	tick=1138688	ticks=97513	noslot=0	mode(grab/hold/rel/idle)=98/132/46/97237	interp(ok/bad)=138/0	comp_edges=6	bicond(ok/bad)=144/0	rebase(ok/bad)=6/0
+DTTKSURVEY	tick=1139200	ticks=101609	noslot=0	mode(grab/hold/rel/idle)=98/132/46/101333	interp(ok/bad)=138/0	comp_edges=6	bicond(ok/bad)=144/0	rebase(ok/bad)=6/0
+DTTK	tick=1139495	ent=5edb3c70	mode=1	mode_after=2	t=1.02604163	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=110.078125	lerp=110.208336
+DTTKSURVEY	tick=1139712	ticks=105531	noslot=0	mode(grab/hold/rel/idle)=121/174/46/105190	interp(ok/bad)=160/0	comp_edges=7	bicond(ok/bad)=167/0	rebase(ok/bad)=7/0
+DTTK	tick=1140081	ent=3efc41e0	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=110.078125	lerp=110.182289
+DTTKSURVEY	tick=1140224	ticks=109015	noslot=0	mode(grab/hold/rel/idle)=145/216/46/108608	interp(ok/bad)=183/0	comp_edges=8	bicond(ok/bad)=191/0	rebase(ok/bad)=8/0
+DTTK	tick=1140619	ent=5edb2a70	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=110.078125	lerp=110.182289
+DTTKSURVEY	tick=1140736	ticks=111643	noslot=0	mode(grab/hold/rel/idle)=168/258/46/111171	interp(ok/bad)=205/0	comp_edges=9	bicond(ok/bad)=214/0	rebase(ok/bad)=9/0
+DTTKSURVEY	tick=1141248	ticks=113815	noslot=0	mode(grab/hold/rel/idle)=168/258/46/113343	interp(ok/bad)=205/0	comp_edges=9	bicond(ok/bad)=214/0	rebase(ok/bad)=9/0
+DTTKSURVEY	tick=1141760	ticks=116944	noslot=0	mode(grab/hold/rel/idle)=168/258/46/116472	interp(ok/bad)=205/0	comp_edges=9	bicond(ok/bad)=214/0	rebase(ok/bad)=9/0
+DTTK	tick=1142071	ent=382dee40	mode=1	mode_after=2	t=1.02604163	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=205	lerp=205.130203
+DTTKSURVEY	tick=1142272	ticks=120370	noslot=0	mode(grab/hold/rel/idle)=191/300/46/119833	interp(ok/bad)=227/0	comp_edges=10	bicond(ok/bad)=237/0	rebase(ok/bad)=10/0
+DTTKSURVEY	tick=1142784	ticks=123497	noslot=0	mode(grab/hold/rel/idle)=191/300/46/122960	interp(ok/bad)=227/0	comp_edges=10	bicond(ok/bad)=237/0	rebase(ok/bad)=10/0
+DTTK	tick=1142929	ent=5f615a40	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=168.134766	lerp=168.238937
+DTTK	tick=1142975	ent=5f615a40	mode=1	mode_after=2	t=1.02604163	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=168.134766	lerp=168.129456
+DTTKSURVEY	tick=1143296	ticks=126984	noslot=0	mode(grab/hold/rel/idle)=237/341/52/126354	interp(ok/bad)=277/0	comp_edges=12	bicond(ok/bad)=289/0	rebase(ok/bad)=12/0
+DTTKSURVEY	tick=1143808	ticks=130421	noslot=0	mode(grab/hold/rel/idle)=237/341/52/129791	interp(ok/bad)=277/0	comp_edges=12	bicond(ok/bad)=289/0	rebase(ok/bad)=12/0
+DTTK	tick=1144020	ent=5f117dd0	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=168.134766	lerp=168.238937
+DTTK	tick=1144101	ent=3efbd5e0	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=168.134766	lerp=168.238937
+DTTKSURVEY	tick=1144320	ticks=133060	noslot=0	mode(grab/hold/rel/idle)=284/425/52/132299	interp(ok/bad)=322/0	comp_edges=14	bicond(ok/bad)=336/0	rebase(ok/bad)=14/0
+DTTKSURVEY	tick=1144832	ticks=135548	noslot=0	mode(grab/hold/rel/idle)=284/425/52/134787	interp(ok/bad)=322/0	comp_edges=14	bicond(ok/bad)=336/0	rebase(ok/bad)=14/0
+DTTK	tick=1145216	ent=382d5e40	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=168.134766	lerp=168.238937
+DTTKSURVEY	tick=1145344	ticks=138505	noslot=0	mode(grab/hold/rel/idle)=307/467/52/137679	interp(ok/bad)=344/0	comp_edges=15	bicond(ok/bad)=359/0	rebase(ok/bad)=15/0
+DTTK	tick=1145548	ent=5f60af40	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=168.134766	lerp=168.238937
+DTTKSURVEY	tick=1145856	ticks=141810	noslot=0	mode(grab/hold/rel/idle)=330/503/52/140925	interp(ok/bad)=366/0	comp_edges=16	bicond(ok/bad)=382/0	rebase(ok/bad)=16/0
+DTTK	tick=1146142	ent=684351c0	mode=1	mode_after=2	t=1.02604163	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=69.3066406	lerp=69.4368515
+DTTKSURVEY	tick=1146368	ticks=144245	noslot=0	mode(grab/hold/rel/idle)=353/539/52/143301	interp(ok/bad)=388/0	comp_edges=17	bicond(ok/bad)=405/0	rebase(ok/bad)=17/0
+DTTK	tick=1146512	ent=382d9d40	mode=1	mode_after=2	t=1.02083337	pred_comp=1	act_comp=1	bicond=1	rebase_ok=1	interp_ok=0	val80=69.3066406	lerp=69.4108047

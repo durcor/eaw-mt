@@ -762,7 +762,7 @@ sim state; out = presentation):
 | `AbilityCountdownBehaviorClass` | `0x42f910` | **IN** | ✅ **LIFTED + DTABIL ORACLE PASS** (behavior #3) — self-contained **integer-tick** cooldown/chargeup ticker over own `entity+0x1e8` 77-slot array; `delta=tick−last_tick`; countdown→0 emits `0x2c` (gated by `39b480`), chargeup→target calls `42f460` (recycles slot to cooldown). In-game: 19981/19981 pure-core bit-exact + 19 charge-complete + 13 emit edges |
 | `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | ✅ **LIFTED + DTAST ORACLE PASS (behavior #6)** — the Nebula **sibling** (adjacent RVA, same `entity+0xf0` sub-object + last-event-tick field `+0x10c`): a **probabilistic per-tick damage trigger**. GATE (game mode ∈ {1,2,0x20} + unit predicate + non-zero config). SCAN: sphere query over the global set; per in-range asteroid-field object, draw `roll=rng_uniform(0,1)` (`1ffbb0` sim LCG) and apply collision damage if `roll ≤ prob` (`DAT_140b16d64`); stamp `sub+0x10c=now` if any found, else `-1`. apply (`436920`) damages SELF + spawns the impact fx into the GOM + draws more RNG. **NOT Phase-A-safe** — not a foreign gameplay write (the damage is to self) but the **shared sim-RNG seed is advanced a membership-dependent number of times** (draw order must serialise) and apply spawns into the global GOM. First IN behavior whose non-safety is purely the RNG + spawn seam. In-game (asteroid-field battle, 10 entities, 5886 active ticks): proximity biconditional **5906/5906**, LCG recurrence **5886/5886** (0 k-mismatches), first roll **5886/5886 bit-exact**, draw count **k=1..13** (membership-dependent), applies ≈21.3% ≈ prob 0.2 |
 | `NebulaBehaviorClass` | `0x437b60` | **IN** | ✅ **LIFTED + DTNEB ORACLE PASS** (behavior #5) — the "clean float integrator": STAGE 1 (unconditional) is a **semi-implicit damped harmonic oscillator** ramping nebula-effect intensity `(sub+0x11c)` toward equilibrium `(sub+0x120)` — `w=freq·2`, `inv=1/(1+wdt+0.48·wdt²+0.235·wdt³)`; STAGE 2 is a membership SM gated by a **time-based LINGER throttle** (`380bb0`: skip the spatial scan while `(now−enter_tick)/30 < grace`), edge-firing enter (`0x2b` ability-disable) / leave (`0x2c` re-enable). Cross-entity coupling is **READ-ONLY** (closer to Phase-A-safe than #4). In-game: spring **614503/614503 bit-exact**, 308 enters / 218 leaves; linger dormant in TR (full scan every in-nebula tick) |
-| `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | force-power target state (TR hero powers) |
+| `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | 🟡 **INTERP-CORE LIFTED (behavior #8, part 1) + DTTK ORACLE PASS** — the Force force-grip effect (`<Type>FORCE_TELEKINESIS</Type>`; Palpatine/Luke-Darkside/Tremayne/Brakiss lifting an enemy *vehicle*): a **3-mode lifecycle SM** over slot `*(entity+0x160)` (mode at `slot+0x8`): 1 GRAB (interp to grip pose, `t>=1`→2), 2 HOLD (`63f730`: spin + 10%/0.2s damage + GOM), 3 RELEASE (`63f470`: interp back, `t>=1`→zero slot + re-enable abilities + GOM); else Idle; `slot==0`→NoOp `0x80650001`. Part 1 lifts the **shared interp-timeline core + dispatch** (`sim/telekinesis_target.{h,cpp}`): `now=sim_clock/hz`, `t=max((now−start)/dur,0)`, `complete=(1.0<=t)`; GRAB lerps `entity+0x80`→`DAT_140b15ac0+slot+0x14`, RELEASE→`slot+0x14`; on completion rebase `slot+0x24:=now` + change `slot+0x8`. Heavy HOLD/RELEASE sub-bodies (cross-boundary Phase-B seam) **DEFERRED**. 6 host cases + **DTTK ORACLE PASS** (land battle, 8 entities, 144245 ticks, `grab/hold/rel/idle=353/539/52/143301`): completion biconditional **405/405** (both GRAB 1→2 & RELEASE 3→0, 17 edges), rebase bit-exact **17/17**, interp lerp bit-exact **388/388** (`entity+0x80` Z, mode-specific `to`) |
 | `LureBehaviorClass` | `0x62b4c0` | **IN** | decoy/AI lure |
 | `RevealBehaviorClass` | `0x5373c0` | **IN** | fog-of-war reveal (sensor grid — MP-determinism-relevant) |
 | `SelectBehaviorClass` | `0x3c2310` | **out** | UI selection-indicator animation (damped-spring on a *displayed* value) |
@@ -1084,6 +1084,49 @@ controller reporting a NoOp mode does NOT fall through to a manager/default that
     catch them in a scenario that exercises mode 1. This is decisive for the dominant in-combat path: the
     full resolution chain (controller present → `control_mode()` → mode → dispatch) reproduced bit-for-bit
     over 20000 ticks. Capture saved `logs/dtarg_oracle_pass.log`. Captured with the `EAW_ORACLE` build.
+
+**🟡 Behavior #8 (part 1) — `TelekinesisTargetBehaviorClass::vfunc_6` interp-timeline core (`0x63f210`) LIFTED
++ DTTK ORACLE PASS (2026-06-02)** → `sim/telekinesis_target.{h,cpp}`. The eighth in-slice IN behavior is
+the engine's **Force force-grip / telekinesis** effect — the target-side behavior driven by the
+`<Type>FORCE_TELEKINESIS</Type>` ability (Palpatine / Luke Darkside / Tremayne / Brakiss lifting a single
+enemy *vehicle*). It is a **3-mode lifecycle state machine** over a per-entity telekinesis slot
+(`slot = *(entity+0x160)`; mode int at `slot+0x8`): mode 1 **GRAB** (interp toward the grip pose, on
+`t>=1` advance to mode 2), mode 2 **HOLD** (`63f730`: spin-ramp + periodic 10%/0.2s damage + GOM spawn —
+the XML `Damage_Percentage 0.10` / `Damage_Interval 0.2`), mode 3 **RELEASE** (`63f470`: interp back, on
+`t>=1` zero the slot + re-enable abilities + GOM); else Idle; `slot==0` → distinct NoOp `0x80650001`.
+Like Targeting #7, **part 1 lifts the shared interp-timeline core + mode dispatch** and DEFERS the two
+heavy sub-bodies (HOLD damage/spawn + RELEASE ability-re-enable/GOM — the cross-boundary Phase-B seam).
+Modes 1 & 3 share one timeline:
+  - `now = (float)sim_clock / (float)hz` (`DAT_140b0a320 / DAT_140b0a340`)
+  - `t = max((now - start)/duration, 0)` (clamp-low only; `start = slot+0x24`, `dur = _DAT_140b15ac4`)
+  - `complete = (1.0 <= t)` (inclusive)
+  GRAB lerps `entity+0x80` toward `DAT_140b15ac0 + slot+0x14`; RELEASE toward `slot+0x14` directly. On
+  completion **both** modes rebase `slot+0x24 := now` and CHANGE `slot+0x8` (GRAB 1→2, RELEASE 3→0) — the
+  *only* writes to `slot+0x8` in either body, so a mode change across the tick == a completion edge.
+  Mode 1 GRAB is Phase-A-safe (writes only its own slot + own transform); modes 2/3 completion
+  side-effects are the deferred seam. 6 host cases (dispatch / now / t clamp+complete / lerp / angle gate /
+  target) all PASS.
+  **DTTK in-game oracle** (`hooks/winmm_proxy.c`, `EAW_DIFFTRACE=1`): inline trampoline on `0x63f210`
+  (34-byte position-independent prologue, cut before the first `E8` base-vfunc_6 call at +0x22; arg
+  count 3). Per telekinesis-entity-tick on an interp mode it reads the slot fields + config globals
+  BEFORE the trampoline, computes the predicted timeline, runs the real call, then validates three things
+  in-process (bit-exact `neb_biteq`): **(1) completion biconditional** `pred_comp == act_comp`
+  (`mode_after != mode`) — the lifted `t>=1` edge fires exactly when the binary changes `slot+0x8`;
+  **(2) rebase bit-exact** on every completion edge `slot+0x24_after == now`; **(3) interp lerp bit-exact**
+  on every non-completion tick `entity+0x80 == lerp(slot+0x30, to, t)` — the continuously-observable
+  quantity (Nebula-class). Emits `DTTK` on completion edges / mismatches / first-40 + periodic
+  `DTTKSURVEY` totals. `tools/analyze_telekinesis_oracle.py` aggregates and re-derives the booleans'
+  consistency. **Result over a land battle with the Emperor force-gripping enemy vehicles (8 distinct
+  entities; survey total 144245 behavior-ticks, `grab/hold/rel/idle = 353/539/52/143301`):**
+  - **completion biconditional 405/405** (`bicond_bad = 0`) across BOTH interp modes — GRAB 1→2 *and*
+    RELEASE 3→0 exercised (17 completion edges).
+  - **rebase bit-exact 17/17** (`rebase_bad = 0`) — `slot+0x24 := now` reproduced exactly on every edge.
+  - **interp lerp bit-exact 388/388** (`interp_bad = 0`) — 388 continuously-observed `entity+0x80` set-
+    position Z values matched `lerp(slot+0x30, to, t)` bit-for-bit, with the mode-specific `to`
+    (`angle_base + slot+0x14` for GRAB, `slot+0x14` for RELEASE).
+  - HOLD (mode 2, 539 ticks) was exercised as a *passthrough* — its sub-body (`63f730`) runs inside the
+    trampoline but is not part of part-1's lifted core (the deferred damage/spawn seam). Capture saved
+    `logs/dttk_oracle_pass.log`. Captured with the `EAW_ORACLE` build.
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)

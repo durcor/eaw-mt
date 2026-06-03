@@ -1,0 +1,19 @@
+=== 63f210 TelekinesisTarget::vfunc_6 @ 0x14063f210 ===
+  0x14063f210 (+0x000): 48 89 5c 24 08                            MOV qword ptr [RSP + 0x8],RBX
+  0x14063f215 (+0x005): 48 89 74 24 10                            MOV qword ptr [RSP + 0x10],RSI
+  0x14063f21a (+0x00a): 48 89 7c 24 18                            MOV qword ptr [RSP + 0x18],RDI
+  0x14063f21f (+0x00f): 55                                        PUSH RBP
+  0x14063f220 (+0x010): 48 8d 6c 24 a9                            LEA RBP,[RSP + -0x57]
+  0x14063f225 (+0x015): 48 81 ec b0 00 00 00                      SUB RSP,0xb0
+  0x14063f22c (+0x01c): 48 8b fa                                  MOV RDI,RDX
+  0x14063f22f (+0x01f): 48 8b f1                                  MOV RSI,RCX
+  0x14063f232 (+0x022): e8 39 3d e8 ff                            CALL 0x1404c2f70
+  0x14063f237 (+0x027): 48 8b 9f 60 01 00 00                      MOV RBX,qword ptr [RDI + 0x160]
+  0x14063f23e (+0x02e): 48 85 db                                  TEST RBX,RBX
+  0x14063f241 (+0x031): 75 0a                                     JNZ 0x14063f24d
+  0x14063f243 (+0x033): b8 01 00 65 80                            MOV EAX,0x80650001
+  0x14063f248 (+0x038): e9 09 02 00 00                            JMP 0x14063f456
+  0x14063f24d (+0x03d): 8b 4b 08                                  MOV ECX,dword ptr [RBX + 0x8]
+
+2026-06-02 20:52:46 INFO  (GhidraScript) DumpTelekinesisPrologue.java> Done  
+2026-06-02 20:52:46 INFO  (HeadlessAnalyzer) REPORT: Save succeeded for processed file: /StarWarsG.exe  
