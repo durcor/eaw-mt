@@ -102,6 +102,9 @@ sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/select_marker_test.cpp sim/select_marker.cpp sim/damped_spring.cpp -o /tmp/eaw_select_marker_test
   /tmp/eaw_select_marker_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/hide_when_fogged_test.cpp sim/hide_when_fogged.cpp sim/damped_spring.cpp -o /tmp/eaw_hide_when_fogged_test
+  /tmp/eaw_hide_when_fogged_test
 
 ghidra-script script:
   nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
