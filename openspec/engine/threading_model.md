@@ -366,6 +366,39 @@ Behaviors: **#8 Telekinesis** HOLD/RELEASE (`2d5320`).
 | #9 Lure | order lured unit + AI group/plan (`62b270`/`38d730`) | 2b | buffer + ordered apply |
 | #10 Reveal | fog reveal arrays `this[0x33]` (`365760`/`35d1b0`) | 1 | shard by observer (observer-private) |
 
+### Movement / per-component slice (extension, 2026-06-03)
+The movement service is the bulk of fast-forward time (the ~1700 path-follow/fire-control
+components/tick). Chain: the gsvc dispatcher `FUN_14028d400` (battle/network-vote coordinator —
+PENDING_TACTICAL_BATTLE_VOTE, outgoing event queue) drives the per-object hardpoint service
+`FUN_1403a76b0`, which ticks each hardpoint via `FUN_140387010` → the per-component body
+`FUN_140387400` (opportunity-targeting / fire-control) + `FUN_140381ff0` (firing). Decoded write set:
+- **Own-component / own-object state** (target ptr, `in_progress_flag`, `field_0x64`,
+  `opp_target_slot`, `last_serviced_tick`, `cached_bone_idx`; the energy redistribution `387f50` to the
+  object's *own* hardpoints) → **safe**, provided one object = one work unit.
+- **Global order/event queue `DAT_140b27e60`** (`387400:99` → `FUN_1402d5290` → `2d72c0`) → **Class 2**
+  (shared append; buffer + ordered drain).
+- **Cross-entity listener list `other+0x38`** — `FUN_1403846c0` and the `FUN_140220ed0`/`220eb0` emits
+  (order events 0x20/0x21, subscribe/unsubscribe 0x28/1) write *another* object's `+0x38` list.
+  → **Class 2b** (aliasable; buffer + ordered apply). This is the same `+0x38` listener seam the
+  boundary scope above named as hazard #2.
+- **Shared sim-RNG `DAT_140a13e24`** — `387400:250` draws (`FUN_1401ffb40`, int range) to randomize
+  each component's opportunity-target scan start. → **Class 2 determinism hazard, but on the HOT path**
+  (≈one draw per component per acquisition, not the rare #6 spawn roll).
+- **Reads** the global registry `DAT_140a16fd0` read-only during scans → **sweep barrier** (Class 1).
+
+Two refinements this slice adds (it introduces **no new write-target class**):
+1. **The order-sensitive force-sum is intra-object.** The FF accumulation the boundary scope flagged
+   (`3a76b0:44` `fVar11 += fVar9` over the object's hardpoints, then the proportional energy
+   redistribute) sums over **one object's own** members. If the unit of parallel work is the whole
+   object (all its hardpoints on one thread), the float-accumulation order is bit-identical to serial.
+   **Resolution: shard by object, never split an object's hardpoints across threads** — a sharding
+   *granularity* constraint, not a buffering requirement. The flagged determinism hazard dissolves.
+2. **The lockstep LCG is a hot shared dependency here**, not low-frequency. Serializing every global
+   draw would bloat the serial tail. The clean retrofit is **per-entity RNG substreams** (counter-based
+   / splittable RNG seeded by entity id) so each shard draws from its own deterministic stream and no
+   global draw-order serialization is needed — preserving lockstep without a serial bottleneck. (This
+   also subsumes #6's asteroid rolls.)
+
 ### What this resolves
 The IN-behavior write set (work-item #3) is **fully enumerated and classified**: two of three classes
 need only a sweep barrier (Class 1) or a low-frequency ordered command drain (Class 2/2b), and the
@@ -377,6 +410,15 @@ serial tail is the Class-2/2b drain, which the measured Amdahl numbers already a
 the concrete realization of the boundary-scope's "command schema + buffers" and "determinism
 preservation" rows for the IN slice — still source-only to *build*, but the RE question of *what the
 commands are and which can avoid the buffer entirely* is now answered.
+
+The **movement slice** extension (above) folds in cleanly: same three classes, no new write target.
+The two determinism worries the boundary scope raised about it both downgrade — the order-sensitive
+force-sum is intra-object (fixed by object-granular sharding, free) and the hot LCG dependency is best
+solved by per-entity RNG substreams rather than serialization. So the per-tick mass (movement +
+sensor/fog) is Class 1 / shard-by-object / read-only — directly parallel — and the residual serial
+tail across **both** slices is the same low-volume Class-2/2b drain (order queue, cross-entity listener
+edits, object spawn) in canonical order. The remaining open RE item is the **command-schema spec** —
+the concrete op/buffer types per class — which is now a writing task, not a decode task.
 
 ---
 
