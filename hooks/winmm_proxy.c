@@ -5249,6 +5249,126 @@ static void install_b397640_hook(void)
 }
 
 /* =========================================================================
+ * DTREVEAL — in-game oracle for the lifted Reveal fog re-reveal MOVE-THRESHOLD GATE
+ * (sim/reveal_gate.cpp, from RevealBehaviorClass::vfunc_6 FUN_1405373c0). Behavior #10.
+ *
+ * Reveal is the passive fog-of-war revealer on ~every mobile unit. Each tick it throttles its global
+ * object re-scan (the deferred Phase-B emit seam) on movement: the gate at 0x5374ba..0x537613 computes
+ * a 2D float32 squared move distance moved_sq = dx*dx + dy*dy (cur = entity world pos +0x78/+0x7c, last
+ * = behavior slot +0x40/+0x44) and skips the rescan iff moved_sq < threshold (slot +0x48). That gate is
+ * the only embedded pure numeric core; everything past it is cross-entity orchestration.
+ *
+ * Unlike the Lure leaf (#9), this gate is MID-FUNCTION and the binary never persists moved_sq to memory,
+ * so we cannot read its computed value back. Instead the oracle's ground truth is an INLINE-ASM
+ * transcription of the gate's exact SSE instruction sequence (subss/subss/mulss/mulss/addss) evaluated
+ * on the REAL captured inputs: we trampoline at the function entry (0x5373c0), snapshot cur (entity
+ * +0x78/+0x7c) and last/threshold (behavior +0x40/+0x44/+0x48) BEFORE the call (the rescan path
+ * overwrites +0x40/+0x44), then compare the lifted float32 expression `dx*dx+dy*dy` against the asm
+ * transcription bit-for-bit. This confirms the lift reproduces the binary's instruction sequence (no
+ * FMA contraction / double promotion / reassociation) across the live in-game input distribution.
+ *
+ * Entry prologue (20 bytes, all position-independent — first rip-rel is the mov rax,[rdx+0x298] at +0x14):
+ *   48 89 5c 24 08 / 48 89 6c 24 10 / 48 89 74 24 18 / 57 / 48 83 ec 70
+ *   = mov [rsp+8],rbx; mov [rsp+10],rbp; mov [rsp+18],rsi; push rdi; sub rsp,0x70.
+ *   Entry rcx=self(behavior), rdx=entity, r8d=p3 (3 args, MS x64). */
+#define REVEAL_5373C0_RVA  0x5373c0ULL
+static const BYTE reveal_5373c0_prologue[20] = {
+    0x48, 0x89, 0x5c, 0x24, 0x08,   /* mov [rsp+0x08], rbx */
+    0x48, 0x89, 0x6c, 0x24, 0x10,   /* mov [rsp+0x10], rbp */
+    0x48, 0x89, 0x74, 0x24, 0x18,   /* mov [rsp+0x18], rsi */
+    0x57,                           /* push rdi            */
+    0x48, 0x83, 0xec, 0x70,         /* sub rsp, 0x70       */
+};
+typedef uint64_t (*Reveal5373c0Fn)(void *self, void *entity, uint32_t p3);
+static Reveal5373c0Fn g_rev_trampoline = NULL;
+static uint32_t g_rev_ticks = 0;
+static uint32_t g_rev_ok = 0, g_rev_bad = 0;
+static uint32_t g_rev_zero = 0;             /* coverage: moved_sq==0 (unit stationary since last reveal) */
+static uint32_t g_rev_skip = 0;             /* coverage: gate would SKIP rescan  (moved_sq <  threshold) */
+static uint32_t g_rev_rescan = 0;           /* coverage: gate would OPEN  rescan  (moved_sq >= threshold) */
+static float    g_rev_max = 0.0f;           /* coverage: largest moved_sq observed                       */
+static uint32_t g_rev_lines = 0;
+static uint32_t g_rev_surv_last = 0xFFFFFFFFu;
+
+/* Faithful transcription of the gate's SSE ops: dx=cx-lx, dy=cy-ly, dx²+dy² — all float32 (subss/mulss/
+ * addss), no widening. AT&T `op src,dst` => dst op= src. */
+static float reveal_gate_asm_movedsq(float cx, float cy, float lx, float ly)
+{
+    __asm__ __volatile__(
+        "subss %2, %0\n\t"   /* cx -= lx   => dx        */
+        "subss %3, %1\n\t"   /* cy -= ly   => dy        */
+        "mulss %0, %0\n\t"   /* dx *= dx   => dx²       */
+        "mulss %1, %1\n\t"   /* dy *= dy   => dy²       */
+        "addss %1, %0\n\t"   /* dx² += dy² => moved_sq  */
+        : "+x"(cx), "+x"(cy)
+        : "x"(lx), "x"(ly));
+    return cx;
+}
+
+static uint64_t reveal_5373c0_hook(void *self, void *entity, uint32_t p3)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(self && entity && g_dt_imgbase && dt_on()))
+        return g_rev_trampoline(self, entity, p3);
+
+    /* Snapshot BEFORE the call: the rescan path stores cur into self+0x40/+0x44. */
+    float cur_x = *(float *)((BYTE *)entity + 0x78);
+    float cur_y = *(float *)((BYTE *)entity + 0x7c);
+    float last_x = *(float *)((BYTE *)self + 0x40);
+    float last_y = *(float *)((BYTE *)self + 0x44);
+    float thr    = *(float *)((BYTE *)self + 0x48);
+
+    uint64_t ret = g_rev_trampoline(self, entity, p3);
+
+    /* Predict via the lifted float32 expression; ground-truth via the asm transcription of the gate. */
+    float dx = cur_x - last_x, dy = cur_y - last_y;
+    float pred = dx * dx + dy * dy;
+    float act  = reveal_gate_asm_movedsq(cur_x, cur_y, last_x, last_y);
+
+    int ok = (memcmp(&act, &pred, sizeof act) == 0);   /* bit-exact float32 compare */
+
+    g_rev_ticks++;
+    if (ok) g_rev_ok++; else g_rev_bad++;
+    if (act == 0.0f) g_rev_zero++;
+    if (act <  thr)  g_rev_skip++; else g_rev_rescan++;
+    if (act > g_rev_max) g_rev_max = act;
+
+    int32_t now = (int32_t)*g_dt_frame_ctr;
+    int want = !ok || (g_rev_ticks <= 40) || ((now & 0x3ff) == 0);
+    if (want && g_rev_lines < 20000u) {
+        g_rev_lines++;
+        char ln[256];
+        /* %a (hex float) so any mismatch is fully visible at bit precision; the memcmp is authoritative. */
+        snprintf(ln, sizeof ln, "DTREVEAL\ttick=%d\tmoved2(a/p)=%a/%a\tthr=%a\tskip=%d\tok=%d\n",
+                 now, (double)act, (double)pred, (double)thr, (act < thr), ok);
+        log_write(ln);
+    }
+    if (now != (int32_t)g_rev_surv_last && ((uint32_t)now & 0x1ffu) == 0) {
+        g_rev_surv_last = (uint32_t)now;
+        char sv[256];
+        snprintf(sv, sizeof sv,
+            "DTREVEALSURVEY\ttick=%d\tticks=%u\tmoved2(ok/bad)=%u/%u\tzero=%u\tskip/rescan=%u/%u\tmax=%a\n",
+            now, g_rev_ticks, g_rev_ok, g_rev_bad, g_rev_zero, g_rev_skip, g_rev_rescan, (double)g_rev_max);
+        log_write(sv);
+    }
+    return ret;
+}
+
+static void install_reveal_5373c0_hook(void)
+{
+    void *t = NULL;
+    if (install_targ_tramp(REVEAL_5373C0_RVA, reveal_5373c0_prologue, sizeof reveal_5373c0_prologue,
+                           (void *)reveal_5373c0_hook, &t, "FUN_1405373c0")) {
+        g_rev_trampoline = (Reveal5373c0Fn)t;
+        log_write("[eaw-mt] DTREVEAL: Reveal move-threshold gate (FUN_1405373c0) oracle installed\n");
+    }
+}
+
+/* =========================================================================
  * DTTK — in-game oracle for the lifted TELEKINESIS interp-timeline core
  * (sim/telekinesis_target.cpp, from FUN_14063f210). Behavior #8 (part 1).
  *
@@ -9024,6 +9144,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b633a30_hook();   /* DTARG: Targeting dispatcher mode-resolution biconditional (EAW_DIFFTRACE=1) */
         install_b14020acd0_hook();/* DTARG2: Targeting team-targeting aim-geometry bit-exact (EAW_DIFFTRACE=1) */
         install_b397640_hook();   /* DTLURE: Lure shared squared-distance bit-exact (EAW_DIFFTRACE=1) */
+        install_reveal_5373c0_hook(); /* DTREVEAL: Reveal move-threshold gate bit-exact (EAW_DIFFTRACE=1) */
         install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif

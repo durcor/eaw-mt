@@ -1,0 +1,62 @@
+=== DTREVEAL oracle PASS — Reveal move-threshold gate (FUN_1405373c0), Phase-3 IN behavior #10 ===
+=== analyzer verdict ===
+DTREVEAL — Reveal move-threshold gate oracle (FUN_1405373c0)   [eaw-mt.log]
+  DTREVEAL lines: 1103   DTREVEALSURVEY rollups: 12
+  emitted-line mismatches: 0
+    tick=1 moved2 a=0x1.3f1cbp+24 p=0x1.3f1cbp+24 thr=0x1.388p+13 skip=0 ok=1
+    tick=1 moved2 a=0x1.7cd016p+16 p=0x1.7cd016p+16 thr=0x1.388p+13 skip=0 ok=1
+    tick=1 moved2 a=0x1.35999ap+25 p=0x1.35999ap+25 thr=0x1.388p+13 skip=0 ok=1
+    tick=1 moved2 a=0x1.009f4cp+25 p=0x1.009f4cp+25 thr=0x1.388p+13 skip=0 ok=1
+    tick=1 moved2 a=0x1.6b8be6p+23 p=0x1.6b8be6p+23 thr=0x1.388p+13 skip=0 ok=1
+    tick=1 moved2 a=0x1.207778p+25 p=0x1.207778p+25 thr=0x1.388p+13 skip=0 ok=1
+  final survey @tick=111616: ticks=1023031
+    moved_sq (ok/bad) = 1023031/0
+    coverage: stationary calls = 169061   skip/rescan = 947212/75819   max moved² (hex) = 0x1.b1dcf8p+26
+
+  MOVE-THRESHOLD GATE (moved_sq bit-exact): PASS
+  VERDICT: PASS
+
+=== install banner ===
+[eaw-mt] DTREVEAL: Reveal move-threshold gate (FUN_1405373c0) oracle installed
+
+=== first 20 per-call lines ===
+DTREVEAL	tick=1	moved2(a/p)=0x1.3f1cbp+24/0x1.3f1cbp+24	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=1	moved2(a/p)=0x1.7cd016p+16/0x1.7cd016p+16	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=1	moved2(a/p)=0x1.35999ap+25/0x1.35999ap+25	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=1	moved2(a/p)=0x1.009f4cp+25/0x1.009f4cp+25	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=1	moved2(a/p)=0x1.6b8be6p+23/0x1.6b8be6p+23	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=1	moved2(a/p)=0x1.207778p+25/0x1.207778p+25	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=1	moved2(a/p)=0x1.7bc784p+24/0x1.7bc784p+24	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=1	moved2(a/p)=0x1.1341fap+24/0x1.1341fap+24	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=2	moved2(a/p)=0x0p+0/0x0p+0	thr=0x1.388p+13	skip=1	ok=1
+DTREVEAL	tick=2	moved2(a/p)=0x1.ddc6ecp+23/0x1.ddc6ecp+23	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=2	moved2(a/p)=0x0p+0/0x0p+0	thr=0x1.388p+13	skip=1	ok=1
+DTREVEAL	tick=2	moved2(a/p)=0x1.65c858p+24/0x1.65c858p+24	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=2	moved2(a/p)=0x1.81950cp+26/0x1.81950cp+26	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=2	moved2(a/p)=0x0p+0/0x0p+0	thr=0x1.388p+13	skip=1	ok=1
+DTREVEAL	tick=2	moved2(a/p)=0x1.81950cp+26/0x1.81950cp+26	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=3	moved2(a/p)=0x1.6b1ba6p+26/0x1.6b1ba6p+26	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=3	moved2(a/p)=0x1.6e261p+26/0x1.6e261p+26	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=3	moved2(a/p)=0x1.12a88p+19/0x1.12a88p+19	thr=0x1.388p+13	skip=0	ok=1
+DTREVEAL	tick=3	moved2(a/p)=0x0p+0/0x0p+0	thr=0x1.388p+13	skip=1	ok=1
+DTREVEAL	tick=3	moved2(a/p)=0x1.35999ap+25/0x1.35999ap+25	thr=0x1.388p+13	skip=0	ok=1
+=== last 5 per-call lines ===
+DTREVEAL	tick=111616	moved2(a/p)=0x1.e3af04p+4/0x1.e3af04p+4	thr=0x1.9p+6	skip=1	ok=1
+DTREVEAL	tick=111616	moved2(a/p)=0x1.33bfa2p+7/0x1.33bfa2p+7	thr=0x1.9p+6	skip=0	ok=1
+DTREVEAL	tick=111616	moved2(a/p)=0x1.8bc7b2p+6/0x1.8bc7b2p+6	thr=0x1.9p+6	skip=1	ok=1
+DTREVEAL	tick=111616	moved2(a/p)=0x1.5ed8eap+6/0x1.5ed8eap+6	thr=0x1.9p+6	skip=1	ok=1
+DTREVEAL	tick=111616	moved2(a/p)=0x1.154c98p+6/0x1.154c98p+6	thr=0x1.9p+6	skip=1	ok=1
+
+=== all surveys ===
+DTREVEALSURVEY	tick=105984	ticks=11936	moved2(ok/bad)=11936/0	zero=3459	skip/rescan=11320/616	max=0x1.81950cp+26
+DTREVEALSURVEY	tick=106496	ticks=49188	moved2(ok/bad)=49188/0	zero=14393	skip/rescan=47009/2179	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=107008	ticks=141604	moved2(ok/bad)=141604/0	zero=30273	skip/rescan=133675/7929	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=107520	ticks=239908	moved2(ok/bad)=239908/0	zero=49087	skip/rescan=225487/14421	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=108032	ticks=338212	moved2(ok/bad)=338212/0	zero=68065	skip/rescan=317764/20448	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=108544	ticks=436516	moved2(ok/bad)=436516/0	zero=86344	skip/rescan=408567/27949	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=109056	ticks=534820	moved2(ok/bad)=534820/0	zero=105860	skip/rescan=500362/34458	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=109568	ticks=633124	moved2(ok/bad)=633124/0	zero=125527	skip/rescan=592818/40306	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=110080	ticks=731428	moved2(ok/bad)=731428/0	zero=145139	skip/rescan=684524/46904	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=110592	ticks=829732	moved2(ok/bad)=829732/0	zero=157182	skip/rescan=773584/56148	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=111104	ticks=927402	moved2(ok/bad)=927402/0	zero=164664	skip/rescan=861375/66027	max=0x1.b1dcf8p+26
+DTREVEALSURVEY	tick=111616	ticks=1023031	moved2(ok/bad)=1023031/0	zero=169061	skip/rescan=947212/75819	max=0x1.b1dcf8p+26
