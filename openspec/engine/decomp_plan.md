@@ -763,7 +763,7 @@ sim state; out = presentation):
 | `AsteroidFieldDamageBehaviorClass` | `0x437310` | **IN** | ✅ **LIFTED + DTAST ORACLE PASS (behavior #6)** — the Nebula **sibling** (adjacent RVA, same `entity+0xf0` sub-object + last-event-tick field `+0x10c`): a **probabilistic per-tick damage trigger**. GATE (game mode ∈ {1,2,0x20} + unit predicate + non-zero config). SCAN: sphere query over the global set; per in-range asteroid-field object, draw `roll=rng_uniform(0,1)` (`1ffbb0` sim LCG) and apply collision damage if `roll ≤ prob` (`DAT_140b16d64`); stamp `sub+0x10c=now` if any found, else `-1`. apply (`436920`) damages SELF + spawns the impact fx into the GOM + draws more RNG. **NOT Phase-A-safe** — not a foreign gameplay write (the damage is to self) but the **shared sim-RNG seed is advanced a membership-dependent number of times** (draw order must serialise) and apply spawns into the global GOM. First IN behavior whose non-safety is purely the RNG + spawn seam. In-game (asteroid-field battle, 10 entities, 5886 active ticks): proximity biconditional **5906/5906**, LCG recurrence **5886/5886** (0 k-mismatches), first roll **5886/5886 bit-exact**, draw count **k=1..13** (membership-dependent), applies ≈21.3% ≈ prob 0.2 |
 | `NebulaBehaviorClass` | `0x437b60` | **IN** | ✅ **LIFTED + DTNEB ORACLE PASS** (behavior #5) — the "clean float integrator": STAGE 1 (unconditional) is a **semi-implicit damped harmonic oscillator** ramping nebula-effect intensity `(sub+0x11c)` toward equilibrium `(sub+0x120)` — `w=freq·2`, `inv=1/(1+wdt+0.48·wdt²+0.235·wdt³)`; STAGE 2 is a membership SM gated by a **time-based LINGER throttle** (`380bb0`: skip the spatial scan while `(now−enter_tick)/30 < grace`), edge-firing enter (`0x2b` ability-disable) / leave (`0x2c` re-enable). Cross-entity coupling is **READ-ONLY** (closer to Phase-A-safe than #4). In-game: spring **614503/614503 bit-exact**, 308 enters / 218 leaves; linger dormant in TR (full scan every in-nebula tick) |
 | `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | 🟡 **ALL 3 MODES LIFTED (behavior #8, parts 1-3) + DTTK ORACLE PASS** — the Force force-grip effect (`<Type>FORCE_TELEKINESIS</Type>`; Palpatine/Luke-Darkside/Tremayne/Brakiss lifting an enemy *vehicle*): a **3-mode lifecycle SM** over slot `*(entity+0x160)` (mode at `slot+0x8`): 1 GRAB (interp to grip pose, `t>=1`→2), 2 HOLD (`63f730`: spin + 10%/0.2s damage + GOM), 3 RELEASE (`63f470`: interp back, `t>=1`→zero slot + re-enable abilities + GOM); else Idle; `slot==0`→NoOp `0x80650001`. Part 1 lifts the **shared interp-timeline core + dispatch** (`sim/telekinesis_target.{h,cpp}`): `now=sim_clock/hz`, `t=max((now−start)/dur,0)`, `complete=(1.0<=t)`; GRAB lerps `entity+0x80`→`DAT_140b15ac0+slot+0x14`, RELEASE→`slot+0x14`; on completion rebase `slot+0x24:=now` + change `slot+0x8`. **Part 2 lifts the HOLD body** (`63f730`, mode 2): spin/z-bob pose `pos_z = slot+0x14 + (sin(spin_t·omega)·bob_amp + height_offset)` (→`entity+0x80`) + a self-clocked periodic-damage scheduler (due iff `slot+0x48<=now && !=0`; rebase `+= slot+0x44`; damage to SELF; only the event dispatch `1402d5320` deferred). **Part 3 lifts the RELEASE body** (`63f470`, mode 3, the lifecycle terminus): shares the part-1 interp core (lerps toward the raw `slot+0x14`), adds the completion **teardown** — mode terminus `slot+0x8:=0`, sentinel `slot+0x4c:=0x3fffff`, damage disarm (`slot+0x40`/`0x48:=0`); the ability re-enable cascade + GOM dispatch `1402d5320` remain the **deferred** Phase-B env seam. 13 host cases + **DTTK ORACLE PASS** (land battles): completion biconditional **405/405** + rebase **17/17** + interp lerp **388/388** (part 1); z-bob pose bit-exact **174/174** + damage-deadline rebase **174/174**, 33 fires (part 2); RELEASE teardown terminus/sentinel/disarm **1/1/1** bit-exact (part 3 — edge count 1 because gripped units die to the grip's own damage before timed release; the teardown is a constant write so 1 confirms it). *(Part-2 caught a sub-ULP FP-non-associativity bug: codegen groups `slot_z+(sin·bob+off)`, not the decompile's flattened left-assoc.)* **All 3 modes now lifted.** |
-| `LureBehaviorClass` | `0x62b4c0` | **IN** | decoy/AI lure |
+| `LureBehaviorClass` | `0x62b4c0` | **IN** | ✅ **NUMERIC CORE LIFTED (behavior #9) + DTLURE ORACLE PASS** — the lure/taunt toggle (A-Wing "sensor jamming" in space; EotH Flame_Tank on land): `0x62b4c0` is — like UnitAI #4 / Targeting #7 — a **cross-entity GOM-scan orchestration seam** (when a lure config `entity+0x1d8` exists + cooldown `+0xc<=tick` elapsed, scan the lure's target squads, and for each member within the lure radius `lure+0x20` of the lure beacon's position re-aim it at the lure via `FUN_14062b270`). Its ONE embedded pure bit-matchable numeric core is the **radius gate's squared distance**, the shared leaf `FUN_140397640` (62-byte pure leaf; also the optional `radius!=0` filter in `Find_All_By_Type` `0x2a9ff0`): `dist2 = (double)(dx*dx)+(double)(dy*dy)+(double)(dz*dz)` over float32 deltas/squares promoted to double, grouped `((dx2+dy2)+dz2)`. Lifted to `sim/geom_distance.{h,cpp}` (`geom_dist_sq` + Lure's predicate `geom_within_range` = `dist2<=(double)(range*range)`); codegen verified instruction-by-instruction via objdump (subss/mulss/cvtps2pd/addsd; FMA-safe). The scan/re-aim orchestration around the gate stays **DEFERRED** (same Phase-B GOM seam as #4/#7). 4 host case-groups + **DTLURE ORACLE PASS** (space battle, A-Wing sensor-jamming ability triggered): dist² bit-exact **9,385,977 / 0**, 125 zero-distance edges, dynamic range to ~0x1.78da8p+18; `logs/dtlure_oracle_pass.log` |
 | `RevealBehaviorClass` | `0x5373c0` | **IN** | fog-of-war reveal (sensor grid — MP-determinism-relevant) |
 | `SelectBehaviorClass` | `0x3c2310` | **out** | UI selection-indicator animation (damped-spring on a *displayed* value) |
 | `HideWhenFoggedBehaviorClass` | `0x53ddc0` | **out** | render-visibility reaction to fog |
@@ -1233,6 +1233,41 @@ completion edge the slot is reset to a canonical inert end-state, lifted into `s
     `logs/dttkrel_oracle_pass.log`; `EAW_ORACLE` build. **Behavior #8 is now fully lifted (all 3 modes);
     only the shared Phase-B env seam — the GOM dispatch `1402d5320` + RELEASE's ability re-enable — is
     deferred, common to the remaining sub-bodies.**
+
+**✅ Behavior #9 — `LureBehaviorClass` (`FUN_14062b4c0`) numeric core (`FUN_140397640`) LIFTED + DTLURE
+ORACLE PASS.** Lure is the lure/taunt toggle ability (in this mod's XML: the New Republic **A-Wing**'s
+"sensor jamming" in space, and the Empire-of-the-Hand **Flame_Tank** on land). Like UnitAI #4 / Targeting
+#7, `0x62b4c0` is predominantly a **cross-entity GOM-scan orchestration seam**: when a lure config exists
+(`entity[5]+0x1d8 != 0`) and its cooldown (`+0xc <= tick`) has elapsed, it iterates the lure's target
+squads (`lure+0x40` list) and, for each member **within the lure radius** (`lure+0x20`) of the lure
+beacon's world position (`param_2+0x78/0x7c/0x80`), re-aims it at the lure via `FUN_14062b270`. The scan +
+re-aim writes are cross-entity → the **deferred Phase-B GOM seam**, identical in character to #4/#7.
+  - **The one numeric core is the radius gate's squared distance**, computed by the shared leaf
+    `FUN_140397640` — `double f(entity, query)`, reading `entity+0x78/0x7c/0x80` (world x/y/z) minus a
+    3-float query point: `dist2 = (double)(dx*dx)+(double)(dy*dy)+(double)(dz*dz)`. This same leaf is also
+    the **optional `radius != 0` filter** in `Find_All_By_Type` (`FUN_1402a9ff0`), the engine's generic
+    type+proximity GOM query — so the leaf, not the Lure orchestration, is the broadly-reused unit.
+  - **Exact codegen (verified instruction-by-instruction via objdump):** float32 deltas (subss), float32
+    squares (mulss), each promoted to double (cvtps2pd), summed left-associatively in double (addsd) as
+    `((dx²+dy²)+dz²)`. **FMA-safe** (no `-mfma`/`-ffast-math`; the float×float square is a separate op from
+    the double add, so they cannot fuse). The binary evaluates deltas in order y,x,z — irrelevant
+    (independent subtractions); only the add-grouping is load-bearing (prophylactic application of the
+    #8-part-2 FP-non-associativity lesson). Lifted to `sim/geom_distance.{h,cpp}` as a literal transcription
+    (`geom_dist_sq`), plus Lure's predicate `geom_within_range` = `dist2 <= (double)(range*range)`.
+  - **DTLURE oracle** (`b397640_hook`, lean `EAW_ORACLE` build): the leaf is oracled DIRECTLY at its own
+    stable entry (lesson #3 — lift+oracle the embedded pure primitive a deferred seam *calls*, not the
+    mid-frame seam) — snapshot `entity.xyz`+`query.xyz` before the trampoline, run the real function once
+    (returns dist² in xmm0), recompute the prediction with the exact float32-square/double-sum grouping, and
+    compare **bit-for-bit** (`memcmp` on the 8 double bytes). **Result over a space battle with the A-Wing
+    sensor-jamming ability triggered: dist² 9,385,977 / 0 — every call bit-exact, 0 bad**, with 125
+    zero-distance edges (entity AT the query point) and a dynamic range to ~0x1.78da8p+18 (≈ 387k).
+  - **Coverage lesson (banked):** the "broadly-reused primitive → broad oracle coverage" bet did NOT pay
+    off via *generic* combat — across 113k ticks of ship-vs-ship the leaf was called **zero** times,
+    because both its callers are gated (Lure needs an active lure ability; `Find_All_By_Type` needs the
+    `radius!=0` branch). The path had to be **explicitly triggered** (the A-Wing ability), after which it
+    fired ~9.3M times in seconds. Takeaway: confirm a candidate leaf's callers are actually *hot in
+    reachable gameplay* before assuming an aim-geometry-scale (2M+) capture will materialize on its own.
+    Capture saved `logs/dtlure_oracle_pass.log`; analyzer `tools/analyze_lure_distance_oracle.py`.
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)

@@ -1,0 +1,55 @@
+[eaw-mt] DTLURE: shared squared-distance (FUN_140397640) oracle installed
+--- first 20 DTLURE per-call lines ---
+DTLURE	tick=115989	dist2(a/p)=0x1.5fap+11/0x1.5fap+11	ok=1
+DTLURE	tick=115989	dist2(a/p)=0x1.6728p+13/0x1.6728p+13	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.3d4dp+16/0x1.3d4dp+16	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.85b1p+16/0x1.85b1p+16	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.564p+14/0x1.564p+14	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.f61p+12/0x1.f61p+12	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.20c8p+13/0x1.20c8p+13	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.ba4p+16/0x1.ba4p+16	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.d494p+15/0x1.d494p+15	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.776ap+15/0x1.776ap+15	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.8b74p+14/0x1.8b74p+14	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.ca74p+14/0x1.ca74p+14	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.1134p+16/0x1.1134p+16	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.80c4p+15/0x1.80c4p+15	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.6384p+15/0x1.6384p+15	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.1af2p+15/0x1.1af2p+15	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.90ap+11/0x1.90ap+11	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.9b74p+14/0x1.9b74p+14	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.58dp+15/0x1.58dp+15	ok=1
+DTLURE	tick=115990	dist2(a/p)=0x1.2172p+16/0x1.2172p+16	ok=1
+--- last 5 DTLURE per-call lines ---
+DTLURE	tick=190464	dist2(a/p)=0x1.e2bap+15/0x1.e2bap+15	ok=1
+DTLURE	tick=190464	dist2(a/p)=0x1.9e08p+13/0x1.9e08p+13	ok=1
+DTLURE	tick=190464	dist2(a/p)=0x1.5464p+14/0x1.5464p+14	ok=1
+DTLURE	tick=190464	dist2(a/p)=0x1.1184p+16/0x1.1184p+16	ok=1
+DTLURE	tick=190464	dist2(a/p)=0x1.a9aap+16/0x1.a9aap+16	ok=1
+--- all DTLURESURVEY rollups (last 10) ---
+DTLURESURVEY	tick=185856	ticks=8803119	dist2(ok/bad)=8803119/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=186368	ticks=8867631	dist2(ok/bad)=8867631/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=186880	ticks=8932143	dist2(ok/bad)=8932143/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=187392	ticks=8996655	dist2(ok/bad)=8996655/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=187904	ticks=9061167	dist2(ok/bad)=9061167/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=188416	ticks=9125679	dist2(ok/bad)=9125679/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=188928	ticks=9190191	dist2(ok/bad)=9190191/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=189440	ticks=9254703	dist2(ok/bad)=9254703/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=189952	ticks=9319215	dist2(ok/bad)=9319215/0	zero=0	max=0x1.78da8p+18
+DTLURESURVEY	tick=190464	ticks=9385977	dist2(ok/bad)=9385977/0	zero=125	max=0x1.78da8p+18
+--- analyzer verdict ---
+DTLURE — Lure shared squared-distance oracle (FUN_140397640)   [eaw-mt.log]
+  DTLURE lines: 9256   DTLURESURVEY rollups: 146
+  emitted-line mismatches: 0
+    tick=115989 dist2 a=0x1.5fap+11 p=0x1.5fap+11 ok=1
+    tick=115989 dist2 a=0x1.6728p+13 p=0x1.6728p+13 ok=1
+    tick=115990 dist2 a=0x1.3d4dp+16 p=0x1.3d4dp+16 ok=1
+    tick=115990 dist2 a=0x1.85b1p+16 p=0x1.85b1p+16 ok=1
+    tick=115990 dist2 a=0x1.564p+14 p=0x1.564p+14 ok=1
+    tick=115990 dist2 a=0x1.f61p+12 p=0x1.f61p+12 ok=1
+  final survey @tick=190464: ticks=9385977
+    dist2 (ok/bad) = 9385977/0
+    coverage: zero-distance calls = 125   max dist² (hex) = 0x1.78da8p+18
+
+  SQUARED DISTANCE (dist² bit-exact): PASS
+  VERDICT: PASS

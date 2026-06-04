@@ -5155,6 +5155,100 @@ static void install_b14020acd0_hook(void)
 }
 
 /* =========================================================================
+ * DTLURE — in-game oracle for the lifted shared 3D squared-distance primitive
+ * (sim/geom_distance.cpp, from FUN_140397640). Behavior #9 (Lure) numeric core.
+ *
+ * LureBehaviorClass::vfunc_6 (0x62b4c0) is — like UnitAI #4 / Targeting #7 — predominantly a cross-entity
+ * orchestration seam (scan the lure's target squads, apply FUN_14062b270 to each member in range). Its
+ * ONE embedded, pure, bit-matchable numeric core is the RADIUS GATE's squared distance, computed by
+ * FUN_140397640: a 62-byte PURE LEAF (no intrinsic calls) that reads only an entity's world position
+ * (GameObjectClass+0x78/+0x7c/+0x80) and a 3-float query point, reused by range checks across MANY
+ * behaviors. Per the #7-part-2 banked lesson we oracle it directly at its own entry:
+ *   * snapshot entity.xyz (rcx+0x78/0x7c/0x80) + query.xyz (rdx[0..2]) BEFORE the trampoline,
+ *   * run the real 140397640 once (returns dist² in xmm0 as a double),
+ *   * recompute pred = (double)(dx*dx)+(double)(dy*dy)+(double)(dz*dz) — float32 squares promoted then
+ *     summed left-assoc in double, the binary's exact grouping — and compare BIT-FOR-BIT (memcmp, 8 bytes).
+ *
+ * Prologue (15 bytes, all position-independent — leaf, no rip-rel, first 3 movss/subss):
+ *   f3 0f 10 49 7c / f3 0f 5c 4a 04 / f3 0f 10 41 78
+ *   = movss xmm1,[rcx+0x7c]; subss xmm1,[rdx+0x4]; movss xmm0,[rcx+0x78]  — cut at +0x0f (>=14 for FF25).
+ * Entry rcx=entity, rdx=query (float*); returns double in xmm0. */
+#define DIST_397640_RVA  0x397640ULL
+static const BYTE dist_397640_prologue[15] = {
+    0xf3, 0x0f, 0x10, 0x49, 0x7c,   /* movss xmm1, [rcx+0x7c] */
+    0xf3, 0x0f, 0x5c, 0x4a, 0x04,   /* subss xmm1, [rdx+0x4]  */
+    0xf3, 0x0f, 0x10, 0x41, 0x78,   /* movss xmm0, [rcx+0x78] */
+};
+typedef double (*Dist397640Fn)(void *entity, float *query);
+static Dist397640Fn g_dist_trampoline = NULL;
+static uint32_t g_dist_ticks = 0;
+static uint32_t g_dist_ok = 0, g_dist_bad = 0;
+static uint32_t g_dist_zero = 0;            /* coverage: dist²==0 (entity AT the query point) */
+static double   g_dist_max = 0.0;           /* coverage: largest dist² observed              */
+static uint32_t g_dist_lines = 0;
+static uint32_t g_dist_surv_last = 0xFFFFFFFFu;
+
+static double b397640_hook(void *entity, float *query)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr = (volatile uint32_t *)((BYTE *)exe + 0xb0a320);
+                   g_dt_imgbase = (uintptr_t)exe; }
+    }
+    if (!(entity && query && g_dt_imgbase && dt_on()))
+        return g_dist_trampoline(entity, query);
+
+    /* Snapshot inputs before the call (the function only reads them, but stay robust to aliasing). */
+    float ex = *(float *)((BYTE *)entity + 0x78);
+    float ey = *(float *)((BYTE *)entity + 0x7c);
+    float ez = *(float *)((BYTE *)entity + 0x80);
+    float qx = query[0], qy = query[1], qz = query[2];
+
+    double act = g_dist_trampoline(entity, query);   /* the real squared distance (double, xmm0) */
+
+    /* Predict: float32 deltas, float32 squares, each promoted to double, summed left-assoc ((dx²+dy²)+dz²)
+     * — the exact codegen of FUN_140397640 (subss/mulss/cvtps2pd/addsd). */
+    float dx = ex - qx, dy = ey - qy, dz = ez - qz;
+    double pred = (double)(dx * dx) + (double)(dy * dy) + (double)(dz * dz);
+
+    int ok = (memcmp(&act, &pred, sizeof act) == 0);   /* bit-exact double compare */
+
+    g_dist_ticks++;
+    if (ok) g_dist_ok++; else g_dist_bad++;
+    if (act == 0.0) g_dist_zero++;
+    if (act > g_dist_max) g_dist_max = act;
+
+    int32_t now = (int32_t)*g_dt_frame_ctr;
+    int want = !ok || (g_dist_ticks <= 40) || ((now & 0x3ff) == 0);
+    if (want && g_dist_lines < 20000u) {
+        g_dist_lines++;
+        char ln[256];
+        /* %a (hex float) so any mismatch is fully visible at bit precision; the memcmp above is authoritative. */
+        snprintf(ln, sizeof ln, "DTLURE\ttick=%d\tdist2(a/p)=%a/%a\tok=%d\n", now, act, pred, ok);
+        log_write(ln);
+    }
+    if (now != (int32_t)g_dist_surv_last && ((uint32_t)now & 0x1ffu) == 0) {
+        g_dist_surv_last = (uint32_t)now;
+        char sv[256];
+        snprintf(sv, sizeof sv,
+            "DTLURESURVEY\ttick=%d\tticks=%u\tdist2(ok/bad)=%u/%u\tzero=%u\tmax=%a\n",
+            now, g_dist_ticks, g_dist_ok, g_dist_bad, g_dist_zero, g_dist_max);
+        log_write(sv);
+    }
+    return act;
+}
+
+static void install_b397640_hook(void)
+{
+    void *t = NULL;
+    if (install_targ_tramp(DIST_397640_RVA, dist_397640_prologue, sizeof dist_397640_prologue,
+                           (void *)b397640_hook, &t, "FUN_140397640")) {
+        g_dist_trampoline = (Dist397640Fn)t;
+        log_write("[eaw-mt] DTLURE: shared squared-distance (FUN_140397640) oracle installed\n");
+    }
+}
+
+/* =========================================================================
  * DTTK — in-game oracle for the lifted TELEKINESIS interp-timeline core
  * (sim/telekinesis_target.cpp, from FUN_14063f210). Behavior #8 (part 1).
  *
@@ -8929,6 +9023,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b437310_hook();   /* DTAST: AsteroidFieldDamage roll + proximity I/O (EAW_DIFFTRACE=1) */
         install_b633a30_hook();   /* DTARG: Targeting dispatcher mode-resolution biconditional (EAW_DIFFTRACE=1) */
         install_b14020acd0_hook();/* DTARG2: Targeting team-targeting aim-geometry bit-exact (EAW_DIFFTRACE=1) */
+        install_b397640_hook();   /* DTLURE: Lure shared squared-distance bit-exact (EAW_DIFFTRACE=1) */
         install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
