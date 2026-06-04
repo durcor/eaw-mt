@@ -347,8 +347,12 @@ shared AI group/plan via `426010`/`425e30`/`426d50` off `DAT_140b15418`), **#7 T
 Behaviors: **#8 Telekinesis** HOLD/RELEASE (`2d5320`).
 - **`FUN_1402d5320` is the SFXEvent player**, not a GOM/gameplay write: it checks the SFXEvent's 2D/3D
   flag (`+0x29`/`+0x2a`), forwards to `2d5440` to play, else logs *"SFXEvent '%s' not 2D or 3D
-  specified"*. Sound only. (Distinct from the adjacent `FUN_1402d5290`, which *is* the global order-queue
-  write `DAT_140b27e60` cited in the boundary scope above — do not conflate the two.)
+  specified"*. Sound only. (The adjacent `FUN_1402d5290` is the *same* SFX path — both `2d5320` and
+  `2d5290` call the SFXEventManager start `2d5440`; per `sim/command_sink.h` the queue `DAT_140b27e60`
+  that `2d5290` feeds is the **SFX event queue** — wall-clock-sorted on a SEPARATE LCG `DAT_140a13e20`,
+  NOT a gameplay order queue. The genuine gameplay scheduled-event queue is `OutgoingEventQueueClass`
+  `DAT_140b2ed18`, a galactic/strategic-layer MP queue *outside* this tactical sim slice. An earlier
+  boundary-scope note above labelled `b27e60` a "global order queue" — that label is superseded here.)
 - **Correction to prior tracking:** #8's deferred "event dispatch `1402d5320`" was assumed a
   GOM/state write. It is audio playback — outside lockstep state, no determinism impact.
 - **Verdict: not a Phase-A sim hazard.** Buffer SFX triggers and flush post-sweep (or hand to the
@@ -375,12 +379,19 @@ PENDING_TACTICAL_BATTLE_VOTE, outgoing event queue) drives the per-object hardpo
 - **Own-component / own-object state** (target ptr, `in_progress_flag`, `field_0x64`,
   `opp_target_slot`, `last_serviced_tick`, `cached_bone_idx`; the energy redistribution `387f50` to the
   object's *own* hardpoints) → **safe**, provided one object = one work unit.
-- **Global order/event queue `DAT_140b27e60`** (`387400:99` → `FUN_1402d5290` → `2d72c0`) → **Class 2**
-  (shared append; buffer + ordered drain).
-- **Cross-entity listener list `other+0x38`** — `FUN_1403846c0` and the `FUN_140220ed0`/`220eb0` emits
-  (order events 0x20/0x21, subscribe/unsubscribe 0x28/1) write *another* object's `+0x38` list.
-  → **Class 2b** (aliasable; buffer + ordered apply). This is the same `+0x38` listener seam the
-  boundary scope above named as hazard #2.
+- **SFX cue `DAT_140b27e60`** (`387400:99` → `FUN_1402d5290` → `2d72c0`) → **Class 3** (presentation).
+  ⚠️ **Correction** to a first pass that called this a Class-2 "order queue": `2d5290` calls the same
+  SFX start `2d5440` as `2d5320`, runs on a separate LCG `DAT_140a13e20`, and sorts by wall-clock —
+  so it is *not* a gameplay/lockstep write at all (per `sim/command_sink.h`). No Class-2 global
+  order-queue write exists in this tactical slice; the gameplay scheduled queue (`OutgoingEventQueueClass`
+  `DAT_140b2ed18`) is galactic-layer.
+- **Cross-entity per-object signal dispatcher `other+0x38`** — `FUN_1403846c0` and the
+  `FUN_140220ed0`/`220e90`/`220eb0` emits/connects (signals 0x20 fire-order, 0x21 opp-target-acquired,
+  0x28 detach) fire on *another* object's `+0x38` `SignalDispatcherClass`, whose connected slots mutate
+  arbitrary entities. → **Class 2b** (aliasable; buffer + ordered apply). This is the same `+0x38`
+  listener seam the boundary scope above named as hazard #2; `sim/command_sink.h` already frames it as
+  the `CommandSink::emit_signal` channel (insertion-order-within-emission + GOM-order-across-entities
+  is the determinism contract).
 - **Shared sim-RNG `DAT_140a13e24`** — `387400:250` draws (`FUN_1401ffb40`, int range) to randomize
   each component's opportunity-target scan start. → **Class 2 determinism hazard, but on the HOT path**
   (≈one draw per component per acquisition, not the rare #6 spawn roll).
@@ -416,8 +427,9 @@ The two determinism worries the boundary scope raised about it both downgrade �
 force-sum is intra-object (fixed by object-granular sharding, free) and the hot LCG dependency is best
 solved by per-entity RNG substreams rather than serialization. So the per-tick mass (movement +
 sensor/fog) is Class 1 / shard-by-object / read-only — directly parallel — and the residual serial
-tail across **both** slices is the same low-volume Class-2/2b drain (order queue, cross-entity listener
-edits, object spawn) in canonical order. The remaining open RE item is the **command-schema spec** —
+tail across **both** slices is the same low-volume Class-2/2b drain (object spawn + per-object signal
+fan-out) in canonical order, plus the presentation-only Class-3 SFX flush which is off the lockstep
+path entirely. The remaining open RE item is the **command-schema spec** —
 the concrete op/buffer types per class — which is now a writing task, not a decode task.
 
 ---
