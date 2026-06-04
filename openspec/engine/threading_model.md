@@ -429,8 +429,11 @@ solved by per-entity RNG substreams rather than serialization. So the per-tick m
 sensor/fog) is Class 1 / shard-by-object / read-only — directly parallel — and the residual serial
 tail across **both** slices is the same low-volume Class-2/2b drain (object spawn + per-object signal
 fan-out) in canonical order, plus the presentation-only Class-3 SFX flush which is off the lockstep
-path entirely. The remaining open RE item is the **command-schema spec** —
-the concrete op/buffer types per class — which is now a writing task, not a decode task.
+path entirely. The command-schema spec — the concrete op/buffer types per class, the per-entity RNG
+substream, and the canonical-order drain — is now written up as a build-ready design in
+**`sim_parallel_command_schema.md`**. With it, the RE side of the parallelization question is closed:
+the write set is enumerated, classified, and given concrete op types + a drain that provably preserves
+lockstep; what remains is implementation, which is source-only.
 
 ---
 
