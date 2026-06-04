@@ -56,6 +56,8 @@
 //     keeps integrating every tick regardless, so intensity stays observably live during linger.
 #pragma once
 
+#include "damped_spring.h"   // the shared semi-implicit damped-spring step (STAGE 1 delegates to it)
+
 namespace sim {
 
 // Resolved per-tick disposition (the FUN_140380bb0 linger throttle + the spatial-scan result,
@@ -83,13 +85,15 @@ struct NebulaState {
     int   enter_tick  = -1;     // sub+0x104 — tick the entity entered a nebula, or -1 if outside
 };
 
-// Fixed constants recovered from the binary (decomp_plan.md Phase-3 #5):
-constexpr float kNebulaFreqScale = 2.0f;    // DAT_1408007d4 — frequency scale (freq -> w)
-constexpr float kNebulaQuad      = 0.48f;   // DAT_140819c54 — wdt^2 damping coefficient
-constexpr float kNebulaCubic     = 0.235f;  // DAT_140819c50 — wdt^3 damping coefficient
+// Fixed constants recovered from the binary (decomp_plan.md Phase-3 #5). These are now the SHARED
+// spring constants (kSpring*) in damped_spring.h — kept here as Nebula-named aliases.
+constexpr float kNebulaFreqScale = kSpringFreqScale;  // 2.0f, DAT_1408007d4 — freq -> w
+constexpr float kNebulaQuad      = kSpringQuad;       // 0.48f, DAT_140819c54 — wdt^2 coefficient
+constexpr float kNebulaCubic     = kSpringCubic;      // 0.235f, DAT_140819c50 — wdt^3 coefficient
 
 // STAGE 1: the damped-oscillator integrator (437b60.c lines 41-51). Mutates st.value / st.velocity.
-// dt = DAT_140b0a344, the per-tick game-delta (runtime; the oracle recovers it).
+// Delegates to the engine's shared sim/damped_spring.{h,cpp} primitive (Select's spring tail is the
+// byte-identical sibling). dt = DAT_140b0a344, the per-tick game-delta (runtime; the oracle recovers).
 void nebula_spring_step(NebulaState& st, float dt);
 
 // STAGE 2: the membership / throttle update (437b60.c lines 52-139). Mutates st.equilibrium /

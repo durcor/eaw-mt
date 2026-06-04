@@ -27,12 +27,17 @@ static bool feq(float a, float b) { return std::fabs(a - b) <= 1e-5f * (1.0f + s
 
 // Independent reference for the spring step, computed in the SAME op order as the lift, to confirm
 // the lift's arithmetic is what we think it is (a guard against a typo in the operation order).
+// Reference spring with the BINARY's denominator grouping `quad + (wdt+1.0) + cubic` (verified against
+// the asm in damped_spring.cpp; the explicit parens are load-bearing — see damped_spring.h). Confirms
+// nebula_spring_step delegates to the shared primitive faithfully.
 static void ref_spring(float& value, float& velocity, float equilibrium, float freq, float dt) {
-    const float w   = freq * 2.0f;
-    const float wdt = w * dt;
-    const float dx  = value - equilibrium;
-    const float inv = 1.0f / (wdt * 0.48f * wdt + wdt + 1.0f + wdt * 0.235f * wdt * wdt);
-    const float tmp = (dx * w + velocity) * dt;
+    const float w     = freq * 2.0f;
+    const float wdt   = w * dt;
+    const float dx    = value - equilibrium;
+    const float quad  = (wdt * 0.48f) * wdt;
+    const float cubic = ((wdt * 0.235f) * wdt) * wdt;
+    const float inv   = 1.0f / ((quad + (wdt + 1.0f)) + cubic);
+    const float tmp   = (dx * w + velocity) * dt;
     value    = (tmp + dx) * inv + equilibrium;
     velocity = (velocity - tmp * w) * inv;
 }
