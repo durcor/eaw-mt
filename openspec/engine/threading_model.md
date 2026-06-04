@@ -271,6 +271,115 @@ and the source-level frontier is now scoped and documented as the boundary.
 
 ---
 
+## Phase-B Seam Characterization — the IN-behavior cross-boundary write set (2026-06-03)
+
+The **phase pivot.** Across the Phase-3 sim-core lift, every cross-entity IN behavior
+(#4 UnitAI, #6 AsteroidFieldDamage, #7 Targeting, #8 Telekinesis, #9 Lure, #10 Reveal) bottomed
+out in the same residual: a *deferred Phase-B seam* — the cross-boundary write each behavior emits
+once its own pure numeric core is computed. Those seams were tracked separately as "the shared
+Phase-B seam" pending characterization. This section is that characterization: decoding the actual
+write-target functions (`2d5320`, `657ce0`/`657db0`/`659760`, `365760`/`35d1b0`, `29f810`, `62b270`)
+and the global structures they touch resolves the work-item #3/#4 "command schema + determinism"
+question above for the IN slice.
+
+**Headline finding: it is not one seam — it is three write-target classes with three different
+verdicts.** "Serialise-or-shard the cross-boundary write" was the right frame, but the answer is
+not uniform; classifying by write target is what makes the parallelization tractable.
+
+### The shared structures (decoded)
+- **Global object registry `DAT_140a16fd0`** — an **id-indexed `Object*` vector** (`+0x20` = pointer
+  array, `+0x28` = count; lookup `FUN_140294bc0(reg, id)` bounds-checks then returns `reg[+0x20][id]`).
+  Every scan reads it; only `CreateObject`/destroy mutate it. The id↔slot identity *is* the lockstep
+  contract — object ids are append order.
+- **Global SensorGrid singleton `DAT_140b31900`** — passed as `param_1` to the #4 grid writers.
+  Internally **pre-sharded by observer**: `grid+0x40` is an array of per-observer cell-bucket grids
+  indexed by `observer_slot*0x18`; `grid+0xb0/0xb4` = grid dims, `+0xb8/0xbc` = cell sizes. The
+  observer's slot is `*(int*)(observer+0x48)` — unique per observer.
+- **Shared sim-RNG seed `DAT_140a13e24`** — the lockstep LCG `s' = s*0x41c64e6d + 0xbdf` (lifted as
+  `eaw::SimRng`); advanced a membership-dependent number of times per tick (#6: one draw per in-range
+  asteroid). The draw *order* fixes the stream.
+
+### Class 1 — Sensor / visibility / fog writes → **shardable by observer, NO serialization**
+Behaviors: **#4 UnitAI** (`657ce0` became-visible, `657db0` became-hidden, `659760` recache-moved),
+**#10 Reveal** (`365760`, `35d1b0`).
+- **Every write word is keyed by the writing observer's own unique slot index.** `657ce0` writes each
+  object's per-observer arrays (`object+0x40/+0x58/+0x70/+0xa0`) at column `[observer_slot]`; `657db0`
+  scatters into `grid+0x40 + observer_slot*0x18` (that observer's *own* cell-bucket grid); #10's
+  `365760`/`35d1b0` write the behavior's **own** array `this[0x33]` (size `this[0x32]`). No two
+  observers ever touch the same memory word.
+- **Reads** are the global registry `DAT_140a16fd0` (read-only id→ptr) + the visibility/team predicate
+  (`FUN_14039a2c0` #10 / `FUN_14035f470` #4) reading *other* objects' fields read-only.
+- **Determinism:** within an observer, objects are visited in registry order (deterministic);
+  cross-observer there is no shared write → fully order-independent. **No command buffer, no serial
+  drain.** The only requirement is a **sweep barrier**: the global registry + grid geometry must not
+  be mutated (no concurrent `CreateObject`/destroy) *during* the parallel observer pass.
+- **Verdict: embarrassingly parallel by observer.** #4/#10 — and the read-only-coupled #5 Nebula —
+  parallelize directly. This is the cheap, large win (these are per-entity-per-tick passes).
+
+### Class 2 — GameObjectManager mutation + shared RNG → **MUST serialize (buffer + ordered commit)**
+Behaviors: **#6 AsteroidFieldDamage** (`29f810` impact-fx spawn + per-asteroid LCG draw); the general
+spawn path for **any** behavior that creates an object (projectiles for **#7**'s fire emit, etc.).
+- `FUN_14029f810` = **`GameObjectManager::CreateObject`** (2201 bytes): allocate (`769c58(0x8a0)`) →
+  construct (`388b60`) → **append to the shared registry `DAT_140a16fd0`** (assigns the next object id)
+  → **insert into ~12 global spatial/category buckets** (`20a9b0` into `mgr+0x38/+0x408/+0xc8[slot]/
+  +0x1c8/+0x210/.../+0x5a8`) → grow the global growable array `mgr+0x3c8` (realloc, count `+0x3d0`) →
+  sweep all objects to notify observers (`294bc0`+`2823e0`+`289010`, lines 229-242).
+- **Two hard-serial hazards:** (a) **object-id assignment is append order** — if two shards create
+  objects, every new id (and thus all downstream object identity) changes → lockstep desync / broken
+  replays; (b) the **shared LCG `DAT_140a13e24`** is global — the draw sequence must be a fixed order.
+- **Verdict: serialize.** Buffer spawn requests + RNG draw counts into per-shard queues in Phase A;
+  drain in **canonical entity order** (entity id / registry index) in Phase B, assigning ids and
+  advancing the LCG in that fixed order. This is the real bottleneck — but it is **low-frequency**
+  (object spawn + occasional rolls, "a few hundred commands/tick"), not per-entity-per-tick, so the
+  serial tail stays small (consistent with the Amdahl estimate above).
+
+### Class 2b — cross-entity gameplay-state writes (no alloc, no RNG) → **buffer + ordered apply**
+Behaviors: **#9 Lure** (`62b270`: order the lured unit `FUN_14038d730(victim, lure, …)` + mutate a
+shared AI group/plan via `426010`/`425e30`/`426d50` off `DAT_140b15418`), **#7 Targeting** target-assign
+(writes the *target's* state via the selection/fire-control FSM — emit level not yet fully decoded).
+- Writes a *foreign* entity's order/AI state — **aliasable** (two writers can hit the same victim), so
+  not slot-shardable like Class 1, but no allocation and no RNG, so cheaper than Class 2.
+- **Verdict: buffer as commands, apply in canonical order.** Order matters only when two emitters
+  target the same victim; a deterministic emitter sort resolves it. This is exactly work-item #3's
+  "target acquire/release" command kind.
+
+### Class 3 — SFXEvent dispatch → **presentation, NOT a sim hazard (correction)**
+Behaviors: **#8 Telekinesis** HOLD/RELEASE (`2d5320`).
+- **`FUN_1402d5320` is the SFXEvent player**, not a GOM/gameplay write: it checks the SFXEvent's 2D/3D
+  flag (`+0x29`/`+0x2a`), forwards to `2d5440` to play, else logs *"SFXEvent '%s' not 2D or 3D
+  specified"*. Sound only. (Distinct from the adjacent `FUN_1402d5290`, which *is* the global order-queue
+  write `DAT_140b27e60` cited in the boundary scope above — do not conflate the two.)
+- **Correction to prior tracking:** #8's deferred "event dispatch `1402d5320`" was assumed a
+  GOM/state write. It is audio playback — outside lockstep state, no determinism impact.
+- **Verdict: not a Phase-A sim hazard.** Buffer SFX triggers and flush post-sweep (or hand to the
+  audio thread); ordering affects only which sound plays. With SFX peeled off, **#8 Telekinesis is
+  Phase-A-safe** — its GRAB/HOLD/RELEASE numeric cores all write own-entity state only.
+
+### Per-behavior seam map
+| Behavior | Cross-boundary write | Class | Verdict |
+|---|---|---|---|
+| #4 UnitAI | sensor grid `DAT_140b31900` (`657ce0`/`657db0`/`659760`) | 1 | shard by observer |
+| #5 Nebula | (read-only coupling only) | — | Phase-A-safe as-is |
+| #6 Asteroid | `CreateObject` fx (`29f810`) + LCG `DAT_140a13e24` | 2 | serialize (buffer + ordered commit) |
+| #7 Targeting | target-assign + projectile spawn (selection/fire FSM) | 2 / 2b | buffer + ordered apply (emit not fully decoded) |
+| #8 Telekinesis | SFXEvent (`2d5320`) | 3 | presentation → defer; behavior is Phase-A-safe |
+| #9 Lure | order lured unit + AI group/plan (`62b270`/`38d730`) | 2b | buffer + ordered apply |
+| #10 Reveal | fog reveal arrays `this[0x33]` (`365760`/`35d1b0`) | 1 | shard by observer (observer-private) |
+
+### What this resolves
+The IN-behavior write set (work-item #3) is **fully enumerated and classified**: two of three classes
+need only a sweep barrier (Class 1) or a low-frequency ordered command drain (Class 2/2b), and the
+third (Class 3) is not a sim hazard at all. The determinism contract (#4) reduces to two concrete
+invariants — **(i)** object-id append order and **(ii)** LCG draw order — both satisfied by draining
+the Class-2/2b command buffers in canonical entity order. The expensive per-tick mass (sensor/fog
+sweeps + the movement integration already scoped) is Class 1 / read-only → directly shardable; the
+serial tail is the Class-2/2b drain, which the measured Amdahl numbers already assumed small. This is
+the concrete realization of the boundary-scope's "command schema + buffers" and "determinism
+preservation" rows for the IN slice — still source-only to *build*, but the RE question of *what the
+commands are and which can avoid the buffer entirely* is now answered.
+
+---
+
 ## Known Threading Issues / TODO
 
 - [ ] Phase 1.3: Locate `Main Thread` creation — is it the process main thread or an explicitly created thread?
