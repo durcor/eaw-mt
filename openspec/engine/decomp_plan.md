@@ -764,7 +764,7 @@ sim state; out = presentation):
 | `NebulaBehaviorClass` | `0x437b60` | **IN** | ✅ **LIFTED + DTNEB ORACLE PASS** (behavior #5) — the "clean float integrator": STAGE 1 (unconditional) is a **semi-implicit damped harmonic oscillator** ramping nebula-effect intensity `(sub+0x11c)` toward equilibrium `(sub+0x120)` — `w=freq·2`, `inv=1/(1+wdt+0.48·wdt²+0.235·wdt³)`; STAGE 2 is a membership SM gated by a **time-based LINGER throttle** (`380bb0`: skip the spatial scan while `(now−enter_tick)/30 < grace`), edge-firing enter (`0x2b` ability-disable) / leave (`0x2c` re-enable). Cross-entity coupling is **READ-ONLY** (closer to Phase-A-safe than #4). In-game: spring **614503/614503 bit-exact**, 308 enters / 218 leaves; linger dormant in TR (full scan every in-nebula tick) |
 | `TelekinesisTargetBehaviorClass` | `0x63f210` | **IN** | 🟡 **ALL 3 MODES LIFTED (behavior #8, parts 1-3) + DTTK ORACLE PASS** — the Force force-grip effect (`<Type>FORCE_TELEKINESIS</Type>`; Palpatine/Luke-Darkside/Tremayne/Brakiss lifting an enemy *vehicle*): a **3-mode lifecycle SM** over slot `*(entity+0x160)` (mode at `slot+0x8`): 1 GRAB (interp to grip pose, `t>=1`→2), 2 HOLD (`63f730`: spin + 10%/0.2s damage + GOM), 3 RELEASE (`63f470`: interp back, `t>=1`→zero slot + re-enable abilities + GOM); else Idle; `slot==0`→NoOp `0x80650001`. Part 1 lifts the **shared interp-timeline core + dispatch** (`sim/telekinesis_target.{h,cpp}`): `now=sim_clock/hz`, `t=max((now−start)/dur,0)`, `complete=(1.0<=t)`; GRAB lerps `entity+0x80`→`DAT_140b15ac0+slot+0x14`, RELEASE→`slot+0x14`; on completion rebase `slot+0x24:=now` + change `slot+0x8`. **Part 2 lifts the HOLD body** (`63f730`, mode 2): spin/z-bob pose `pos_z = slot+0x14 + (sin(spin_t·omega)·bob_amp + height_offset)` (→`entity+0x80`) + a self-clocked periodic-damage scheduler (due iff `slot+0x48<=now && !=0`; rebase `+= slot+0x44`; damage to SELF; only the event dispatch `1402d5320` deferred). **Part 3 lifts the RELEASE body** (`63f470`, mode 3, the lifecycle terminus): shares the part-1 interp core (lerps toward the raw `slot+0x14`), adds the completion **teardown** — mode terminus `slot+0x8:=0`, sentinel `slot+0x4c:=0x3fffff`, damage disarm (`slot+0x40`/`0x48:=0`); the ability re-enable cascade + GOM dispatch `1402d5320` remain the **deferred** Phase-B env seam. 13 host cases + **DTTK ORACLE PASS** (land battles): completion biconditional **405/405** + rebase **17/17** + interp lerp **388/388** (part 1); z-bob pose bit-exact **174/174** + damage-deadline rebase **174/174**, 33 fires (part 2); RELEASE teardown terminus/sentinel/disarm **1/1/1** bit-exact (part 3 — edge count 1 because gripped units die to the grip's own damage before timed release; the teardown is a constant write so 1 confirms it). *(Part-2 caught a sub-ULP FP-non-associativity bug: codegen groups `slot_z+(sin·bob+off)`, not the decompile's flattened left-assoc.)* **All 3 modes now lifted.** |
 | `LureBehaviorClass` | `0x62b4c0` | **IN** | ✅ **NUMERIC CORE LIFTED (behavior #9) + DTLURE ORACLE PASS** — the lure/taunt toggle (A-Wing "sensor jamming" in space; EotH Flame_Tank on land): `0x62b4c0` is — like UnitAI #4 / Targeting #7 — a **cross-entity GOM-scan orchestration seam** (when a lure config `entity+0x1d8` exists + cooldown `+0xc<=tick` elapsed, scan the lure's target squads, and for each member within the lure radius `lure+0x20` of the lure beacon's position re-aim it at the lure via `FUN_14062b270`). Its ONE embedded pure bit-matchable numeric core is the **radius gate's squared distance**, the shared leaf `FUN_140397640` (62-byte pure leaf; also the optional `radius!=0` filter in `Find_All_By_Type` `0x2a9ff0`): `dist2 = (double)(dx*dx)+(double)(dy*dy)+(double)(dz*dz)` over float32 deltas/squares promoted to double, grouped `((dx2+dy2)+dz2)`. Lifted to `sim/geom_distance.{h,cpp}` (`geom_dist_sq` + Lure's predicate `geom_within_range` = `dist2<=(double)(range*range)`); codegen verified instruction-by-instruction via objdump (subss/mulss/cvtps2pd/addsd; FMA-safe). The scan/re-aim orchestration around the gate stays **DEFERRED** (same Phase-B GOM seam as #4/#7). 4 host case-groups + **DTLURE ORACLE PASS** (space battle, A-Wing sensor-jamming ability triggered): dist² bit-exact **9,385,977 / 0**, 125 zero-distance edges, dynamic range to ~0x1.78da8p+18; `logs/dtlure_oracle_pass.log` |
-| `RevealBehaviorClass` | `0x5373c0` | **IN** | fog-of-war reveal (sensor grid — MP-determinism-relevant) |
+| `RevealBehaviorClass` | `0x5373c0` | **IN** | ✅ **#10** numeric core LIFTED + DTREVEAL PASS (move-threshold gate; scan/reveal-emit = deferred Phase-B) — passive FOW revealer on ~every mobile unit |
 | `SelectBehaviorClass` | `0x3c2310` | **out** | UI selection-indicator animation (damped-spring on a *displayed* value) |
 | `HideWhenFoggedBehaviorClass` | `0x53ddc0` | **out** | render-visibility reaction to fog |
 
@@ -1268,6 +1268,44 @@ re-aim writes are cross-entity → the **deferred Phase-B GOM seam**, identical 
     fired ~9.3M times in seconds. Takeaway: confirm a candidate leaf's callers are actually *hot in
     reachable gameplay* before assuming an aim-geometry-scale (2M+) capture will materialize on its own.
     Capture saved `logs/dtlure_oracle_pass.log`; analyzer `tools/analyze_lure_distance_oracle.py`.
+
+**✅ Behavior #10 — `RevealBehaviorClass::vfunc_6` (`FUN_1405373c0`) numeric core LIFTED + DTREVEAL
+ORACLE PASS.** Reveal is NOT a special ability — it is the **passive fog-of-war revealer carried by ~every
+mobile unit** (`Land_FOW_Reveal_Range` on ~550 land units, `Space_FOW_Reveal_Range` on ~241 space units in
+this mod's XML). Each tick it must decide whether to recompute the set of objects it reveals; doing the full
+scan every tick is wasteful, so the engine **throttles the rescan on movement**. Like #4/#7/#9, the bulk of
+`0x5373c0` is a **cross-entity orchestration seam**: once the gate opens it walks the global object list
+(`DAT_140a16fd0`), runs a visibility/team predicate (`FUN_14039a2c0`) per object, and reveals each
+(`FUN_140365760` / `FUN_14035d1b0`) — the **deferred Phase-B emit seam** (live global-set reads +
+cross-boundary fog writes), same class as #4/#7/#9.
+  - **The one numeric core is that move-threshold gate** — a **2D (XY-only) float32 squared move distance**:
+    `dx = entity.x(+0x78) - last.x(+0x40)`, `dy = entity.y(+0x7c) - last.y(+0x44)`,
+    `moved_sq = dx*dx + dy*dy`, **skip the rescan iff `moved_sq < threshold(+0x48)`**. After a rescan it
+    stores `cur` back into `+0x40/+0x44`. (`last`/`threshold` live on the behavior `this`; `cur` on the
+    entity.) Distinct from #9's `FUN_140397640` in every respect — **2D not 3D, and it stays entirely in
+    float32** (`subss/mulss/mulss/`**`addss`**`/comiss`, NO `cvtps2pd`/`addsd` double promotion), compared
+    with **strict `<`** (comiss/jb) not `<=`. My earlier "Reveal likely reuses #9's leaf" prediction was
+    therefore **wrong** — it has its own fresh (if thin) primitive. Lifted to `sim/reveal_gate.{h,cpp}`
+    (`reveal_moved_sq` + `reveal_skip_rescan`), all ops kept in `float`; host test `reveal_gate_test.cpp`
+    (5 groups incl. a float32-not-double check) ALL PASS.
+  - **Exact codegen (verified instruction-by-instruction via objdump @0x5374ba):**
+    `subss xmm1,[rsi+0x40]; subss xmm0,[rsi+0x44]; mulss xmm1,xmm1; mulss xmm0,xmm0; addss xmm1,xmm0;
+    comiss xmm1,[rsi+0x48]; jb …`. Single float32 add → grouping `(dx²+dy²)` is trivially unambiguous.
+  - **DTREVEAL oracle** (`reveal_5373c0_hook`, lean `EAW_ORACLE` build): unlike #9's leaf the gate is
+    **mid-function and the binary never persists `moved_sq`**, so the oracle trampolines at the **function
+    entry** (20-byte position-independent prologue), snapshots `cur` + `last`/`threshold` **before** the
+    call (the rescan path overwrites `+0x40/+0x44`), then compares the lifted `dx*dx+dy*dy` against an
+    **inline-asm transcription of the gate's exact SSE sequence** (`subss/subss/mulss/mulss/addss`)
+    **bit-for-bit** (`memcmp` on the 4 float bytes). This validates the lift reproduces the binary's
+    instructions (no FMA contraction / double promotion / reassociation) across the live in-game input
+    distribution. **Result over a space battle: moved_sq 1,023,031 / 0 — every evaluation bit-exact, 0
+    bad**, coverage 169,061 stationary + 947,212 skip + 75,819 rescan (both gate branches + the no-move case
+    all heavily exercised), max moved² 0x1.b1dcf8p+26. *(An earlier partial — 3752/0 — was cut by a game-side
+    land-load crash: `av_read @0x9` in `StarWarsG.exe` at `mod_rva 0x7bd914`, unrelated to the transparent
+    `winmm.dll` trampoline — same class as the known transition crashes.)* Unlike #9, the gate is **hot
+    without any trigger** (passive on every moving unit), so coverage self-materialized immediately — the
+    inverse of the #9 cold-leaf lesson. Capture saved `logs/dtreveal_oracle_pass.log`; analyzer
+    `tools/analyze_reveal_gate_oracle.py`.
 
 #### (Original pre-Phase-2 Phase-3 list — SUPERSEDED, kept for history)
 1. ~~Tick clock / scheduler — `FUN_14027c360`, `DAT_140b0a320/340`, FF gate `0x9cf314`.~~ (still valid)
