@@ -56,4 +56,23 @@ bool SimRng::percent(int pct) {
     return true;                     // pct == 100 -> always (no draw); else draw < pct
 }
 
+// Per-entity substream seeding (see sim_rng.h). SplitMix64 finalizer, fed the tuple one word at a
+// time through distinct odd multipliers so every input bit avalanches into the 32-bit seed. Pure
+// unsigned arithmetic — identical result on every platform (the lockstep requirement). NOT derived
+// from any binary function; this is the parallel-rewrite RNG retrofit.
+static u64 splitmix64(u64 z) {
+    z += 0x9e3779b97f4a7c15ull;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
+}
+
+SimRng SimRng::substream(u32 base_seed, u32 entity_id, u32 channel, u32 tick) {
+    u64 h = (u64)base_seed;
+    h = splitmix64(h ^ ((u64)entity_id * 0x9e3779b97f4a7c15ull));
+    h = splitmix64(h ^ ((u64)channel   * 0xc2b2ae3d27d4eb4full));
+    h = splitmix64(h ^ ((u64)tick      * 0x165667b19e3779f9ull));
+    return SimRng((u32)(h ^ (h >> 32)));   // fold to the 32-bit LCG state width
+}
+
 } // namespace eaw

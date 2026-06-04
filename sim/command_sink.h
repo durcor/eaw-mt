@@ -125,6 +125,21 @@ struct SfxCommand {
     uint32_t sfx_id  = 0;
 };
 
+// One buffered object-creation op (channel = Class 2). Models the inline
+// GameObjectManager::CreateObject (FUN_14029f810) call a Phase-A unit would run to spawn a
+// projectile / impact-fx / detached child. Deferred to the serial Phase-B drain because CreateObject
+// APPENDS to the global registry (the new object's id == append order) and advances the shared sim
+// LCG — the two lockstep invariants. CRUCIALLY there is NO pre-assigned id field: the drain calls
+// CreateObject in canonical requester order, and the append assigns the id, so every new id is
+// identical to the serial tick (invariant I1). The lifted unit only records WHAT to spawn, never WHERE
+// in the id space. See sim_parallel_command_schema.md §6.2.
+struct SpawnCommand {
+    void*    requester   = nullptr;  // emitting GameObject* (ownership/team/parenting; 29f810 param_1)
+    uint32_t template_id = 0;        // object-type/template (29f810 param_2)
+    float    pos[3]      = {0, 0, 0};// world spawn position (29f810 param_4)
+    uint32_t flags       = 0;        // spawn-kind packed (projectile / fx / detached; param_3/6/7)
+};
+
 // The Phase-A seam. Lifted compute units take a CommandSink& and EMIT instead of dispatching
 // inline. A trivial recording sink is enough for host tests; the real Phase-B implementation
 // replays buffered commands against the live SignalDispatcherClass / OutgoingEventQueueClass in
@@ -149,6 +164,12 @@ struct CommandSink {
     // A lifted unit emits here and the serial drain (drain_sfx, sfx_channel.h) routes to an SfxSink.
     // Default no-op so units that ignore audio need not override.
     virtual void emit_sfx_event(void* /*emitter*/, uint32_t /*sfx_id*/) {}
+
+    // Object creation (Class 2). Mirrors the inline GameObjectManager::CreateObject (FUN_14029f810)
+    // a unit runs to spawn a projectile/fx/child. Recorded, never run inline: the Phase-B drain calls
+    // CreateObject in canonical requester order so the appended id matches the serial tick (I1). See
+    // sim_parallel.h for the buffer + drain. Default no-op so units that never spawn need not override.
+    virtual void emit_spawn(const SpawnCommand& /*cmd*/) {}
 
     // Galactic/strategic OutgoingEventQueueClass (DAT_140b2ed18). A genuine timed/scheduled queue
     // ordered by (fire_time, insertion), but it lives OUTSIDE this tactical sim slice — no lifted

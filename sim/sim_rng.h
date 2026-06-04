@@ -45,6 +45,27 @@ struct SimRng {
     // (s>>10)&0x7f rejected while > 100 (uniform 0..100), return draw < pct. (Slight off-by-one:
     // 101 buckets, so P(true) ≈ pct/101, matching the engine exactly.)
     bool percent(int pct);
+
+    // ── Per-entity substream (parallel-rewrite retrofit; NOT in the original binary) ──────────────
+    // The live engine draws every sim decision from ONE global LCG word (DAT_140a13e24), so the draw
+    // SEQUENCE is a lockstep invariant (I2) that forces a serial draw order. The parallel rewrite
+    // removes I2 entirely by giving each GameObject its OWN deterministic stream, seeded from a hash
+    // of (base_seed, entity_id, channel, tick). Each Phase-A object draws from substream(...) instead
+    // of the global word, so draws need NO cross-thread ordering and the Phase-B drain never
+    // serializes RNG (sim_parallel_command_schema.md §4).
+    //
+    // IMPORTANT: this CHANGES which numbers come out vs. the global-LCG binary — it is a determinism
+    // RETROFIT, not a bit-exact lift. The contract it must honour is *reproducibility*: identical
+    // (base_seed, entity_id, channel, tick) yields an identical sequence on every platform and
+    // regardless of when/in-what-order substreams are created. The per-call draw semantics
+    // (range_i/range_f/percent, incl. the draw COUNT) are unchanged — only the stream SOURCE moves.
+    //
+    // Seeding uses a SplitMix64 finalizer over the tuple so adjacent entity ids fully decorrelate
+    // (re-seeding the Park-Miller LCG with sequential ids would correlate their first outputs). All
+    // ops are defined unsigned integer arithmetic → bit-reproducible across compilers/architectures.
+    // `channel` separates independent draw purposes for one entity (e.g. 0 = targeting, 1 = spawn
+    // rolls) so they don't alias; `tick` re-keys each frame.
+    static SimRng substream(u32 base_seed, u32 entity_id, u32 channel, u32 tick);
 };
 
 } // namespace eaw

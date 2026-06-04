@@ -214,12 +214,23 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
 
 - **Lifted / host-testable now:** the Phase-A compute units (#1–#10 numeric cores, locomotors, spine,
   hardpoint, RNG `eaw::SimRng`) and the `CommandSink` emission seam (`Command`/`SfxCommand`).
-- **Specified here, not built:** `SpawnCommand`, the per-entity substream `SimRng::substream`, the
-  Phase-B canonical-order drain, the double-buffered frozen snapshot (boundary-scope work-item #2), and
-  the object-granular shard scheduler. All require engine source.
+- **✅ BUILT (2026-06-04, host-validated — this doc's command system):**
+  - `SpawnCommand` op + `CommandSink::emit_spawn` (`sim/command_sink.h`) — §6.2.
+  - `SimRng::substream(base_seed, entity_id, channel, tick)` per-entity substream (`sim/sim_rng.{h,cpp}`),
+    SplitMix64-seeded, removing invariant I2 — §4. NB: a determinism *retrofit* (changes the numbers
+    vs the global-LCG binary), so its contract is reproducibility, not bit-equivalence to the original.
+  - `ShardBuffer` (a `CommandSink` that tags each op `(entity_id, seq)`) + the Phase-B
+    `drain_parallel` canonical-order merge/apply (`sim/sim_parallel.{h,cpp}`) — §7.
+  - The §9 determinism gate as a host test (`sim/tests/sim_parallel_test.cpp`, in `just sim-test`):
+    N-shard ≡ serial bit-identical for N∈{1,2,4,8} × {round-robin, contiguous} × shuffled order;
+    spawn-id stability; replay-determinism proxy; substream reproducibility/order-independence.
+- **Still requires engine source (not built):** the double-buffered frozen snapshot (boundary-scope
+  work-item #2) and the object-granular shard scheduler; the `WorldApply` *real* implementation
+  (the host test uses a recording stand-in) that calls the live `CreateObject` / `SignalDispatcher::emit`.
 - **Out of scope (deliberately serial):** the AI Lua pump (≈0.02ms/tick — left serial sidesteps the
   shared-`global_State` problem, boundary-scope work-item #5).
 
 This closes the RE side of the parallelization question: the write set is enumerated, classified, and
-given concrete op types + a drain that provably preserves lockstep. What remains is implementation,
-which is source-only.
+given concrete op types + a drain that provably preserves lockstep. The op types, the per-entity RNG,
+and the canonical-order drain are now built and host-validated; what remains (snapshot, scheduler, the
+real `WorldApply`) is engine-source integration.
