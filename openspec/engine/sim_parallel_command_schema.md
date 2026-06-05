@@ -232,13 +232,29 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
     N-shard ≡ serial bit-identical for N∈{1,2,4,8} × {round-robin, contiguous} × shuffled order;
     spawn-id stability; replay-determinism proxy; substream reproducibility/order-independence.
 - **🟡 Real `WorldApply` adapter + in-game oracle — BUILT & RUN (2026-06-05, Increment 1, hook-side,
-  no live mutation; `hooks/winmm_proxy.c` DTWA, evidence `eaw-mt.log.dtwa-round{1,2}`):** the adapter
+  no live mutation; `hooks/winmm_proxy.c` DTWA, evidence `eaw-mt.log.dtwa-obj50-pass` [spawn/I1] +
+  `eaw-mt.log.dtwasig-pass` [signal/schema]):** the adapter
   (`eng_world_manager`/`eng_create_object`/`eng_apply_signal`/`eng_flush_sfx`) resolves the live
   manager and drives `FUN_14029f810` / `FUN_140240940` / `FUN_1402d5290`; the DTWA-SPAWN/DTWASIG entry
-  detours validate it against the engine's own calls. Findings (multi-tick, ~64k spawns / ~370k signals):
-  - ✅ **Schema fidelity** — `schemafit=100%` (every `CreateObject` carries a readable `pos`); DTWASIG
-    traffic is rich and all-sane (`sigs={2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,24,e,1d,…}`, incl.
-    the modeled 0x20/0x21/0x1c/0x28/0x29). `SpawnCommand`/`Command` losslessly represent live ops.
+  detours validate it against the engine's own calls. Findings (multi-tick, ~9.7k spawns / ~118k signals):
+  - ✅ **Schema fidelity** — `schemafit=100%` (every `CreateObject` carries a readable `pos`).
+    DTWASIG (clean isolated re-capture 2026-06-05, `eaw-mt.log.dtwasig-pass`, ~118k emits over a
+    multi-battle run): every Class-2b `Command` field is **losslessly recoverable** — `emok=100%`
+    (dispatcher always a real ptr ⇒ `emitter = dispatcher-0x38` always computable), `sigok=100%`
+    (`sig_id` always a small enum), `disp0=0`. `sigover=0` (≤17 distinct ids, well under the table).
+    **Two refinements vs the model:**
+    - **`payload` is NULLABLE** — `pl0≈82%` of emits carry no payload blob; the dominant ids are bare
+      notifications (`0x0`, `0x10`, `0x28`, `0x18`). `Command.payload` (a nullable pointer) represents
+      this faithfully; an emit is not required to carry a payload.
+    - **`240940` is a *general* signal bus, not just the Class-2b gameplay channel** — the modeled
+      gameplay-order ids are a **subset** of live traffic. Observed histogram (per-1024-tick):
+      `{0:33812, 10:29084, 28:29079, 18:20905, 20:4042, 21:428, 2f:232, 1e:161, 9:121, b:96, a:77,
+      1c:15, 19:11, 16:1, 29:1, 25:1, 24:1}` — the modeled set `{1c,20,21,28,29}` is present (fire-order
+      `0x20` and opp-target `0x21` carry payloads and grow with combat), interleaved with engine-internal
+      notifications. The schema models the gameplay-order subset; the bus carries more, and the three
+      fields are recoverable for **all** of them. Canonical emission order = the live fan-out's
+      insertion-order walk (established by the `240940` lift itself, `sim/signal_dispatch.{h,cpp}`); not
+      separately re-measured here, so the order-fidelity check is satisfied by the lift, not by DTWASIG.
   - ⚠️ **Manager is multi-instance** — `eng_world_manager()` (=`*(combat+0x18)`) matches only ~82% of
     battle spawns; ~18% use a sibling manager (`DTWAMGR`: engine `0x35878ff0` vs resolved `0x358705e0`,
     ~0x89a0 apart). ⇒ the real `WorldApply::create_object` must resolve the manager from the
