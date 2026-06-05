@@ -3839,6 +3839,61 @@ static uint32_t g_dtwa_detail = 0;      /* first-N per-call detail lines */
  * the per-manager counter mgr+0x620. We snapshot BOTH before the call and validate against the one the
  * flag selects, so the check holds in every game mode. */
 #define DTWA_GLOBAL_CTR_RVA 0xb15460ULL
+/* ── DT-DRAIN (milestone a0, inproc_integration_milestone.md §1): in-game validation of the §7 canonical
+ * drain key. FUN_1403a76b0 services each ship in master-list VISITATION order; b3a76b0_hook stamps the
+ * current emitter's (visitation rank, obj+0x50 id) and opens an attribution window around the real call,
+ * so a projectile spawn (29f810) fired inside that window is attributed to the firing ship. At each
+ * emitter TRANSITION within a tick we count how the two candidate drain keys move in emission order:
+ *   rank_down : a later emitter had a SMALLER rank   -> the (rank,seq) key INVERTS emission order  (expect 0)
+ *   id_down   : a later emitter had a SMALLER obj+0x50 -> emission order is descending-id (head-insert)
+ *   id_up     : a later emitter had a LARGER  obj+0x50 -> an ascending-id sort agrees with emission order
+ * Headline (the in-game analogue of shard_scheduler_test's negative control):
+ *   rank_down == 0   => (gom,rank,seq) reproduces the live serial emission order, AND
+ *   id_down  >> id_up => an (object_id,seq) drain key would REORDER the creates -> desync.
+ * Observe-only; no control-flow change; all under dt_on() (EAW_DIFFTRACE=1). */
+static uint32_t g_drain_tick      = 0xFFFFFFFFu;
+static uint32_t g_drain_rank      = 0;     /* per-tick visitation counter (reset each tick) */
+static uint32_t g_drain_cur_rank  = 0;     /* visitation rank of the ship currently in 3a76b0 */
+static int32_t  g_drain_cur_objid = 0;     /* obj+0x50 of that ship */
+static int      g_drain_in_window = 0;     /* inside the 3a76b0 trampoline => a spawn is attributable */
+static int      g_drain_have_prev = 0;     /* per-tick: a prior distinct emitter has been recorded */
+static uint32_t g_drain_prev_rank = 0;
+static int32_t  g_drain_prev_objid= 0;
+static uint32_t g_drain_attr=0, g_drain_unattr=0, g_drain_trans=0,
+                g_drain_rank_up=0, g_drain_rank_down=0,
+                g_drain_id_up=0, g_drain_id_down=0, g_drain_id_eq=0;
+static uint32_t g_drain_last=0xFFFFFFFFu, g_drain_detail=0;
+
+/* run the real FUN_1403a76b0 with the spawn-attribution window open. */
+static inline void dt_drain_tramp(int64_t ship, int32_t t) {
+    g_drain_in_window = 1; g_a76b0_trampoline(ship, t); g_drain_in_window = 0;
+}
+
+/* attribute one firing-path spawn to the current 3a76b0 emitter and update the key-inversion counts. */
+static inline void dt_drain_on_spawn(void) {
+    if (!g_drain_in_window) { g_drain_unattr++; return; }   /* Pass-D / death / non-firing create */
+    g_drain_attr++;
+    if (!g_drain_have_prev) {
+        g_drain_have_prev = 1;
+        g_drain_prev_rank = g_drain_cur_rank; g_drain_prev_objid = g_drain_cur_objid;
+        return;
+    }
+    if (g_drain_cur_rank == g_drain_prev_rank) return;       /* same emitter (more shots) — not a transition */
+    g_drain_trans++;
+    if (g_drain_cur_rank > g_drain_prev_rank) g_drain_rank_up++; else g_drain_rank_down++;
+    if      (g_drain_cur_objid > g_drain_prev_objid) g_drain_id_up++;
+    else if (g_drain_cur_objid < g_drain_prev_objid) g_drain_id_down++;
+    else                                             g_drain_id_eq++;
+    if (g_drain_detail < 48) {
+        char db[160];
+        snprintf(db, sizeof db, "DTDRAIN1\tev=%u\ttick=%u\tprev_rank=%u\tprev_id=%d\tcur_rank=%u\tcur_id=%d\n",
+                 g_drain_detail, g_drain_tick, g_drain_prev_rank, g_drain_prev_objid,
+                 g_drain_cur_rank, g_drain_cur_objid);
+        log_write(db); g_drain_detail++;
+    }
+    g_drain_prev_rank = g_drain_cur_rank; g_drain_prev_objid = g_drain_cur_objid;
+}
+
 static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
                                 const float *pos, int64_t p5, int8_t p6, int8_t p7) {
     /* snapshot BOTH id counters + the path-select flag BEFORE the append. */
@@ -3853,6 +3908,7 @@ static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
     int64_t ret = g_dtwa_29f810_trampoline(mgr, template_id, flags, pos, p5, p6, p7);
     if (!dt_on() || !have_before) goto dtwa_diag;
     if (ret == 0) { g_dtwa_null++; goto dtwa_diag; }
+    dt_drain_on_spawn();   /* DT-DRAIN a0: attribute this create to the current 3a76b0 emitter */
     {
     int32_t own_id    = *(int32_t *)(ret + DTWA_OBJ_OWNID_OFF);   /* the I1 subject */
     int32_t owner_ref = *(int32_t *)(ret + DTWA_OBJ_OWNER_OFF);   /* param_3 (for the detail line only) */
@@ -3923,6 +3979,13 @@ dtwa_diag:
             g_dtwa_idfail, g_dtwa_ctrfail, g_dtwa_satur, g_dtwa_errpath,
             g_dtwa_mgr_pass, g_dtwa_mgr_fail, g_dtwa_schemafit, g_dtwa_null);
         log_write(db);
+        /* DT-DRAIN a0 summary: the canonical-key vs object_id-key inversion counts. */
+        char dd[256];
+        snprintf(dd, sizeof dd,
+            "DTDRAIN\ttick=%u\tattr=%u\tunattr=%u\ttrans=%u\trank_up=%u\trank_down=%u\tid_up=%u\tid_down=%u\tid_eq=%u\n",
+            tk, g_drain_attr, g_drain_unattr, g_drain_trans, g_drain_rank_up,
+            g_drain_rank_down, g_drain_id_up, g_drain_id_down, g_drain_id_eq);
+        log_write(dd);
       } }
     return ret;
 }
@@ -4030,6 +4093,15 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
     int64_t  arr = 0;
     float    total_w = 0.0f;
 
+    /* DT-DRAIN a0: stamp this ship's master-list visitation rank + obj+0x50 id (reset per tick).
+     * Runs for EVERY serviced ship before any early return, so the attribution covers all firers. */
+    if (ship && g_dt_frame_ctr && dt_on()) {
+        uint32_t dtk = *g_dt_frame_ctr;
+        if (dtk != g_drain_tick) { g_drain_tick = dtk; g_drain_rank = 0; g_drain_have_prev = 0; }
+        g_drain_cur_rank  = g_drain_rank++;
+        g_drain_cur_objid = *(int32_t *)(ship + 0x50);
+    }
+
     if (ship && g_dt_frame_ctr && dt_on()) {
         int64_t vec = *(int64_t *)(ship + 0x2d0);
         /* same gate as the engine: vector present and (ship+0x3a0 & 0x40)==0 */
@@ -4043,7 +4115,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
         }
     }
 
-    if (!cheap) { g_a76b0_trampoline(ship, tick_param); return; }
+    if (!cheap) { dt_drain_tramp(ship, tick_param); return; }
 
     /* --- survey accounting + periodic flush (settles dormant-vs-mislatched) --- */
     uint32_t tick = *g_dt_frame_ctr;
@@ -4065,7 +4137,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
 
     /* only a ship that can actually distribute (total_w>0 and some budget) goes to the
      * snapshot + consumption-latched oracle emission below */
-    if (!(total_w > 0.0f && has_budget)) { g_a76b0_trampoline(ship, tick_param); return; }
+    if (!(total_w > 0.0f && has_budget)) { dt_drain_tramp(ship, tick_param); return; }
 
     /* --- snapshot each active mount's budget+weight BEFORE distribution.
      * We do this for EVERY qualifying ship (not just the latched one) so we can detect
@@ -4086,7 +4158,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
         } else { act[i] = 0; b0[i] = 0.0f; w[i] = 0.0f; }
     }
 
-    g_a76b0_trampoline(ship, tick_param);
+    dt_drain_tramp(ship, tick_param);
 
     /* --- after: re-read budgets (387010 leaves mount+0x28 untouched) + detect consumption --- */
     int consumed = 0;
