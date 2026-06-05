@@ -230,7 +230,37 @@ Phase A), so the drain itself introduces no FP-order divergence.
 | #8 Telekinesis | `SfxCommand` (grip dmg cue); own-entity pose/damage | 3 (+ safe) |
 | #9 Lure | `Command` (order lured unit + AI-group edit) | 2b |
 | movement `387400` | `Command` 0x20/0x21 fire-order/opp-target + `SfxCommand`; RNG via substream | 2b / 3 |
-| firing `381ff0` | `SpawnCommand` (projectile) | 2 |
+| firing `3825b0` (from `387400` fire-control) | `SpawnCommand` (projectile) + `SfxCommand` (muzzle) | 2 / 3 |
+| turret-aim `381ff0` (render bone) | nothing — Class-3 presentation, `render_node_gate` only | 3 |
+
+> #### ✅ I3 — firing → projectile-spawn emit site VERIFIED + a wrong attribution CORRECTED (2026-06-05)
+> Decomp-program Increment I3. The program doc's gap (A) named `381ff0` as "firing → `3825b0` →
+> Class-2 spawn". **That chain is wrong.** Ground truth:
+> - **`381ff0` is the turret/hardpoint BONE-AIM** (rotates the weapon's render bone toward the target via
+>   `HolsterWeaponBehaviorClass::12d480`, rate-limited with `wrap_180`); it is gated on
+>   `owner_record.render_node_gate (+0x4e) == 1`, writes only render-bone matrices, and **does NOT call
+>   `3825b0`**. ⇒ **Class-3 presentation**, off-lockstep; the bone-cache leaves
+>   (`385cf0`/`12d2a0`/`12d430`/`12d2c0`/`12d480`) are render-path and **out of the sim Phase-A**.
+> - **The real projectile spawn is `387400` (fire-control) → `3825b0` → `29f810`** (`3825b0:266`). Across
+>   its whole 4034-byte body there is **exactly one** `29f810` (the projectile) and **exactly one**
+>   `2d5240`→`DAT_140b27e60` (the muzzle SFX queue); the target (`param_2`) is only ever **read** (sim pos
+>   `+0x78/+0x80`). **No cross-entity write, no new invariant** — the firing emit is precisely
+>   **`SpawnCommand` (Class 2) + `SfxCommand` (Class 3)**, both already in the schema.
+> - **SpawnCommand payload:** `requester` = firer hardpoint-ctx (manager `+0x2b8`, id `+0x50`); `template`
+>   = weapon/projectile def; `flags` = `registry[firer.type_index]+0x4c`; `pos`/orientation from the
+>   firing solution (`399450` intercept → `381dc0` lead → `20acd0` direction→Euler — **`20acd0` is the
+>   already-lifted #7 aim-geometry**). Post-create self-init (owner-id = firer `object_id`, damage, speed,
+>   lifetime) writes only the NEW object → part of the same serial Class-2 apply.
+> - **Fire decision is per-firer/shardable:** reads the firer's own state + the **target's frozen** state
+>   (pos, flags, team). The render-node firing-ARC gate (`3825b0:112-146`, `385cf0`+`12d2c0` bone matrix)
+>   is dead in the tactical sim (`+0x4e==0` for all serviced components per Phase-2) → uniformly skipped,
+>   deterministic. The liftable numeric core of the firing body is the intercept solution `399450`/`381dc0`
+>   (same category as the lifted #7 `20acd0`, which it reuses); `3825b0`'s outer range/LOS/ammo logic is
+>   per-firer decision orchestration (the deferred emit-FSM seam, shards cleanly by firer).
+>
+> Net: gap (A) closes as **two existing command types, no new invariant**; the read-set gains the
+> target's frozen fields (feeds Int. #2 / D-gap). In-game confirmation = DIFFTRACE fire-cadence + DTWA on
+> the projectile spawn (optional — the emit reduces to validated Class-2/Class-3 paths).
 
 ---
 

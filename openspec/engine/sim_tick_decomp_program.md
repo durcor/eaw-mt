@@ -57,10 +57,15 @@ math level, not just by object-granular sharding.
 
 Four gaps, all bounded:
 
-- **(A-gap) The firing → projectile-spawn sub-path** — `FUN_140387010`'s firing branch:
-  `FUN_140381ff0` (firing, 135 lines) → `FUN_1403825b0` (movement/fire orders, 507 lines), plus the
-  bone-cache leaves `FUN_140385cf0` / `FUN_14012d2a0` / `FUN_14012d430` (render-node index lookup+lock).
-  This is the **one Phase-A body emit site not yet lifted** — it terminates in a Class-2 projectile spawn.
+- **(A-gap) The firing → projectile-spawn sub-path** — ✅ **I3 RESOLVED 2026-06-05, and the original
+  chain here was WRONG.** `FUN_140381ff0` is NOT the spawn — it is the **turret BONE-AIM** (Class-3 render
+  presentation, gated on `render_node_gate +0x4e==1`, writes render-bone matrices via `12d480`; the
+  bone-cache leaves `385cf0`/`12d2a0`/`12d430`/`12d2c0` are render-path, **out of the sim Phase-A**). The
+  real projectile spawn is **`FUN_140387400` (fire-control) → `FUN_1403825b0` → `FUN_14029f810`**
+  (`3825b0:266`). Its entire 4034-byte body makes **exactly one** Class-2 spawn + **one** Class-3 muzzle
+  SFX, with the target read-only ⇒ **no cross-entity write, no new invariant** (= existing `SpawnCommand`
+  + `SfxCommand`). Liftable numeric core = the intercept solution `399450`/`381dc0` (reuses the lifted #7
+  `20acd0`). See `sim_parallel_command_schema.md` §8 I3 box.
 - **(B-gap) The Class-2 apply internals** — `FUN_14029f810` `CreateObject` beyond the id allocator:
   `FUN_14020a9b0` (the bucket-insert primitive, **not yet in `decomp/`**, called ~12× into
   `mgr+0x38/+0x408/+0xc8[slot]/+0x1c8/+0x210/+0x258/+0x2a0/+0x2e8/...`), `FUN_140769c58` (alloc),
@@ -109,7 +114,7 @@ host-compilable and oracle-validated — the project's proven loop.
 |---|---|---|---|---|---|
 | **I1** ✅ | **Struct completion for the closure** — lay out `GameObjectClass` (the `+0x38` service ptr, `+0x2b8` mgr, hardpoints, `+0x3a0` flags, transform `+0x78..`), `HardPointClass`, `HardPointOwnerRecord`, `GameObjectManager` (the `29f810` bucket offsets + `+0x620`/`+0x63e`/`+0x80`) into the struct DB. Unlocks readable decompiles for all gaps **and** DIFFTRACE transform-value coverage (D-gap). | (D) + readability | n/a (enables) | Low (mechanical, tooling exists) | **DONE 2026-06-05** — +20 named fields applied (`Phase2ApplyStructs.java`); GOM-create / id-allocator cluster ground-truthed (`obj+0x50` id, `obj+0x2b8` mgr, GOM bucket offsets, `+0x620`/`+0x63e` counters) and verified in `decomp/29f810.c`/`388b60.c`/`3825b0.c`. See `data_structures/movement_structs.md` §I1. |
 | **I2** ✅ | **GOM apply internals** — lift `FUN_14020a9b0` (bucket-insert), the ~12 bucket layouts, `769c58` alloc, finish `388b60` construct, observer-sweep `294bc0`/`2823e0`/`289010`. Realize `EngineWorldApply::create_object` faithfully (incl. the contract's `requester+0x2b8` manager resolution). | (B) | DTWA extended to **bucket membership** (new object appears in the same ~12 buckets the binary inserted it into) + existing I1 | **Med** (12 bucket types) | **DONE 2026-06-05 (static)** — all buckets = one type (`ReferenceListClass::insert`, head-insert SET); id-map keyed by `obj+0x50` (order-independent); observer sweep observer-slot-disjoint; manager = `requester+0x2b8` confirmed at `3825b0:266`. **NO invariant beyond I1; create_object DELEGATES to `29f810`.** `schema §6.2` verification box. In-game bucket-membership oracle = OPTIONAL belt-and-suspenders (membership is reproduced by construction since we call the same fn). |
-| **I3** | **Firing / projectile-spawn sub-path** — lift `381ff0` + `3825b0` + bone-cache `385cf0`/`12d2a0`/`12d430`; route its projectile creation through `emit_spawn` (Class 2). | (A) | DIFFTRACE structural (same fire decisions/cadence under same state) + DTWA spawn for the projectile | Med | reconstruction emits the same spawn ops the binary's firing path did, over a capture |
+| **I3** ✅ | **Firing / projectile-spawn sub-path** — ~~lift `381ff0`~~ (corrected: `381ff0` = render turret-aim, out of scope) — characterize `3825b0` (the real spawn, from `387400`); route projectile creation through `emit_spawn` (Class 2). | (A) | DIFFTRACE structural (same fire decisions/cadence under same state) + DTWA spawn for the projectile | Med | **DONE 2026-06-05 (static)** — firing emit = `SpawnCommand` (Class 2) + `SfxCommand` (Class 3), target read-only, **no cross-entity write / no new invariant**; manager `requester+0x2b8` (reconfirms I2). Numeric core = `399450`/`381dc0` (reuses #7 `20acd0`). In-game DTWA/DIFFTRACE = optional confirmation. `schema §8` I3 box. |
 | **I4** | **Iteration-set lift** — turn the driver's serviced-set + order into an explicit ordered owned-object list for `ShardScheduler::run` (characterize, don't reconstruct `28d400`). Resolve the indirect service-dispatch only far enough to know *what* is iterated and *in what order*. | (C) | DIFFTRACE serviced-set + order match | **Med-High** (indirect-dispatch fan-out — but DIFFTRACE already pins the empirical set) | the explicit list reproduces DIFFTRACE's serviced set+order tick-for-tick |
 | **I5** | **Assemble the host Phase-A/B tick** on the reconstruction + realize `FrozenSnapshot` (Int. #2) and `ShardScheduler` (Int. #3) from the contract; wire `EngineWorldApply` (Int. #1). | the contract's 3 interfaces | §9 determinism gate (N∈{1,2,4,8} ≡ serial) **+** in-game DIFFTRACE equivalence vs the serial binary; contract §5 gate | High (integration) | parallel host tick is bit-identical to serial; in-game 1-shard replay holds lockstep |
 
