@@ -287,10 +287,28 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
       object's own id, so the oracle's `i1_c20=0 / reused≈100% / grew1=0` measured an owner reference, not
       an allocator — a **wrong-field harness bug, the DTSPL2 lesson recurring** (read the wrong field of the
       right object). The "free-list pop order" net implication is therefore unsupported.
-    - **Confirmation still owed (mirrors the DTSPL2 close):** re-point the DTWA oracle from `obj+0x58` to
-      `obj+0x50` and re-capture — expect strictly monotonic, gap-free increment per manager. Only after
-      that in-game proof should §4/§6.2 be reworded and the two retraction-candidate bullets above be
-      struck. **Per Rule 6 (contradicts committed findings) this rewrite is gated on human sign-off.**
+    - **✅ CONFIRMED in-game (2026-06-05, DTWA re-pointed to `obj+0x50`, evidence `eaw-mt.log.dtwa-obj50-pass`):**
+      re-ran the DTWA-SPAWN oracle reading `obj+0x50` and snapshotting the allocator counter before/after
+      each real `CreateObject`. Over **9,756 spawns @ tick 1024**: `id_eq_ctr=9756 grew1=9756 mono=9756
+      idfail=0 ctrfail=0 null=0` — every spawn's own id equals the counter's pre-increment value and the
+      counter advances by exactly one. `own_id` runs strictly +1, gap-free (162169→…). **Object ids ARE a
+      dense, monotonic, gap-free allocation — §4(I1)/§6.2's *intent* is vindicated; the earlier
+      `i1_c20=0/reused≈100%/grew1=0` was the wrong-field (`obj+0x58`) artifact, now retired.**
+    - **Mechanism refinement the capture forced (beyond the static read):** the id source is NOT a single
+      per-manager counter — it is **one of two**, selected by the manager flag `mgr+0x63e`:
+      (a) flag SET → `FUN_1402ac980` delegates to `FUN_14028a9e0(&DAT_140b153e0)`, a post-increment of the
+      **global** counter `DAT_140b153e0+0x80` (RVA 0xb15460; decomp/28a9e0.c) — gives process-wide-unique
+      ids; (b) flag CLEAR → post-increment the **per-manager** counter `mgr+0x620`. Both paths fired in one
+      run (errpath/global=6334, per-manager=3422) and **both passed** the equality+grew-by-one check.
+      ⇒ §4(I1)'s mechanism should be restated as "post-increment of the active monotonic id counter
+      (global `DAT_140b153e0+0x80` when `mgr+0x63e` set, else per-manager `mgr+0x620`)", not "registry-vector
+      count".
+    - **Manager-resolution caveat sharpened:** `mgr_fail=3422` correlated **exactly** with the per-manager
+      (flag-clear) population, while every global-path spawn resolved the combat singleton cleanly. ⇒ the
+      ~18%/35% sibling-manager mismatch (bullet above) is precisely the flag-clear spawns; `WorldApply`
+      must resolve the manager from the requester/context for those.
+    - **§4/§6.2 reword + striking the two retraction-candidate bullets is now UNBLOCKED by this proof but
+      still gated on human sign-off (Rule 6 — it overturns the committed `❌`/`free-list` bullets).** Await go-ahead before editing §4/§6.2.
 - **Still requires engine source (not built):** the double-buffered frozen snapshot (boundary-scope
   work-item #2) and the object-granular shard scheduler. (The `WorldApply` real adapter now exists
   hook-side and is in-game-validated for schema fidelity; manager-resolution + the I1 restatement are
