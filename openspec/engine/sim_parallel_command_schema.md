@@ -203,18 +203,24 @@ completeness only.
 ```
 barrier();                                  // all Phase-A shards done; registry/grid still frozen
 for each shard in fixed shard order:        // deterministic partition order
-    drain that shard's buffers, but interleave by GLOBAL canonical entity order, i.e.:
-sort/merge all (Command, SpawnCommand) by (emitter_entity_id, per-entity emission seq);
+    drain that shard's buffers, but interleave by GLOBAL canonical visitation order, i.e.:
+sort/merge all (Command, SpawnCommand) by (gom_index, emitter_iteration_rank, per-entity emission seq);
 for cmd in that global order:
-    if SpawnCommand: CreateObject(...)       // (I1) id append order
+    if SpawnCommand: CreateObject(...)       // (I1) id stamped in visitation order
     if Command:      emit_signal(...)         // (I2-free; insertion order within emission preserved)
 flush SfxCommands (any order / audio thread); // Class 3, off lockstep
 // Class 1 sensor/fog writes already applied in Phase A (sharded, no drain)
 ```
-The merge key is `(canonical entity id, emission sequence index)` — emission seq is the per-object
-monotonic counter assigned as the object emits during Phase A, making the global order equal to the
-serial-tick order. No float accumulation happens in the drain (the force-sums were intra-object in
-Phase A), so the drain itself introduces no FP-order divergence.
+The merge key is **`(gom_index, emitter_iteration_rank, emission sequence index)`** — corrected per I4
+(§7 I4 box). It is **NOT** the emitter's `object_id`: the serial tick stamps each new object's id
+(`obj+0x50`) in **visitation** order, and the master list is head-inserted (`20a9b0`/`29bfe0:10`) so the
+walk runs newest-first ≈ *descending* `object_id` — sorting by `object_id` would reverse the create
+order and desync. `emitter_iteration_rank` is the emitter's index in `ShardScheduler`'s explicit ordered
+Pass-A list (Int. #3); `gom_index` orders `mgr[3]` before `mgr[4]` (load-bearing for the shared global id
+counter); `emission seq` is the per-object monotonic counter assigned as the object emits during Phase A.
+Together they make the global drain order equal to the serial-tick order. No float accumulation happens
+in the drain (the force-sums were intra-object in Phase A), so the drain itself introduces no FP-order
+divergence.
 
 > #### ✅ I4 — iteration set + order lifted (2026-06-05, decomp-program Increment I4)
 > The driver's serviced set + order is now an explicit, ordered structure (gap C). Source: `3639d0`
@@ -238,8 +244,8 @@ Phase A), so the drain itself introduces no FP-order divergence.
 >    *ascending emitter `object_id`* would **reverse** the create sequence → wrong ids → desync. The
 >    `ShardScheduler`'s explicit ordered owned-object list (this increment's deliverable) IS the rank
 >    source; the drain sorts by `(gom_index, pass-A rank, emission seq)`.
->    ⚠️ **§7's "canonical entity id" must be read as this iteration rank, not the object's `+0x50` id —
->    precise restatement pending sign-off (Rule 6).**
+>    ✅ **§7 restated accordingly (sign-off received 2026-06-05): merge key =
+>    `(gom_index, emitter_iteration_rank, emission seq)`, explicitly NOT `object_id`.**
 > 2. **GOM order is load-bearing for the GLOBAL id counter.** `mgr[3]` is serviced before `mgr[4]`
 >    (`3639d0`); when `use_global_id` (`mgr+0x63e`) is set, both managers draw from `DAT_140b153e0+0x80`,
 >    so `mgr[3]`'s global-counter creates must precede `mgr[4]`'s (I1 saw both counters fire in one run).
