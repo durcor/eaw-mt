@@ -3639,46 +3639,59 @@ static uint32_t g_surv_last = 0xFFFFFFFFu;
 static float    g_surv_maxtw = 0.0f;
 static int64_t  g_surv_maxtw_ent = 0;
 
-/* Bit-exact oracle capture for the lifted vfunc_59 cubic-Hermite mover (sim/spline_mover). Called
- * AFTER the engine movement ran for `coord` (so coord+0x78/0x7c hold this tick's spline output). When
- * the locomotor is in the 0x13 Moving state, recompute the X/Y position from the active segment's two
- * control nodes at the current frame-time and compare raw bits to the engine's. Runs in the lean
- * EAW_ORACLE build (folded into the installed b3a76b0_hook — the same 0x3a76b0 detour). */
-static uint32_t g_spl_surv[64];   /* histogram of locomotor lstate (lst+0x48) seen, capped */
-static uint32_t g_spl_surv_other = 0, g_spl_surv_last = 0xFFFFFFFFu, g_spl_surv_calls = 0;
-static void dt_spline_capture(int64_t coord) {
-    if (!coord || !g_dt_frame_ctr) return;
-    int64_t lst = *(int64_t *)(coord + 0xa8);            /* locomotor_state */
-    if (!lst) return;
-    int32_t ls = *(int32_t *)(lst + 0x48);
-    g_spl_surv_calls++;
-    if (ls >= 0 && ls < 64) g_spl_surv[ls]++; else g_spl_surv_other++;
-    { uint32_t tk = *g_dt_frame_ctr;
-      if (tk != g_spl_surv_last && (tk & 0x3ffu) == 0) {   /* every 1024 ticks */
-        g_spl_surv_last = tk;
-        char hb[400]; int p = snprintf(hb, sizeof hb, "DTSPLSURVEY\ttick=%u\tcalls=%u\t", tk, g_spl_surv_calls);
-        for (int s = 0; s < 64 && p < 360; s++) if (g_spl_surv[s]) p += snprintf(hb+p, sizeof hb-p, "s%d=%u ", s, g_spl_surv[s]);
-        snprintf(hb+p, sizeof hb-p, "other=%u\n", g_spl_surv_other);
-        log_write(hb);
-      } }
-    if (ls != 0x13) return;  /* Moving (path-follow) state only */
-    int64_t base = *(int64_t *)(lst + 0x18);
-    int64_t end  = *(int64_t *)(lst + 0x20);
-    int32_t idx  = *(int32_t *)(lst + 0x60);
-    static uint32_t g_spl_base0=0, g_spl_cnt2=0, g_spl_idxoob=0, g_spl_ok=0, g_spl_diag_last=0xFFFFFFFFu;
-    if (!base || end <= base) { g_spl_base0++; goto spl_diag; }
+/* ── DTSPL2: bit-exact oracle for the lifted vfunc_59 cubic-Hermite mover (sim/spline_mover) ───────────
+ * Detours SimpleSpaceLocomotorBehaviorClass::vfunc_59 (RVA 0x625990) at its ENTRY. The path/order object
+ * is param_2 (NOT the locomotor coordinator): the node array lives in the container at param_2+0x18 and
+ * is read through the engine's own indexer FUN_14054fc00; the active segment index is at param_2+0x60,
+ * the mover sub-mode at param_2+0x48, and FUN_1405c5910 is the "path exhausted" predicate. We let the
+ * original run first (it writes the engine's XY result into *param_7 and advances param_2+0x60), then
+ * recompute the position for the SETTLED segment at the same frame-time and compare raw bits. Only the
+ * clean cubic-Hermite branch is scored (mode!=5, path not exhausted, segment dt>0, distinct endpoints);
+ * the past-end-linear and degenerate-same-endpoint branches write a different formula and are gated out.
+ * Lean EAW_ORACLE build; runtime-gated by EAW_DIFFTRACE=1. (Earlier this capture read the locomotor's
+ * own +0x18 — the wrong object — and saw base0-for-everyone; the path lives in param_2, hence the move
+ * to a real 0x625990 entry detour.) */
+#define SPL_625990_RVA 0x625990ULL
+static const BYTE spl625990_prologue[14] = {   /* mov %rcx,8(%rsp); push rbp/rbx/rdi/r12/r14/r15 (clean @14) */
+    0x48,0x89,0x4c,0x24,0x08, 0x55, 0x53, 0x57, 0x41,0x54, 0x41,0x56, 0x41,0x57
+};
+typedef uint64_t (*Spl625990Fn)(int64_t,int64_t,uint32_t,float*,float*,float,float*,float*,float*);
+static Spl625990Fn g_spl625990_trampoline = NULL;
+typedef char    (*SplPredFn)(int64_t);         /* FUN_1405c5910: path-exhausted predicate            */
+typedef int64_t (*SplAccFn)(int64_t,int32_t);  /* FUN_14054fc00: node-array indexer -> &node[idx]     */
+
+/* gating-reason counters for the periodic DTSPL2 line (answers "is vfunc_59 even called, and on which
+ * branch?" — calls=0 would mean the spline mover is never invoked for the captured scene). */
+static uint32_t g_spl2_calls=0, g_spl2_mode5=0, g_spl2_ended=0,
+                g_spl2_dt0=0, g_spl2_degen=0, g_spl2_cmp=0;
+
+static uint64_t dt_spl625990_hook(int64_t p1, int64_t p2, uint32_t p3, float *p4, float *p5,
+                                  float p6, float *p7, float *p8, float *p9) {
+    g_spl2_calls++;
+    /* run the real mover first: it writes *p7 (out XY) and *p9 (out speed) and advances p2+0x60 */
+    uint64_t ret = g_spl625990_trampoline(p1, p2, p3, p4, p5, p6, p7, p8, p9);
+
+    if (!dt_on()) return ret;                  /* recompute/log only under EAW_DIFFTRACE=1 */
+    if (!p2 || !p7 || !g_dt_imgbase || !g_dt_frame_ctr) goto spl2_diag;
+    if (*(int32_t *)(p2 + 0x48) == 5) { g_spl2_mode5++; goto spl2_diag; }   /* FUN_140627930 sub-mover */
     {
-    int32_t cnt = (int32_t)((end - base) / 0x34);
-    if (cnt < 2) { g_spl_cnt2++; goto spl_diag; }
-    if (idx < 0 || idx + 1 >= cnt) { g_spl_idxoob++; goto spl_diag; }
-    g_spl_ok++;
-    const float *n0 = (const float *)(base + (int64_t)idx * 0x34);
-    const float *n1 = (const float *)(base + (int64_t)(idx + 1) * 0x34);
+    SplPredFn ended = (SplPredFn)(g_dt_imgbase + 0x5c5910);
+    if (ended(p2)) { g_spl2_ended++; goto spl2_diag; }                      /* past-end / linear branch */
+    SplAccFn acc = (SplAccFn)(g_dt_imgbase + 0x54fc00);
+    int32_t idx = *(int32_t *)(p2 + 0x60);
+    const float *n0 = (const float *)acc(p2 + 0x18, idx);
+    const float *n1 = (const float *)acc(p2 + 0x18, idx + 1);
+    if (!n0 || !n1) { g_spl2_dt0++; goto spl2_diag; }
+    float dT = n1[0xc] - n0[0xc];
+    if (!(0.0f < dT)) { g_spl2_dt0++; goto spl2_diag; }                     /* line 85 else (drift)     */
+    if (n0[0]==n1[0] && n0[1]==n1[1] && n0[2]==n1[2]) { g_spl2_degen++; goto spl2_diag; } /* lines 92-112 */
+
     float rpx, rpy;
-    dt_spline_pos(n0, n1, (float)(*g_dt_frame_ctr), &rpx, &rpy);
-    uint32_t ex = *(uint32_t *)(coord + 0x78), ey = *(uint32_t *)(coord + 0x7c);
-    uint32_t gx, gy; memcpy(&gx, &rpx, 4); memcpy(&gy, &rpy, 4);
-    g_dt_spl2_total++;
+    dt_spline_pos(n0, n1, (float)p3, &rpx, &rpy);
+    uint32_t gx, gy, ex, ey;
+    memcpy(&gx, &rpx, 4);   memcpy(&gy, &rpy, 4);
+    memcpy(&ex, &p7[0], 4); memcpy(&ey, &p7[1], 4);
+    g_spl2_cmp++; g_dt_spl2_total++;
     if (gx == ex && gy == ey) g_dt_spl2_pass++;
     else {
         g_dt_spl2_fail++;
@@ -3687,29 +3700,46 @@ static void dt_spline_capture(int64_t coord) {
             char xb[256];
             snprintf(xb, sizeof xb,
                 "DTSPL2MISS\ttick=%u\tidx=%d\trecomp=(%.6f,%.6f/%08x,%08x)\teng=(%.6f,%.6f/%08x,%08x)\n",
-                *g_dt_frame_ctr, idx, rpx, rpy, gx, gy,
-                *(float*)(coord+0x78), *(float*)(coord+0x7c), ex, ey);
+                *g_dt_frame_ctr, idx, rpx, rpy, gx, gy, p7[0], p7[1], ex, ey);
             log_write(xb);
         }
     }
-    uint32_t tick = *g_dt_frame_ctr;
-    if (tick != g_dt_spl2_last && (tick & 0x1ffu) == 0) {   /* once per 512 ticks */
-        g_dt_spl2_last = tick;
-        char sb[160];
-        snprintf(sb, sizeof sb, "DTSPL2\ttick=%u\tpass=%u\tfail=%u\ttotal=%u\n",
-                 tick, g_dt_spl2_pass, g_dt_spl2_fail, g_dt_spl2_total);
-        log_write(sb);
     }
-    } /* end node-array block */
-spl_diag:
-    { uint32_t tk = *g_dt_frame_ctr;
-      if (tk != g_spl_diag_last && (tk & 0x3ffu) == 0) {   /* every 1024 ticks */
-        g_spl_diag_last = tk;
-        char db[200];
-        snprintf(db, sizeof db, "DTSPLDIAG\ttick=%u\tbase0=%u\tcnt2=%u\tidxoob=%u\tok=%u\n",
-                 tk, g_spl_base0, g_spl_cnt2, g_spl_idxoob, g_spl_ok);
+spl2_diag:
+    { uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+      if (tk != g_dt_spl2_last && (tk & 0x3ffu) == 0) {   /* every 1024 ticks */
+        g_dt_spl2_last = tk;
+        char db[256];
+        snprintf(db, sizeof db,
+            "DTSPL2\ttick=%u\tpass=%u\tfail=%u\tcmp=%u\tcalls=%u\tmode5=%u\tended=%u\tdt0=%u\tdegen=%u\n",
+            tk, g_dt_spl2_pass, g_dt_spl2_fail, g_spl2_cmp, g_spl2_calls,
+            g_spl2_mode5, g_spl2_ended, g_spl2_dt0, g_spl2_degen);
         log_write(db);
       } }
+    return ret;
+}
+
+static BOOL install_spl625990_hook(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + SPL_625990_RVA;
+    if (memcmp(fn, spl625990_prologue, sizeof spl625990_prologue) != 0) {
+        log_write("[eaw-mt] WARN: vfunc_59 (0x625990) prologue mismatch — DTSPL2 not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_write("[eaw-mt] WARN: VirtualAlloc for DTSPL2 trampoline failed\n"); return FALSE; }
+    memcpy(tramp, spl625990_prologue, sizeof spl625990_prologue);   /* 7 prologue instrs == 14 bytes */
+    write_abs_jmp(tramp + sizeof spl625990_prologue, (uint64_t)(fn + sizeof spl625990_prologue));
+    g_spl625990_trampoline = (Spl625990Fn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)dt_spl625990_hook);
+    VirtualProtect(fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 14);
+    log_write("[eaw-mt] DTSPL2: vfunc_59 (0x625990) Hermite-mover entry oracle installed\n");
+    return TRUE;
 }
 
 static void b3a76b0_hook(int64_t ship, int32_t tick_param)
@@ -3731,7 +3761,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
         }
     }
 
-    if (!cheap) { g_a76b0_trampoline(ship, tick_param); dt_spline_capture(ship); return; }
+    if (!cheap) { g_a76b0_trampoline(ship, tick_param); return; }
 
     /* --- survey accounting + periodic flush (settles dormant-vs-mislatched) --- */
     uint32_t tick = *g_dt_frame_ctr;
@@ -3753,7 +3783,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
 
     /* only a ship that can actually distribute (total_w>0 and some budget) goes to the
      * snapshot + consumption-latched oracle emission below */
-    if (!(total_w > 0.0f && has_budget)) { g_a76b0_trampoline(ship, tick_param); dt_spline_capture(ship); return; }
+    if (!(total_w > 0.0f && has_budget)) { g_a76b0_trampoline(ship, tick_param); return; }
 
     /* --- snapshot each active mount's budget+weight BEFORE distribution.
      * We do this for EVERY qualifying ship (not just the latched one) so we can detect
@@ -3775,7 +3805,6 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
     }
 
     g_a76b0_trampoline(ship, tick_param);
-    dt_spline_capture(ship);
 
     /* --- after: re-read budgets (387010 leaves mount+0x28 untouched) + detect consumption --- */
     int consumed = 0;
@@ -9263,6 +9292,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b397640_hook();   /* DTLURE: Lure shared squared-distance bit-exact (EAW_DIFFTRACE=1) */
         install_reveal_5373c0_hook(); /* DTREVEAL: Reveal move-threshold gate bit-exact (EAW_DIFFTRACE=1) */
         install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
+        install_spl625990_hook(); /* DTSPL2: SimpleSpaceLocomotor vfunc_59 cubic-Hermite mover (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
 
