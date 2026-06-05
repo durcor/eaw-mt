@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <setjmp.h>
+#include <math.h>
 
 static FILE *g_log_fp = NULL;
 
@@ -3059,6 +3060,10 @@ static float              g_dt_speed     = 0;      /* state+0xec speed scalar */
 static int32_t            g_dt_timer     = -1;     /* state+0x5c drift timer (0x2c mode magnitude index) */
 static int                g_dt_tab_done  = 0;      /* runtime speed table DAT_140b31440 dumped once */
 static int                g_dt_mat_done  = 0;      /* runtime Hermite basis DAT_140b2f1f0 dumped once */
+/* vfunc_59 (0x625990) cubic-Hermite mover bit-exact oracle counters (sim/spline_mover). */
+static uint32_t           g_dt_spl2_pass = 0, g_dt_spl2_fail = 0, g_dt_spl2_total = 0;
+static int                g_dt_spl2_shown = 0;     /* first-mismatch detail emitted */
+static uint32_t           g_dt_spl2_last = 0xFFFFFFFFu;  /* last tick a DTSPL2 summary was emitted */
 /* Spline-segment capture (0x13 Moving state): the two active control points node[idx], node[idx+1]
  * from the state+0x18 array (stride 0x34, idx=state+0x60) for the FUN_140625990 spline oracle.
  * Each node: pos[0..2], tangent[3..5], weight[6], arc[0xc]. */
@@ -3161,6 +3166,44 @@ static uint32_t dt_loco_vtbl_rva(int64_t coord, uintptr_t base) {
         }
     }
     return 0;
+}
+
+/* ── In-process bit-exact oracle for the lifted SimpleSpaceLocomotor vfunc_59 (0x625990) cubic-Hermite
+ * mover core (sim/spline_mover.cpp). Re-transcribed here in C (the hook is a single C TU; sim/ is C++)
+ * and compared raw-bit against the engine's just-written position. Inputs come from the passive
+ * DTSPL node read; time = the frame counter = vfunc_59's param_3; out pos = coord+0x78/0x7c (the
+ * caller writes vfunc_59's param_7 there via FUN_1403a8f90). Position-core only (X/Y); Z is passthrough. */
+static float dt_spl_normalize3(float x, float y, float z, float *ox, float *oy) {
+    float len = sqrtf(x*x + y*y + z*z);
+    if (0.0f < len) { float inv = 1.0f/len; *ox = x*inv; *oy = y*inv; }
+    else { *ox = x; *oy = y; }
+    return len;
+}
+/* Hermite basis M^-1 rows {a,b,c,d} x inputs {p0,p1,m0,m1} — exact integers (DAT_140b2f1f0 runtime). */
+static const float DT_HERM[4][4] = {
+    { 1.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 1.f, 0.f}, {-3.f, 3.f, -2.f, -1.f}, {2.f, -2.f, 1.f, 1.f}
+};
+static inline float dt_herm(int r, float p0, float p1, float m0, float m1) {
+    return ((p0*DT_HERM[r][0] + p1*DT_HERM[r][1]) + m0*DT_HERM[r][2]) + m1*DT_HERM[r][3];
+}
+/* Recompute the spline X/Y position from two raw nodes (n[0..2]=pos, n[3..5]=heading, n[6]=speed,
+ * n[0xc]=arc-time) at frame-time `tm`. Mirrors spline_step() grouping exactly. */
+static void dt_spline_pos(const float *n0, const float *n1, float tm, float *px, float *py) {
+    float dT = n1[0xc] - n0[0xc];
+    float u = ((float)tm - n0[0xc]) / dT;
+    float t = 0.0f; if (0.0f <= u) { t = 1.0f; if (u <= 1.0f) t = u; }
+    float t2 = t*t, t3 = t*t2;
+    float n0x, n0y, n1x, n1y;
+    dt_spl_normalize3(n0[3], n0[4], n0[5], &n0x, &n0y);
+    dt_spl_normalize3(n1[3], n1[4], n1[5], &n1x, &n1y);
+    float m0x = n0[6]*n0x*dT, m0y = n0[6]*n0y*dT;
+    float m1x = n1[6]*n1x*dT, m1y = n1[6]*n1y*dT;
+    float ax = dt_herm(0, n0[0], n1[0], m0x, m1x), bx = dt_herm(1, n0[0], n1[0], m0x, m1x);
+    float cx = dt_herm(2, n0[0], n1[0], m0x, m1x), dx = dt_herm(3, n0[0], n1[0], m0x, m1x);
+    float ay = dt_herm(0, n0[1], n1[1], m0y, m1y), by = dt_herm(1, n0[1], n1[1], m0y, m1y);
+    float cy = dt_herm(2, n0[1], n1[1], m0y, m1y), dy = dt_herm(3, n0[1], n1[1], m0y, m1y);
+    *px = ((bx*t + ax) + cx*t2) + dx*t3;
+    *py = ((by*t + ay) + cy*t2) + dy*t3;
 }
 
 /* Fold one coordinator's serviced components into the current tick accumulator. */
@@ -3596,6 +3639,79 @@ static uint32_t g_surv_last = 0xFFFFFFFFu;
 static float    g_surv_maxtw = 0.0f;
 static int64_t  g_surv_maxtw_ent = 0;
 
+/* Bit-exact oracle capture for the lifted vfunc_59 cubic-Hermite mover (sim/spline_mover). Called
+ * AFTER the engine movement ran for `coord` (so coord+0x78/0x7c hold this tick's spline output). When
+ * the locomotor is in the 0x13 Moving state, recompute the X/Y position from the active segment's two
+ * control nodes at the current frame-time and compare raw bits to the engine's. Runs in the lean
+ * EAW_ORACLE build (folded into the installed b3a76b0_hook — the same 0x3a76b0 detour). */
+static uint32_t g_spl_surv[64];   /* histogram of locomotor lstate (lst+0x48) seen, capped */
+static uint32_t g_spl_surv_other = 0, g_spl_surv_last = 0xFFFFFFFFu, g_spl_surv_calls = 0;
+static void dt_spline_capture(int64_t coord) {
+    if (!coord || !g_dt_frame_ctr) return;
+    int64_t lst = *(int64_t *)(coord + 0xa8);            /* locomotor_state */
+    if (!lst) return;
+    int32_t ls = *(int32_t *)(lst + 0x48);
+    g_spl_surv_calls++;
+    if (ls >= 0 && ls < 64) g_spl_surv[ls]++; else g_spl_surv_other++;
+    { uint32_t tk = *g_dt_frame_ctr;
+      if (tk != g_spl_surv_last && (tk & 0x3ffu) == 0) {   /* every 1024 ticks */
+        g_spl_surv_last = tk;
+        char hb[400]; int p = snprintf(hb, sizeof hb, "DTSPLSURVEY\ttick=%u\tcalls=%u\t", tk, g_spl_surv_calls);
+        for (int s = 0; s < 64 && p < 360; s++) if (g_spl_surv[s]) p += snprintf(hb+p, sizeof hb-p, "s%d=%u ", s, g_spl_surv[s]);
+        snprintf(hb+p, sizeof hb-p, "other=%u\n", g_spl_surv_other);
+        log_write(hb);
+      } }
+    if (ls != 0x13) return;  /* Moving (path-follow) state only */
+    int64_t base = *(int64_t *)(lst + 0x18);
+    int64_t end  = *(int64_t *)(lst + 0x20);
+    int32_t idx  = *(int32_t *)(lst + 0x60);
+    static uint32_t g_spl_base0=0, g_spl_cnt2=0, g_spl_idxoob=0, g_spl_ok=0, g_spl_diag_last=0xFFFFFFFFu;
+    if (!base || end <= base) { g_spl_base0++; goto spl_diag; }
+    {
+    int32_t cnt = (int32_t)((end - base) / 0x34);
+    if (cnt < 2) { g_spl_cnt2++; goto spl_diag; }
+    if (idx < 0 || idx + 1 >= cnt) { g_spl_idxoob++; goto spl_diag; }
+    g_spl_ok++;
+    const float *n0 = (const float *)(base + (int64_t)idx * 0x34);
+    const float *n1 = (const float *)(base + (int64_t)(idx + 1) * 0x34);
+    float rpx, rpy;
+    dt_spline_pos(n0, n1, (float)(*g_dt_frame_ctr), &rpx, &rpy);
+    uint32_t ex = *(uint32_t *)(coord + 0x78), ey = *(uint32_t *)(coord + 0x7c);
+    uint32_t gx, gy; memcpy(&gx, &rpx, 4); memcpy(&gy, &rpy, 4);
+    g_dt_spl2_total++;
+    if (gx == ex && gy == ey) g_dt_spl2_pass++;
+    else {
+        g_dt_spl2_fail++;
+        if (!g_dt_spl2_shown) {
+            g_dt_spl2_shown = 1;
+            char xb[256];
+            snprintf(xb, sizeof xb,
+                "DTSPL2MISS\ttick=%u\tidx=%d\trecomp=(%.6f,%.6f/%08x,%08x)\teng=(%.6f,%.6f/%08x,%08x)\n",
+                *g_dt_frame_ctr, idx, rpx, rpy, gx, gy,
+                *(float*)(coord+0x78), *(float*)(coord+0x7c), ex, ey);
+            log_write(xb);
+        }
+    }
+    uint32_t tick = *g_dt_frame_ctr;
+    if (tick != g_dt_spl2_last && (tick & 0x1ffu) == 0) {   /* once per 512 ticks */
+        g_dt_spl2_last = tick;
+        char sb[160];
+        snprintf(sb, sizeof sb, "DTSPL2\ttick=%u\tpass=%u\tfail=%u\ttotal=%u\n",
+                 tick, g_dt_spl2_pass, g_dt_spl2_fail, g_dt_spl2_total);
+        log_write(sb);
+    }
+    } /* end node-array block */
+spl_diag:
+    { uint32_t tk = *g_dt_frame_ctr;
+      if (tk != g_spl_diag_last && (tk & 0x3ffu) == 0) {   /* every 1024 ticks */
+        g_spl_diag_last = tk;
+        char db[200];
+        snprintf(db, sizeof db, "DTSPLDIAG\ttick=%u\tbase0=%u\tcnt2=%u\tidxoob=%u\tok=%u\n",
+                 tk, g_spl_base0, g_spl_cnt2, g_spl_idxoob, g_spl_ok);
+        log_write(db);
+      } }
+}
+
 static void b3a76b0_hook(int64_t ship, int32_t tick_param)
 {
     int      count = 0, n_active = 0, has_budget = 0, cheap = 0;
@@ -3615,7 +3731,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
         }
     }
 
-    if (!cheap) { g_a76b0_trampoline(ship, tick_param); return; }
+    if (!cheap) { g_a76b0_trampoline(ship, tick_param); dt_spline_capture(ship); return; }
 
     /* --- survey accounting + periodic flush (settles dormant-vs-mislatched) --- */
     uint32_t tick = *g_dt_frame_ctr;
@@ -3637,7 +3753,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
 
     /* only a ship that can actually distribute (total_w>0 and some budget) goes to the
      * snapshot + consumption-latched oracle emission below */
-    if (!(total_w > 0.0f && has_budget)) { g_a76b0_trampoline(ship, tick_param); return; }
+    if (!(total_w > 0.0f && has_budget)) { g_a76b0_trampoline(ship, tick_param); dt_spline_capture(ship); return; }
 
     /* --- snapshot each active mount's budget+weight BEFORE distribution.
      * We do this for EVERY qualifying ship (not just the latched one) so we can detect
@@ -3659,6 +3775,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
     }
 
     g_a76b0_trampoline(ship, tick_param);
+    dt_spline_capture(ship);
 
     /* --- after: re-read budgets (387010 leaves mount+0x28 untouched) + detect consumption --- */
     int consumed = 0;
