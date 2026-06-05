@@ -224,9 +224,34 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
   - The §9 determinism gate as a host test (`sim/tests/sim_parallel_test.cpp`, in `just sim-test`):
     N-shard ≡ serial bit-identical for N∈{1,2,4,8} × {round-robin, contiguous} × shuffled order;
     spawn-id stability; replay-determinism proxy; substream reproducibility/order-independence.
+- **🟡 Real `WorldApply` adapter + in-game oracle — BUILT & RUN (2026-06-05, Increment 1, hook-side,
+  no live mutation; `hooks/winmm_proxy.c` DTWA, evidence `eaw-mt.log.dtwa-round{1,2}`):** the adapter
+  (`eng_world_manager`/`eng_create_object`/`eng_apply_signal`/`eng_flush_sfx`) resolves the live
+  manager and drives `FUN_14029f810` / `FUN_140240940` / `FUN_1402d5290`; the DTWA-SPAWN/DTWASIG entry
+  detours validate it against the engine's own calls. Findings (multi-tick, ~64k spawns / ~370k signals):
+  - ✅ **Schema fidelity** — `schemafit=100%` (every `CreateObject` carries a readable `pos`); DTWASIG
+    traffic is rich and all-sane (`sigs={2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,24,e,1d,…}`, incl.
+    the modeled 0x20/0x21/0x1c/0x28/0x29). `SpawnCommand`/`Command` losslessly represent live ops.
+  - ⚠️ **Manager is multi-instance** — `eng_world_manager()` (=`*(combat+0x18)`) matches only ~82% of
+    battle spawns; ~18% use a sibling manager (`DTWAMGR`: engine `0x35878ff0` vs resolved `0x358705e0`,
+    ~0x89a0 apart). ⇒ the real `WorldApply::create_object` must resolve the manager from the
+    requester/context, not a single global.
+  - ❌ **I1 "dense append" is mischaracterized for the dominant population** — the in-battle
+    `FUN_14029f810` calls are ~100% a *pooled, reused-id, non-registry* branch: `inreg=0`
+    (`FUN_140294bc0(&DAT_140a16fd0, obj+0x58)` never returns the object), `reused≈100%` (ids handed
+    out repeatedly — an append-only allocator never repeats), `grew1=0`, `mono≈8%`. `obj+0x58` is a
+    **reused manager-pool slot index** (`obj+0x58*0x38 + manager+0xd0`, decomp/29f810.c:72), not a
+    dense `DAT_140a16fd0` append index. The registry-append branch in CreateObject (29f810.c:229–248)
+    is *conditional* and did not fire for any captured spawn (projectiles/effects, not persistent GOM
+    units). **⚠️ TODO — contradicts §6.2's "the drain calls CreateObject, which assigns the next id by
+    append (I1)" and §4(I1). Pending human sign-off, do NOT rewrite §4/§6.2 yet.** The real I1 subjects
+    (persistent units that take the `inreg` branch) were not isolated by this capture — a targeted
+    follow-up should filter CreateObject to the `inreg==1` path (e.g. battle-setup / reinforcement
+    spawns) to characterize whether *those* dense-append or also reuse slots, before restating I1.
 - **Still requires engine source (not built):** the double-buffered frozen snapshot (boundary-scope
-  work-item #2) and the object-granular shard scheduler; the `WorldApply` *real* implementation
-  (the host test uses a recording stand-in) that calls the live `CreateObject` / `SignalDispatcher::emit`.
+  work-item #2) and the object-granular shard scheduler. (The `WorldApply` real adapter now exists
+  hook-side and is in-game-validated for schema fidelity; manager-resolution + the I1 restatement are
+  the open items above.)
 - **Out of scope (deliberately serial):** the AI Lua pump (≈0.02ms/tick — left serial sidesteps the
   shared-`global_State` problem, boundary-scope work-item #5).
 
