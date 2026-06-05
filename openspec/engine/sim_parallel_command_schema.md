@@ -392,12 +392,19 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
       (flag-clear) population, while every global-path spawn resolved the combat singleton cleanly. ⇒ the
       sibling-manager mismatch (bullet above) is precisely the flag-clear spawns; `WorldApply` must resolve
       the manager from the requester/context for those.
-- **Still requires engine source (not built):** the double-buffered frozen snapshot (boundary-scope
-  work-item #2) and the object-granular shard scheduler. (The `WorldApply` real adapter now exists
-  hook-side and is in-game-validated for schema fidelity; manager-resolution + the I1 restatement are
-  the open items above.) **→ These three items are now turned into a build-ready drop-in interface spec
-  with named binary bindings, exact signatures/offsets, and the manager-resolution fix closed on paper
-  (resolve from `requester+0x2b8`) in `engine_integration_contract.md`.**
+- **✅ BUILT host-side (2026-06-05, Increment I5 — `sim/frozen_snapshot.h` + `sim/shard_scheduler.h`):**
+  the double-buffered frozen snapshot (Int #2, boundary work-item #2) and the object-granular shard
+  scheduler (Int #3, work-item #1) now exist as concrete host components, and the **assembled two-GOM
+  Phase-A/B tick** passes an extended §9 gate (`sim/tests/shard_scheduler_test.cpp`, in `just sim-test`):
+  N∈{1,2,4,8}≡serial under shuffled processing; the **rank≠id negative control** (keying by ascending
+  `object_id` diverges from serial — proves the I4 visitation-rank key is load-bearing); the shared
+  global id counter respects GOM order; snapshot RAW-freedom. The drain key is the I4-corrected
+  `(gom_index, emitter_iteration_rank, seq)`.
+- **Still requires the engine (in-game integration, I5 open tail):** wire the REAL `EngineWorldApply`
+  (the hook-side adapter — exists + schema-validated) into a live **1-shard** in-game tick, then the
+  in-game **DIFFTRACE-vs-serial** equivalence + the manager-resolution regression (`mgr_fail=0` via
+  `requester+0x2b8`). The host pipeline is complete and gate-green; this tail is the binary-integration
+  step. Bindings/offsets in `engine_integration_contract.md`.
 - **Out of scope (deliberately serial):** the AI Lua pump (≈0.02ms/tick — left serial sidesteps the
   shared-`global_State` problem, boundary-scope work-item #5).
 
