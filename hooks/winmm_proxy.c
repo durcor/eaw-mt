@@ -3742,6 +3742,244 @@ static BOOL install_spl625990_hook(void) {
     return TRUE;
 }
 
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+ * ENGINE-SOURCE INTEGRATION — Increment 1: the real WorldApply adapter + the DTWA in-game oracle.
+ *
+ * The parallel-command system (sim/sim_parallel.{h,cpp}, sim/command_sink.h) is host-validated; the
+ * design doc (sim_parallel_command_schema.md §10) lists the *real* WorldApply as the one still-
+ * unbuilt piece that has an in-game validation path now. WorldApply is the Phase-B boundary the drain
+ * applies ops to (sim/sim_parallel.h:109): create_object (Class 2), apply_signal (Class 2b), flush_sfx
+ * (Class 3). Here we realize it against the live engine functions and validate, against the engine's
+ * OWN calls, the determinism claims the whole schema rests on — chiefly invariant I1 (object ids are
+ * assigned by dense append == canonical order). No live mutation, no threads this increment.
+ * ════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Piece 1: the real WorldApply adapter (sim::WorldApply realized against the live engine). ───────
+ * Resolves the live manager/dispatcher and marshals args per the confirmed call-site signatures
+ * (FUN_14029f810 / FUN_140240940 / FUN_1402d5290). Per the approved scope these are BUILT but NOT
+ * invoked to mutate this increment (calling create_object live would double-spawn); the pointer
+ * resolution + arg layout they use is exactly what the DTWA oracle below validates against the
+ * engine's own calls. Wiring them into a live Phase-B drain is the next, separately-gated increment. */
+typedef int64_t (*EngCreateObjFn)(int64_t,int64_t,int32_t,const float*,int64_t,int8_t,int8_t);
+typedef void    (*EngSignalFn)(int64_t,uint32_t,const void*);   /* FUN_140240940(dispatcher,sig,payload) */
+typedef int32_t (*EngSfxFn)(int64_t,int64_t,int32_t,int8_t,uint32_t);
+
+/* combat-mode singleton (DAT_140b15418) -> GameObjectManager (param_1 of CreateObject, +0x18). */
+static int64_t eng_world_manager(void) {
+    if (!g_dt_imgbase) return 0;
+    int64_t combat = *(int64_t *)(g_dt_imgbase + 0xb15418);
+    return combat ? *(int64_t *)(combat + 0x18) : 0;
+}
+/* Class 2: append-create. Returns the new object's id (obj+0x58). NOT called this increment. */
+__attribute__((used)) static int64_t eng_create_object(uint32_t template_id, const float pos[3], uint32_t flags) {
+    int64_t mgr = eng_world_manager();
+    if (!mgr) return -1;
+    EngCreateObjFn fn = (EngCreateObjFn)(g_dt_imgbase + 0x29f810);
+    int64_t obj = fn(mgr, (int64_t)template_id, (int32_t)flags, pos, 0, 1, 0);
+    return obj ? (int64_t)*(int32_t *)(obj + 0x58) : -1;
+}
+/* Class 2b: per-object +0x38 signal fan-out (analogue of one FUN_140220ed0 call). NOT called yet. */
+__attribute__((used)) static void eng_apply_signal(void *emitter, uint32_t sig_id, const void *payload) {
+    if (!g_dt_imgbase || !emitter) return;
+    EngSignalFn fn = (EngSignalFn)(g_dt_imgbase + 0x240940);
+    fn((int64_t)emitter + 0x38, sig_id, payload);
+}
+/* Class 3: presentation cue (off-lockstep). NOT called this increment. */
+__attribute__((used)) static void eng_flush_sfx(uint32_t sfx_id) {
+    if (!g_dt_imgbase) return;
+    EngSfxFn fn = (EngSfxFn)(g_dt_imgbase + 0x2d5290);
+    fn((int64_t)(g_dt_imgbase + 0xb27e60), (int64_t)sfx_id, 0, 0, 1);
+}
+
+/* ── Piece 2a: DTWA-SPAWN — detours GameObjectManager::CreateObject (RVA 0x29f810) at entry. ─────────
+ * Snapshot the global object registry (0xa16fd0) counts BEFORE the real call, run it, then check the
+ * new object's id (obj+0x58). Load-bearing I1 invariant: new id == registry element count before the
+ * append (dense append == canonical id order). We measure BOTH registry representations — the begin/
+ * end vector (+0x00/+0x08, count=(end-begin)>>3) and the id-indexed table (+0x20/+0x28) — rather than
+ * assume which is the dense one. We also confirm eng_world_manager() resolves the SAME manager the
+ * engine passed as param_1, and that the SpawnCommand schema captures the call's (template,pos,flags).
+ * No mutation. Lean EAW_ORACLE build; runtime-gated by EAW_DIFFTRACE=1.
+ * Prologue (objdump 0x29f810): 4c894c2420 / 4889542410 / 53 / 4154 / 4156 = 15 bytes, clean before
+ * `push r15`; all position-independent (mov [rsp+x],reg + pushes). */
+#define DTWA_29F810_RVA 0x29f810ULL
+static const BYTE dtwa_29f810_prologue[15] = {  /* mov [rsp+0x20],r9; mov [rsp+0x10],rdx; push rbx/r12/r14 */
+    0x4c,0x89,0x4c,0x24,0x20, 0x48,0x89,0x54,0x24,0x10, 0x53, 0x41,0x54, 0x41,0x56
+};
+typedef int64_t (*Create29f810Fn)(int64_t,int64_t,int32_t,const float*,int64_t,int8_t,int8_t);
+static Create29f810Fn g_dtwa_29f810_trampoline = NULL;
+static uint32_t g_dtwa_calls=0, g_dtwa_null=0, g_dtwa_i1_c20=0, g_dtwa_i1_cv=0,
+                g_dtwa_mono=0, g_dtwa_mgr_pass=0, g_dtwa_mgr_fail=0, g_dtwa_schemafit=0, g_dtwa_grew1=0;
+static int64_t  g_dtwa_last_id = -1;
+static int      g_dtwa_shown = 0;
+static uint32_t g_dtwa_last = 0xFFFFFFFFu;
+/* round-2 provenance probes: is obj+0x58 the DAT_140a16fd0 index for THIS object (inreg), and is a
+ * new id ever handed out twice this session (reused == free-list slot reuse, refuting dense-append)? */
+static uint32_t g_dtwa_inreg=0, g_dtwa_notreg=0, g_dtwa_reused=0;
+static uint8_t  g_dtwa_idseen[8192];   /* bitmap of object ids 0..65535 seen this session */
+static int      g_dtwa_mgrshown=0;
+typedef int64_t (*RegLookupFn)(int64_t,int32_t);   /* FUN_140294bc0(&DAT_140a16fd0, id) -> Object* */
+
+static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
+                                const float *pos, int64_t p5, int8_t p6, int8_t p7) {
+    /* snapshot registry counts BEFORE the append (cheap; only retained when difftrace is on). */
+    int64_t reg = g_dt_imgbase ? (int64_t)(g_dt_imgbase + 0xa16fd0) : 0;
+    int32_t cnt20_b = 0, cntv_b = 0; int have_before = 0;
+    if (reg && dt_on()) {
+        cnt20_b = *(int32_t *)(reg + 0x28);
+        int64_t vb = *(int64_t *)(reg + 0x00), ve = *(int64_t *)(reg + 0x08);
+        cntv_b = (int32_t)((ve - vb) >> 3);
+        have_before = 1;
+    }
+    int64_t ret = g_dtwa_29f810_trampoline(mgr, template_id, flags, pos, p5, p6, p7);
+    if (!dt_on() || !have_before) goto dtwa_diag;
+    if (ret == 0) { g_dtwa_null++; goto dtwa_diag; }
+    {
+    int32_t new_id  = *(int32_t *)(ret + 0x58);
+    int32_t cnt20_a = *(int32_t *)(reg + 0x28);
+    g_dtwa_calls++;
+    if (new_id == cnt20_b)        g_dtwa_i1_c20++;     /* append into the id-indexed table */
+    if (new_id == cntv_b)         g_dtwa_i1_cv++;      /* append into the begin/end vector */
+    if (cnt20_a == cnt20_b + 1)   g_dtwa_grew1++;      /* the id-table grew by exactly one */
+    if (g_dtwa_last_id < 0 || new_id > (int32_t)g_dtwa_last_id) g_dtwa_mono++;  /* strictly increasing */
+    g_dtwa_last_id = new_id;
+    /* registry membership: is obj+0x58 actually the DAT_140a16fd0 index for THIS object? (distinguishes
+     * "slot reuse inside the GOM registry" from "a separate projectile/particle pool"). */
+    { RegLookupFn lk = (RegLookupFn)(g_dt_imgbase + 0x294bc0);
+      int64_t slot = lk((int64_t)(g_dt_imgbase + 0xa16fd0), new_id);
+      if (slot == ret) g_dtwa_inreg++; else g_dtwa_notreg++; }
+    /* id reuse: a new id we've already handed out this session == free-list slot reuse → refutes the
+     * "dense append" I1 model (the smoking gun: an append-only allocator never repeats an id). */
+    if (new_id >= 0 && new_id < 65536) {
+        uint8_t m = (uint8_t)(1u << (new_id & 7)); uint32_t bi = (uint32_t)new_id >> 3;
+        if (g_dtwa_idseen[bi] & m) g_dtwa_reused++; else g_dtwa_idseen[bi] |= m;
+    }
+    /* manager-pointer resolution: our adapter must resolve the same `this` the engine got as param_1. */
+    { int64_t mgr_res = eng_world_manager();
+      if (mgr_res == mgr) g_dtwa_mgr_pass++;
+      else {
+        g_dtwa_mgr_fail++;
+        if (!g_dtwa_mgrshown) {
+            g_dtwa_mgrshown = 1; char mb[256];
+            snprintf(mb, sizeof mb,
+                "DTWAMGR\ttick=%u\tengine_mgr=%llx\tresolved=%llx\ttmpl=%lld\tflags=%d\n",
+                g_dt_frame_ctr?*g_dt_frame_ctr:0, (unsigned long long)mgr,
+                (unsigned long long)mgr_res, (long long)template_id, flags);
+            log_write(mb);
+        }
+      } }
+    /* SpawnCommand schema fidelity: (template,flags) are scalars; pos must be a readable float[3]. */
+    if (pos) g_dtwa_schemafit++;
+    if (!(new_id == cnt20_b || new_id == cntv_b) && !g_dtwa_shown) {
+        g_dtwa_shown = 1;
+        char xb[256];
+        snprintf(xb, sizeof xb,
+            "DTWAMISS\ttick=%u\tnew_id=%d\tcnt20_b=%d\tcntv_b=%d\tcnt20_a=%d\ttmpl=%lld\tflags=%d\n",
+            g_dt_frame_ctr?*g_dt_frame_ctr:0, new_id, cnt20_b, cntv_b, cnt20_a,
+            (long long)template_id, flags);
+        log_write(xb);
+    }
+    }
+dtwa_diag:
+    { uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+      if (dt_on() && tk != g_dtwa_last && (tk & 0x3ffu) == 0) {   /* every 1024 ticks */
+        g_dtwa_last = tk;
+        char db[256];
+        snprintf(db, sizeof db,
+            "DTWA\ttick=%u\tcalls=%u\ti1_c20=%u\tgrew1=%u\tmono=%u\tinreg=%u\tnotreg=%u\treused=%u\tmgr_pass=%u\tmgr_fail=%u\tschemafit=%u\tnull=%u\n",
+            tk, g_dtwa_calls, g_dtwa_i1_c20, g_dtwa_grew1, g_dtwa_mono,
+            g_dtwa_inreg, g_dtwa_notreg, g_dtwa_reused,
+            g_dtwa_mgr_pass, g_dtwa_mgr_fail, g_dtwa_schemafit, g_dtwa_null);
+        log_write(db);
+      } }
+    return ret;
+}
+
+static BOOL install_dtwa_spawn_hook(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
+    BYTE *fn = (BYTE *)exe + DTWA_29F810_RVA;
+    size_t n = sizeof dtwa_29f810_prologue;          /* 15 */
+    if (memcmp(fn, dtwa_29f810_prologue, n) != 0) {
+        log_write("[eaw-mt] WARN: CreateObject (0x29f810) prologue mismatch — DTWA-SPAWN not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_write("[eaw-mt] WARN: VirtualAlloc for DTWA-SPAWN trampoline failed\n"); return FALSE; }
+    memcpy(tramp, dtwa_29f810_prologue, n);
+    write_abs_jmp(tramp + n, (uint64_t)(fn + n));
+    g_dtwa_29f810_trampoline = (Create29f810Fn)tramp;
+    DWORD old;
+    VirtualProtect(fn, n, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)dtwa_29f810_hook);
+    VirtualProtect(fn, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, n);
+    log_write("[eaw-mt] DTWA-SPAWN: CreateObject (0x29f810) I1 append-order + manager-resolution oracle installed\n");
+    return TRUE;
+}
+
+/* ── Piece 2b: DTWASIG — detours the signal fan-out FUN_140240940(dispatcher, sig_id, payload). ──────
+ * FUN_140220ed0 (the schema's emit entry) is a 26-byte null-check thunk that tail-jumps here; 0x240940
+ * is the real fan-out and has a clean 17-byte position-independent prologue, so we detour it. Validates
+ * that the Command schema captures (emitter = dispatcher-0x38, sig_id, payload) losslessly and records
+ * the live signal-id traffic (evidence the modeled Class-2b channel == what the engine actually emits).
+ * Hot path — trampoline-passthrough, all bookkeeping under dt_on(). EAW_DIFFTRACE=1.
+ * Prologue (objdump 0x240940): 488bc4 / 4c894018 / 895010 / 57 / 4157 / 4883ec68 = 17 bytes clean. */
+#define DTWA_240940_RVA 0x240940ULL
+static const BYTE dtwa_240940_prologue[17] = {  /* mov rax,rsp; mov [rax+0x18],r8; mov [rax+0x10],edx; push rdi/r15; sub rsp,0x68 */
+    0x48,0x8b,0xc4, 0x4c,0x89,0x40,0x18, 0x89,0x50,0x10, 0x57, 0x41,0x57, 0x48,0x83,0xec,0x68
+};
+typedef void (*Sig240940Fn)(int64_t,uint32_t,const void*);
+static Sig240940Fn g_dtwa_240940_trampoline = NULL;
+static uint32_t g_dtwasig_calls=0, g_dtwasig_sigok=0, g_dtwasig_disp0=0;
+static uint32_t g_dtwasig_sigseen[16]; static int g_dtwasig_nseen=0;
+static uint32_t g_dtwasig_last=0xFFFFFFFFu;
+
+static void dtwa_240940_hook(int64_t dispatcher, uint32_t sig_id, const void *payload) {
+    g_dtwa_240940_trampoline(dispatcher, sig_id, payload);
+    if (!dt_on()) return;
+    g_dtwasig_calls++;
+    if (dispatcher == 0) g_dtwasig_disp0++;
+    if (sig_id < 0x1000)  g_dtwasig_sigok++;     /* sane signal-id range (Command.sig_id is a small enum) */
+    { int found=0; for (int i=0;i<g_dtwasig_nseen;i++) if (g_dtwasig_sigseen[i]==sig_id) { found=1; break; }
+      if (!found && g_dtwasig_nseen<16) g_dtwasig_sigseen[g_dtwasig_nseen++]=sig_id; }
+    { uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+      if (tk != g_dtwasig_last && (tk & 0x3ffu)==0) {   /* every 1024 ticks */
+        g_dtwasig_last = tk;
+        char db[320];
+        int off = snprintf(db, sizeof db, "DTWASIG\ttick=%u\tcalls=%u\tsigok=%u\tdisp0=%u\tsigs=",
+                           tk, g_dtwasig_calls, g_dtwasig_sigok, g_dtwasig_disp0);
+        for (int i=0;i<g_dtwasig_nseen && off<(int)sizeof db-12;i++)
+            off += snprintf(db+off, sizeof db-off, "%x,", g_dtwasig_sigseen[i]);
+        snprintf(db+off, sizeof db-off, "\n");
+        log_write(db);
+      } }
+}
+
+static BOOL install_dtwa_sig_hook(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
+    BYTE *fn = (BYTE *)exe + DTWA_240940_RVA;
+    size_t n = sizeof dtwa_240940_prologue;          /* 17 */
+    if (memcmp(fn, dtwa_240940_prologue, n) != 0) {
+        log_write("[eaw-mt] WARN: signal fan-out (0x240940) prologue mismatch — DTWASIG not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_write("[eaw-mt] WARN: VirtualAlloc for DTWASIG trampoline failed\n"); return FALSE; }
+    memcpy(tramp, dtwa_240940_prologue, n);
+    write_abs_jmp(tramp + n, (uint64_t)(fn + n));
+    g_dtwa_240940_trampoline = (Sig240940Fn)tramp;
+    DWORD old;
+    VirtualProtect(fn, n, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)dtwa_240940_hook);
+    VirtualProtect(fn, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, n);
+    log_write("[eaw-mt] DTWASIG: signal fan-out (0x240940) Command-schema/traffic oracle installed\n");
+    return TRUE;
+}
+
 static void b3a76b0_hook(int64_t ship, int32_t tick_param)
 {
     int      count = 0, n_active = 0, has_budget = 0, cheap = 0;
@@ -9293,6 +9531,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_reveal_5373c0_hook(); /* DTREVEAL: Reveal move-threshold gate bit-exact (EAW_DIFFTRACE=1) */
         install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
         install_spl625990_hook(); /* DTSPL2: SimpleSpaceLocomotor vfunc_59 cubic-Hermite mover (EAW_DIFFTRACE=1) */
+        install_dtwa_spawn_hook();/* DTWA-SPAWN: CreateObject I1 append-order + manager-resolution oracle (EAW_DIFFTRACE=1) */
+        install_dtwa_sig_hook();  /* DTWASIG: signal fan-out Command-schema/traffic oracle (EAW_DIFFTRACE=1) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
 

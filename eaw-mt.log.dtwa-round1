@@ -1,0 +1,21 @@
+DTWASIG	tick=0	calls=1	sigok=1	disp0=0	sigs=2f,
+DTWAMISS	tick=0	new_id=3	cnt20_b=22	cntv_b=22	cnt20_a=22	tmpl=268211840	flags=3
+DTWA	tick=0	calls=1	i1_c20=0	i1_cv=0	grew1=0	mono=1	mgr_pass=1	mgr_fail=0	schemafit=1	null=0
+DTWASIG	tick=1024	calls=32223	sigok=32223	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,
+DTWA	tick=1024	calls=9756	i1_c20=0	i1_cv=0	grew1=0	mono=1070	mgr_pass=6334	mgr_fail=3422	schemafit=9756	null=0
+DTWASIG	tick=2048	calls=85748	sigok=85748	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,
+DTWA	tick=2048	calls=23088	i1_c20=0	i1_cv=0	grew1=0	mono=2383	mgr_pass=17395	mgr_fail=5693	schemafit=23088	null=0
+DTWASIG	tick=0	calls=116159	sigok=116159	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,
+DTWA	tick=0	calls=28629	i1_c20=0	i1_cv=0	grew1=0	mono=2988	mgr_pass=22846	mgr_fail=5783	schemafit=28629	null=0
+DTWASIG	tick=1024	calls=152125	sigok=152125	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,
+DTWA	tick=1024	calls=38317	i1_c20=0	i1_cv=0	grew1=0	mono=3820	mgr_pass=29857	mgr_fail=8460	schemafit=38317	null=0
+DTWASIG	tick=2048	calls=231728	sigok=231728	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,
+DTWA	tick=2048	calls=57124	i1_c20=0	i1_cv=0	grew1=0	mono=4925	mgr_pass=47299	mgr_fail=9825	schemafit=57124	null=0
+DTWASIG	tick=0	calls=280863	sigok=280863	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,
+DTWA	tick=0	calls=65820	i1_c20=0	i1_cv=0	grew1=0	mono=5490	mgr_pass=55343	mgr_fail=10477	schemafit=65820	null=0
+DTWASIG	tick=1024	calls=301750	sigok=301750	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,
+DTWA	tick=1024	calls=71415	i1_c20=0	i1_cv=0	grew1=0	mono=6172	mgr_pass=59623	mgr_fail=11792	schemafit=71415	null=0
+DTWA	tick=2048	calls=80184	i1_c20=0	i1_cv=0	grew1=0	mono=7127	mgr_pass=66779	mgr_fail=13405	schemafit=80184	null=0
+DTWASIG	tick=2048	calls=338773	sigok=338773	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,
+DTWASIG	tick=0	calls=371769	sigok=371769	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,16,29,25,
+DTWA	tick=0	calls=86461	i1_c20=0	i1_cv=0	grew1=0	mono=7753	mgr_pass=71328	mgr_fail=15133	schemafit=86461	null=0

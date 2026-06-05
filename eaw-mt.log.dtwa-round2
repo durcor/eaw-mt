@@ -1,0 +1,12 @@
+DTWASIG	tick=0	calls=1	sigok=1	disp0=0	sigs=2f,
+DTWAMISS	tick=0	new_id=3	cnt20_b=22	cntv_b=22	cnt20_a=22	tmpl=268211840	flags=3
+DTWA	tick=0	calls=1	i1_c20=0	grew1=0	mono=1	inreg=0	notreg=1	reused=0	mgr_pass=1	mgr_fail=0	schemafit=1	null=0
+DTWAMGR	tick=108	engine_mgr=35878ff0	resolved=358705e0	tmpl=338732880	flags=1
+DTWASIG	tick=106496	calls=33796	sigok=33796	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,24,e,1d,
+DTWASIG	tick=107520	calls=37338	sigok=37338	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,24,e,1d,
+DTWASIG	tick=108544	calls=65648	sigok=65648	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,24,e,1d,
+DTWA	tick=108544	calls=14773	i1_c20=0	grew1=0	mono=1190	inreg=0	notreg=14773	reused=14769	mgr_pass=12066	mgr_fail=2707	schemafit=14773	null=0
+DTWASIG	tick=109568	calls=156599	sigok=156599	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,24,e,1d,
+DTWA	tick=109568	calls=40150	i1_c20=0	grew1=0	mono=2583	inreg=0	notreg=40150	reused=40146	mgr_pass=36659	mgr_fail=3491	schemafit=40150	null=0
+DTWASIG	tick=110592	calls=243839	sigok=243839	disp0=0	sigs=2f,0,9,1c,b,a,10,28,19,21,1e,18,20,24,e,1d,
+DTWA	tick=110592	calls=63915	i1_c20=0	grew1=0	mono=4259	inreg=0	notreg=63915	reused=63911	mgr_pass=59719	mgr_fail=4196	schemafit=63915	null=0
