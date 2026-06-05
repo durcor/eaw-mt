@@ -23,8 +23,13 @@ Per-tick sim is restructured into:
 
 The determinism gate (lockstep MP + replays + save/load) reduces — per the characterization — to two
 invariants, both satisfied by the canonical-order drain:
-- **(I1) object-id append order** — `GameObjectManager::CreateObject` assigns the next id by append;
-  spawns must commit in canonical order.
+- **(I1) object-id append order** — `GameObjectManager::CreateObject` assigns each new object its own id
+  (`obj+0x50`) by **post-incrementing the active monotonic id counter** — the global counter
+  `DAT_140b153e0+0x80` when the manager flag `mgr+0x63e` is set, else the per-manager counter `mgr+0x620`
+  (`FUN_1402ac980`/`FUN_14028a9e0`; saturating at 0x3fffff, never reused). Ids are therefore dense,
+  monotonic, and gap-free; spawns must commit in canonical order so the id↔object mapping is reproducible.
+  (Confirmed in-game: §10, `eaw-mt.log.dtwa-obj50-pass` — 9756/9756 bit-exact. `obj+0x58` is a separate
+  owner/parent ref, **not** the object's id.)
 - **(I2) RNG draw order** — replaced outright by **per-entity substreams** (§4), so no global draw
   ordering is needed.
 
@@ -135,12 +140,14 @@ struct SpawnCommand {
     uint32_t template_id;   // object-type/template (param_2 of FUN_14029f810)
     float    pos[3];        // world spawn position (param_4)
     uint32_t flags;         // param_3/param_6/param_7 packed (spawn kind: projectile, fx, ...)
-    // NO pre-assigned id — the drain calls CreateObject, which assigns the next id by append (I1).
+    // NO pre-assigned id — the drain calls CreateObject, which post-increments the active monotonic
+    // id counter (global DAT_140b153e0+0x80 if mgr+0x63e set, else per-manager mgr+0x620) to stamp
+    // obj+0x50 (I1). requester also fixes WHICH manager is used (sibling managers exist — §10).
 };
 ```
 - **Drain** = `FUN_14029f810(mgr, template, flags, &pos, ...)` in **canonical requester order**, so the
-  append sequence (and thus every new object id) is identical to the serial tick. This is the only place
-  (I1) is honoured.
+  id-counter increment sequence (and thus every new object id `obj+0x50`) is identical to the serial tick.
+  This is the only place (I1) is honoured.
 - `CreateObject` also inserts into ~12 global spatial/category buckets and runs the observer-notify
   sweep — all of that is inside the serial drain, so it never races the Phase-A read.
 - **Volume:** low (spawns + fx per tick, "a few hundred"), so the serial cost is small (matches the
@@ -236,79 +243,32 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
     battle spawns; ~18% use a sibling manager (`DTWAMGR`: engine `0x35878ff0` vs resolved `0x358705e0`,
     ~0x89a0 apart). ⇒ the real `WorldApply::create_object` must resolve the manager from the
     requester/context, not a single global.
-  - ❌ **I1 "dense append" is mischaracterized for the dominant population** — the in-battle
-    `FUN_14029f810` calls are ~100% a *pooled, reused-id, non-registry* branch: `inreg=0`
-    (`FUN_140294bc0(&DAT_140a16fd0, obj+0x58)` never returns the object), `reused≈100%` (ids handed
-    out repeatedly — an append-only allocator never repeats), `grew1=0`, `mono≈8%`. `obj+0x58` is a
-    **reused manager-pool slot index** (`obj+0x58*0x38 + manager+0xd0`, decomp/29f810.c:72), not a
-    dense `DAT_140a16fd0` append index. The registry-append branch in CreateObject (29f810.c:229–248)
-    is *conditional* and did not fire for any captured spawn (projectiles/effects, not persistent GOM
-    units). **⚠️ TODO — contradicts §6.2's "the drain calls CreateObject, which assigns the next id by
-    append (I1)" and §4(I1). Pending human sign-off, do NOT rewrite §4/§6.2 yet.** The real I1 subjects
-    (persistent units that take the `inreg` branch) were not isolated by this capture — a targeted
-    follow-up should filter CreateObject to the `inreg==1` path (e.g. battle-setup / reinforcement
-    spawns) to characterize whether *those* dense-append or also reuse slots, before restating I1.
-  - **Follow-up RAN (2026-06-05, DTWA1 inreg-path capture, evidence `eaw-mt.log.dtwa-round3`): the
-    `inreg==1` path is UNREACHABLE from the per-tick tactical loop.** Added a per-event `DTWA1` log of
-    every registry-member spawn, captured a fully-engaged space battle: **`inreg=0` / `reg_ev=0` across
-    ~96,700 in-battle `CreateObject` calls, `DTWA1` never fired** (it's ungated, so its absence is real).
-    So `FUN_14029f810`'s entire tactical output is the short-lived pooled population; persistent units
-    (ships) are **not** created via this path during the sim loop — their registry append happens
-    off-tactical-path (battle-scene construction at load, or a distinct constructor). **Static lead (not
-    yet resolved):** the registry `DAT_140a16fd0` is a `begin/end` vector (`+0x00/+0x08`); its accessor
-    `FUN_140294a40` returns `begin[reg+0x30]` (a cursor read, not append); the constructor `FUN_140388b60`
-    uses that cursor, not a push. Ghidra exposes no direct WRITE-xref to the begin/end pointers (the
-    push_back is an indirect store; 2491 refs, ~all count reads); DATA-ref candidates for the grow/init
-    site are `FUN_1404907c0` (0x490832) and `FUN_1403d0790` (0x3d0a26) — decompiling those + tracing
-    388b60's full registration is the next probe to locate the true append + its id policy.
-  - **Net implication for the schema (pending sign-off):** for the dominant tactical spawn (projectiles),
-    determinism is governed by the manager **free-list pop order** (`obj+0x58` slot reuse), NOT a dense
-    append. The canonical-order drain still reproduces it *iff* the free-list is part of the frozen/
-    serialized state and spawns apply in canonical order — so §7's conclusion likely survives, but §4/§6.2's
-    *mechanism* ("assigns the next id by append") is wrong for this population and must be restated as a
-    free-list/slot-reuse contract once the true persistent-append site is pinned.
-  - **⚠️ RETRACTION CANDIDATE (2026-06-05, append-site decompile) — the two bullets above read the WRONG
-    field; the object's own id IS a dense monotonic allocation.** Tracing the constructor `FUN_140388b60`
-    found two distinct identities, not one:
-    - **`obj+0x50`** (`plVar4[10]`) = the object's *own* unique id, allocated by `FUN_1402ac980(manager)`
-      (388b60:162; objdump `388f67`: `mov rcx,[obj+0x2b8]`=manager → `call 2ac980`). `2ac980` is a
-      **post-increment monotonic counter**: returns the old `manager+0x620`, writes back `+1`, saturating
-      at `0x3fffff` (objdump 0x1402ac980; decomp/2ac980.c). Per-manager, shared across all its spawns,
-      **never reused** (until 22-bit saturation). It is the key of the canonical id→object `unordered_map`
-      at `manager+0x80` (insert `FUN_140241df0`, MINSTD-hashed key=`obj+0x50`, value=obj; 29f810.c:54-56,
-      decomp/241df0.c). ⇒ object ids **are** assigned by dense monotonic append — §4(I1)/§6.2 are
-      essentially CORRECT; only the *mechanism wording* ("registry-vector count") needs restating as a
-      per-manager saturating counter.
-    - **`obj+0x58`** (`plVar4[0xb]`, what the DTWA oracle read) = CreateObject's **param_3**, set verbatim
-      from the caller (388b60:44). The hot projectile spawner sources it from a *parent* registry object's
-      `+0x4c` field (386660.c:93,111: `FUN_14029f810(mgr, tmpl, parent+0x4c, …)`) — i.e. an **owner/parent
-      id reference**, shared by all siblings (→ `reused≈100%`), indexing the per-owner tables at
-      `manager+0xc8` (0x48 stride, 29f810.c:61) and `manager+0xd0` (0x38 stride, :72). It is **not** this
-      object's own id, so the oracle's `i1_c20=0 / reused≈100% / grew1=0` measured an owner reference, not
-      an allocator — a **wrong-field harness bug, the DTSPL2 lesson recurring** (read the wrong field of the
-      right object). The "free-list pop order" net implication is therefore unsupported.
-    - **✅ CONFIRMED in-game (2026-06-05, DTWA re-pointed to `obj+0x50`, evidence `eaw-mt.log.dtwa-obj50-pass`):**
-      re-ran the DTWA-SPAWN oracle reading `obj+0x50` and snapshotting the allocator counter before/after
-      each real `CreateObject`. Over **9,756 spawns @ tick 1024**: `id_eq_ctr=9756 grew1=9756 mono=9756
-      idfail=0 ctrfail=0 null=0` — every spawn's own id equals the counter's pre-increment value and the
-      counter advances by exactly one. `own_id` runs strictly +1, gap-free (162169→…). **Object ids ARE a
-      dense, monotonic, gap-free allocation — §4(I1)/§6.2's *intent* is vindicated; the earlier
-      `i1_c20=0/reused≈100%/grew1=0` was the wrong-field (`obj+0x58`) artifact, now retired.**
-    - **Mechanism refinement the capture forced (beyond the static read):** the id source is NOT a single
-      per-manager counter — it is **one of two**, selected by the manager flag `mgr+0x63e`:
-      (a) flag SET → `FUN_1402ac980` delegates to `FUN_14028a9e0(&DAT_140b153e0)`, a post-increment of the
-      **global** counter `DAT_140b153e0+0x80` (RVA 0xb15460; decomp/28a9e0.c) — gives process-wide-unique
-      ids; (b) flag CLEAR → post-increment the **per-manager** counter `mgr+0x620`. Both paths fired in one
-      run (errpath/global=6334, per-manager=3422) and **both passed** the equality+grew-by-one check.
-      ⇒ §4(I1)'s mechanism should be restated as "post-increment of the active monotonic id counter
-      (global `DAT_140b153e0+0x80` when `mgr+0x63e` set, else per-manager `mgr+0x620`)", not "registry-vector
-      count".
+  - ✅ **I1 confirmed — object ids are a dense, monotonic, gap-free allocation** (`obj+0x50`). The
+    constructor `FUN_140388b60` stamps two distinct identities, and an earlier DTWA round read the wrong
+    one (`obj+0x58`), which is why it falsely reported `i1_c20=0 / reused≈100% / grew1=0` and prompted a
+    now-retired "free-list pop order" reading. The two fields:
+    - **`obj+0x50`** (`plVar4[10]`) = the object's *own* unique id. Allocated by `FUN_1402ac980(manager)`
+      (388b60:162; objdump `388f67`: `mov rcx,[obj+0x2b8]`=manager → `call 2ac980`) — a **post-increment
+      monotonic counter** selected by the manager flag `mgr+0x63e`: flag SET → delegate to
+      `FUN_14028a9e0(&DAT_140b153e0)`, post-incrementing the **global** counter `DAT_140b153e0+0x80`
+      (RVA 0xb15460; decomp/28a9e0.c, process-wide-unique ids); flag CLEAR → post-increment the
+      **per-manager** counter `mgr+0x620` (decomp/2ac980.c). Both saturate at `0x3fffff` and never reuse.
+      It is the key of the canonical id→object `unordered_map` at `manager+0x80` (insert `FUN_140241df0`,
+      MINSTD-hashed key=`obj+0x50`, value=obj; 29f810.c:54-56, decomp/241df0.c).
+    - **`obj+0x58`** (`plVar4[0xb]`) = CreateObject's **param_3**, set verbatim from the caller (388b60:44);
+      the hot projectile spawner sources it from a *parent* object's `+0x4c` (386660.c:93,111) — an
+      **owner/parent ref**, shared by all siblings (→ `reused≈100%`), indexing the per-owner tables at
+      `manager+0xc8` (0x48 stride, 29f810.c:61) / `manager+0xd0` (0x38 stride, :72). **Not** the object's id.
+    - **In-game proof (2026-06-05, DTWA re-pointed to `obj+0x50`, evidence `eaw-mt.log.dtwa-obj50-pass`):**
+      snapshotting the active counter before/after each real `CreateObject`, over **9,756 spawns @ tick 1024**:
+      `id_eq_ctr=9756 grew1=9756 mono=9756 idfail=0 ctrfail=0 null=0` — every own id equals the counter's
+      pre-increment value, the counter advances by exactly one, `own_id` runs strictly +1 gap-free
+      (162169→…). Both counter paths fired (global=6334, per-manager=3422) and **both passed**. (§4/§6.2
+      updated to this mechanism; this resolves the prior `❌`/free-list TODO.)
     - **Manager-resolution caveat sharpened:** `mgr_fail=3422` correlated **exactly** with the per-manager
       (flag-clear) population, while every global-path spawn resolved the combat singleton cleanly. ⇒ the
-      ~18%/35% sibling-manager mismatch (bullet above) is precisely the flag-clear spawns; `WorldApply`
-      must resolve the manager from the requester/context for those.
-    - **§4/§6.2 reword + striking the two retraction-candidate bullets is now UNBLOCKED by this proof but
-      still gated on human sign-off (Rule 6 — it overturns the committed `❌`/`free-list` bullets).** Await go-ahead before editing §4/§6.2.
+      sibling-manager mismatch (bullet above) is precisely the flag-clear spawns; `WorldApply` must resolve
+      the manager from the requester/context for those.
 - **Still requires engine source (not built):** the double-buffered frozen snapshot (boundary-scope
   work-item #2) and the object-granular shard scheduler. (The `WorldApply` real adapter now exists
   hook-side and is in-game-validated for schema fidelity; manager-resolution + the I1 restatement are
