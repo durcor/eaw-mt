@@ -13,6 +13,20 @@ This contract turns each into a precise interface with named binary bindings, ex
 and a single remaining open-seam fix (manager-resolution), so that when source is available the work is
 **filling in three named functions against a tested interface**, not re-deriving semantics.
 
+### The "source" premise (read this first)
+
+There is **no engine source** and none is obtainable — "source-only to build" throughout this doc means
+**source we reconstruct ourselves by matching decompilation**, not source handed over by Petroglyph. That
+reconstruction is *the same methodology the project's `sim/` lift already uses* (lift a function →
+host-compilable C++ → bit-exact oracle), simply applied to the rest of the sim-tick closure. So the three
+interfaces below are not "one increment away once source arrives" — they are the **integration points
+inside a matching decompilation that does not yet exist** for the orchestration layer. The genuinely
+unbuilt prerequisite is decompiling the **tick driver / orchestration glue** (`FUN_14028d400` →
+`FUN_1403a76b0` → `FUN_140387010`) and the GameObjectManager internals to rebuildable form — the
+cross-cutting part the project has deliberately deferred as "the Phase-B seam," which is precisely the
+hard, high-volume, non-leaf work. The per-object compute bodies (the lifted behaviors/locomotors) are the
+easy, largely-done part. This doc is the *target shape* of that reconstruction, not a near-term build step.
+
 What is already built and host-tested (do not re-spec): the op types (`Command`/`SpawnCommand`/`SfxCommand`),
 the `ShardBuffer` recording sink, the per-entity RNG substreams (`SimRng::substream`, removing invariant I2),
 and the canonical-order `drain_parallel` merge — all passing the §9 determinism gate for N∈{1,2,4,8} ×
