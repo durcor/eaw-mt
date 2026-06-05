@@ -153,6 +153,35 @@ struct SpawnCommand {
 - **Volume:** low (spawns + fx per tick, "a few hundred"), so the serial cost is small (matches the
   Amdahl tail estimate). Projectile spawn from the firing path (`381ff0`) routes here too.
 
+> #### ✅ I2 — `CreateObject` apply internals VERIFIED (2026-06-05, decomp-program Increment I2)
+> The "inserts into ~12 buckets + observer sweep, all inside the serial drain" claim above was
+> **asserted**; I2 lifted the internals (`decomp/20a9b0.c`/`241df0.c`/`294bc0.c`/`2823e0.c`/`289010.c`/
+> `769c58.c`) and confirms the apply target adds **NO determinism invariant beyond I1**:
+> - **Buckets** (`20a9b0` = `ReferenceListClass::insert(ref, dedup)`): every bucket is one container
+>   type — an **intrusive doubly-linked SET** (dedup-walks the ref's own membership list `ref+0x8`;
+>   head-inserts a 0x28 node; `bucket+0x30` = count, `bucket+0x38` = iteration-cursor cache reset to
+>   `0xfffffc19`). Membership order = insertion order = **call order**. Since the drain calls
+>   `CreateObject` in canonical requester order, bucket membership is deterministic **by the serial
+>   drain alone** — no extra invariant, no per-bucket sort.
+> - **Id-index map** (`241df0` at `GOM+0x80` = `std::unordered_map<uint32_t id, GameObject*>::insert`,
+>   Park-Miller/MINSTD hash): **keyed by `obj+0x50`**, so order-INDEPENDENT — deterministic iff the id
+>   is (I1, already in-game-confirmed). The 16 conditional buckets are each gated by a template/object
+>   flag (predicate table in `data_structures/movement_structs.md` §I1), not by order.
+> - **Observer/fog sweep** (`294bc0` registry `at()` over `DAT_140a16fd0` {+0x20 begin,+0x28 count} →
+>   `2823e0` notify-predicate → `289010`): recomputes each qualifying observer's shroud state at
+>   `obs+0x404`, keyed by the observer's **own** slot `obs+0x4c` ⇒ a **Class-1 observer-disjoint** write,
+>   and it runs inside the serial create so it never races Phase-A regardless.
+> - **Manager = `requester+0x2b8`, CONFIRMED at the live spawn call site:** `3825b0:266` calls
+>   `CreateObject(*(requester+0x2b8), …)`. This proves the contract's manager-resolution fix
+>   (`engine_integration_contract.md` Int. #1 §1.2) against the real firing path and explains the
+>   Increment-1 `mgr_fail` split (the manager is **per-requester**, not a global singleton — sibling
+>   managers are simply different requesters' `+0x2b8`). ⇒ `EngineWorldApply::create_object` faithfully
+>   **delegates** to `29f810` with `mgr = *(requester+0x2b8)`; it re-implements nothing.
+>
+> **Reassessment-gate verdict (program doc §5): PASS.** The GOM apply internals are *shallower* than the
+> "12 buckets" feared — one list container, one keyed map, one observer-disjoint sweep — and introduce
+> no new lockstep invariant. I3/I4/I5 proceed as mechanical-to-medium.
+
 ### 6.3 Class 3 — `SfxCommand` (presentation) — EXISTS, off-lockstep
 ```
 struct SfxCommand { void* emitter; uint32_t sfx_id; };   // sim/command_sink.h

@@ -134,7 +134,10 @@ struct SfxCommand {
 // identical to the serial tick (invariant I1). The lifted unit only records WHAT to spawn, never WHERE
 // in the id space. See sim_parallel_command_schema.md §6.2.
 struct SpawnCommand {
-    void*    requester   = nullptr;  // emitting GameObject* (ownership/team/parenting; 29f810 param_1)
+    // I2-confirmed (3825b0:266): the real spawn site calls 29f810(*(requester+0x2b8), ...), i.e. 29f810
+    // param_1 is the requester's MANAGER, not the requester itself. The drain resolves it the same way:
+    //   mgr = *(GameObjectManager**)((char*)requester + 0x2b8)   // never a global singleton
+    void*    requester   = nullptr;  // emitting GameObject*; manager = *(requester+0x2b8) = 29f810 param_1
     uint32_t template_id = 0;        // object-type/template (29f810 param_2)
     float    pos[3]      = {0, 0, 0};// world spawn position (29f810 param_4)
     uint32_t flags       = 0;        // spawn-kind packed (projectile / fx / detached; param_3/6/7)

@@ -120,6 +120,8 @@ public class Phase2ApplyStructs extends GhidraScript {
         put(reflist, 0x00, VOIDP, "vtable", null);
         put(reflist, 0x08, VOIDP, "sentinel", "list sentinel node (== &this+0x8)");
         put(reflist, 0x10, VOIDP, "head", "first node; walk via node+0x8");
+        put(reflist, 0x30, I4, "count", "element count; 20a9b0 (ReferenceListClass::insert) increments on insert");
+        put(reflist, 0x38, I4, "cursor_cache", "cached iteration cursor; 20a9b0 resets to 0xfffffc19 (-999) on mutation; read by 294a40");
 
         // ---- HardPointOwnerRecord (the *(HardPoint+0x20) record; class TBD) -----------------
         // Holds the render/state cluster earlier mis-attributed to GameObjectClass. Non-polymorphic.
@@ -235,6 +237,8 @@ public class Phase2ApplyStructs extends GhidraScript {
         // I1: the GOM CreateObject apply path + the GameObject constructor (render named bucket/id fields)
         typeFunction(0x29f810, "FUN_14029f810 CreateObject apply: gom", ov(0, gomP));
         typeFunction(0x388b60, "FUN_140388b60 GameObject ctor: obj(param_1), gom(param_2)", ov(0, goP, 1, gomP));
+        // I2: the bucket-insert primitive (ReferenceListClass::insert) — param_1 is the bucket list
+        typeFunction(0x20a9b0, "FUN_14020a9b0 ReferenceListClass::insert: bucket(param_1)", ov(0, ptr(reflist)));
         // locomotor vfunc_6 bodies: (behavior, entity, tick)
         typeFunction(0x6236b0, "StarshipLocomotor::vfunc_6: (behavior, entity)", ov(0, locoP, 1, goP));
         typeFunction(0x61e930, "WalkLocomotor::vfunc_6: (behavior, entity)",     ov(0, locoP, 1, goP));
