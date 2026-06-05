@@ -267,6 +267,30 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
     serialized state and spawns apply in canonical order — so §7's conclusion likely survives, but §4/§6.2's
     *mechanism* ("assigns the next id by append") is wrong for this population and must be restated as a
     free-list/slot-reuse contract once the true persistent-append site is pinned.
+  - **⚠️ RETRACTION CANDIDATE (2026-06-05, append-site decompile) — the two bullets above read the WRONG
+    field; the object's own id IS a dense monotonic allocation.** Tracing the constructor `FUN_140388b60`
+    found two distinct identities, not one:
+    - **`obj+0x50`** (`plVar4[10]`) = the object's *own* unique id, allocated by `FUN_1402ac980(manager)`
+      (388b60:162; objdump `388f67`: `mov rcx,[obj+0x2b8]`=manager → `call 2ac980`). `2ac980` is a
+      **post-increment monotonic counter**: returns the old `manager+0x620`, writes back `+1`, saturating
+      at `0x3fffff` (objdump 0x1402ac980; decomp/2ac980.c). Per-manager, shared across all its spawns,
+      **never reused** (until 22-bit saturation). It is the key of the canonical id→object `unordered_map`
+      at `manager+0x80` (insert `FUN_140241df0`, MINSTD-hashed key=`obj+0x50`, value=obj; 29f810.c:54-56,
+      decomp/241df0.c). ⇒ object ids **are** assigned by dense monotonic append — §4(I1)/§6.2 are
+      essentially CORRECT; only the *mechanism wording* ("registry-vector count") needs restating as a
+      per-manager saturating counter.
+    - **`obj+0x58`** (`plVar4[0xb]`, what the DTWA oracle read) = CreateObject's **param_3**, set verbatim
+      from the caller (388b60:44). The hot projectile spawner sources it from a *parent* registry object's
+      `+0x4c` field (386660.c:93,111: `FUN_14029f810(mgr, tmpl, parent+0x4c, …)`) — i.e. an **owner/parent
+      id reference**, shared by all siblings (→ `reused≈100%`), indexing the per-owner tables at
+      `manager+0xc8` (0x48 stride, 29f810.c:61) and `manager+0xd0` (0x38 stride, :72). It is **not** this
+      object's own id, so the oracle's `i1_c20=0 / reused≈100% / grew1=0` measured an owner reference, not
+      an allocator — a **wrong-field harness bug, the DTSPL2 lesson recurring** (read the wrong field of the
+      right object). The "free-list pop order" net implication is therefore unsupported.
+    - **Confirmation still owed (mirrors the DTSPL2 close):** re-point the DTWA oracle from `obj+0x58` to
+      `obj+0x50` and re-capture — expect strictly monotonic, gap-free increment per manager. Only after
+      that in-game proof should §4/§6.2 be reworded and the two retraction-candidate bullets above be
+      struck. **Per Rule 6 (contradicts committed findings) this rewrite is gated on human sign-off.**
 - **Still requires engine source (not built):** the double-buffered frozen snapshot (boundary-scope
   work-item #2) and the object-granular shard scheduler. (The `WorldApply` real adapter now exists
   hook-side and is in-game-validated for schema fidelity; manager-resolution + the I1 restatement are
