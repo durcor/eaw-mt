@@ -14,12 +14,16 @@ void drain_parallel(const std::vector<ShardBuffer*>& shards, WorldApply& world) 
         for (const BufferedOp& op : shard->ops) all.push_back(&op);
     }
 
-    // Merge into canonical order: ascending entity_id (GOM tick order), then per-entity emission seq.
-    // (entity_id, seq) is globally unique because each entity is owned by exactly one shard, so this
-    // is a TOTAL order — stable_sort vs sort is immaterial, but stable_sort documents the intent and
-    // costs nothing here. The resulting sequence equals the serial tick's emission sequence.
+    // Merge into canonical order: (gom_index, emitter visitation rank, per-entity emission seq) — the
+    // I4-corrected key (schema §7). gom_index orders mgr[3] before mgr[4]; entity_id is the Pass-A
+    // visitation RANK (NOT object_id — sorting by object_id would reverse the head-inserted walk and
+    // desync); seq breaks ties within an entity. The triple is globally unique because each entity is
+    // owned by exactly one shard, so this is a TOTAL order — independent of shard/completion order, and
+    // equal to the serial tick's emission sequence. stable_sort documents intent (the key is already
+    // total, so it costs nothing).
     std::stable_sort(all.begin(), all.end(),
         [](const BufferedOp* a, const BufferedOp* b) {
+            if (a->gom_index != b->gom_index) return a->gom_index < b->gom_index;
             if (a->entity_id != b->entity_id) return a->entity_id < b->entity_id;
             return a->seq < b->seq;
         });

@@ -97,6 +97,9 @@ sim-test:
     sim/tests/sim_parallel_test.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_sim_parallel_test
   /tmp/eaw_sim_parallel_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/shard_scheduler_test.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_shard_scheduler_test
+  /tmp/eaw_shard_scheduler_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/damped_spring_test.cpp sim/damped_spring.cpp -o /tmp/eaw_damped_spring_test
   /tmp/eaw_damped_spring_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
