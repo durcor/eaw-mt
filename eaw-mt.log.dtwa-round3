@@ -1,0 +1,8 @@
+DTWA	tick=0	calls=1	i1_c20=0	grew1=0	mono=1	inreg=0	reg_ev=0	notreg=1	reused=0	mgr_pass=1	mgr_fail=0	schemafit=1	null=0
+DTWAMGR	tick=105	engine_mgr=3587b900	resolved=35872ef0	tmpl=338735920	flags=1
+DTWA	tick=109568	calls=9764	i1_c20=0	grew1=0	mono=674	inreg=0	reg_ev=0	notreg=9764	reused=9760	mgr_pass=9296	mgr_fail=468	schemafit=9764	null=0
+DTWA	tick=110592	calls=42642	i1_c20=0	grew1=0	mono=2385	inreg=0	reg_ev=0	notreg=42642	reused=42638	mgr_pass=41278	mgr_fail=1364	schemafit=42642	null=0
+DTWA	tick=111616	calls=69556	i1_c20=0	grew1=0	mono=4154	inreg=0	reg_ev=0	notreg=69556	reused=69552	mgr_pass=67848	mgr_fail=1708	schemafit=69556	null=0
+DTWA	tick=112640	calls=86602	i1_c20=0	grew1=0	mono=5470	inreg=0	reg_ev=0	notreg=86602	reused=86598	mgr_pass=84549	mgr_fail=2053	schemafit=86602	null=0
+DTWA	tick=113664	calls=91883	i1_c20=0	grew1=0	mono=6346	inreg=0	reg_ev=0	notreg=91883	reused=91879	mgr_pass=89571	mgr_fail=2312	schemafit=91883	null=0
+DTWA	tick=114688	calls=96706	i1_c20=0	grew1=0	mono=7160	inreg=0	reg_ev=0	notreg=96706	reused=96702	mgr_pass=94260	mgr_fail=2446	schemafit=96706	null=0

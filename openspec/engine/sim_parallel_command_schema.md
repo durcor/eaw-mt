@@ -248,6 +248,25 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
     (persistent units that take the `inreg` branch) were not isolated by this capture — a targeted
     follow-up should filter CreateObject to the `inreg==1` path (e.g. battle-setup / reinforcement
     spawns) to characterize whether *those* dense-append or also reuse slots, before restating I1.
+  - **Follow-up RAN (2026-06-05, DTWA1 inreg-path capture, evidence `eaw-mt.log.dtwa-round3`): the
+    `inreg==1` path is UNREACHABLE from the per-tick tactical loop.** Added a per-event `DTWA1` log of
+    every registry-member spawn, captured a fully-engaged space battle: **`inreg=0` / `reg_ev=0` across
+    ~96,700 in-battle `CreateObject` calls, `DTWA1` never fired** (it's ungated, so its absence is real).
+    So `FUN_14029f810`'s entire tactical output is the short-lived pooled population; persistent units
+    (ships) are **not** created via this path during the sim loop — their registry append happens
+    off-tactical-path (battle-scene construction at load, or a distinct constructor). **Static lead (not
+    yet resolved):** the registry `DAT_140a16fd0` is a `begin/end` vector (`+0x00/+0x08`); its accessor
+    `FUN_140294a40` returns `begin[reg+0x30]` (a cursor read, not append); the constructor `FUN_140388b60`
+    uses that cursor, not a push. Ghidra exposes no direct WRITE-xref to the begin/end pointers (the
+    push_back is an indirect store; 2491 refs, ~all count reads); DATA-ref candidates for the grow/init
+    site are `FUN_1404907c0` (0x490832) and `FUN_1403d0790` (0x3d0a26) — decompiling those + tracing
+    388b60's full registration is the next probe to locate the true append + its id policy.
+  - **Net implication for the schema (pending sign-off):** for the dominant tactical spawn (projectiles),
+    determinism is governed by the manager **free-list pop order** (`obj+0x58` slot reuse), NOT a dense
+    append. The canonical-order drain still reproduces it *iff* the free-list is part of the frozen/
+    serialized state and spawns apply in canonical order — so §7's conclusion likely survives, but §4/§6.2's
+    *mechanism* ("assigns the next id by append") is wrong for this population and must be restated as a
+    free-list/slot-reuse contract once the true persistent-append site is pinned.
 - **Still requires engine source (not built):** the double-buffered frozen snapshot (boundary-scope
   work-item #2) and the object-granular shard scheduler. (The `WorldApply` real adapter now exists
   hook-side and is in-game-validated for schema fidelity; manager-resolution + the I1 restatement are

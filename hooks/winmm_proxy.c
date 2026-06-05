@@ -3818,6 +3818,12 @@ static uint32_t g_dtwa_inreg=0, g_dtwa_notreg=0, g_dtwa_reused=0;
 static uint8_t  g_dtwa_idseen[8192];   /* bitmap of object ids 0..65535 seen this session */
 static int      g_dtwa_mgrshown=0;
 typedef int64_t (*RegLookupFn)(int64_t,int32_t);   /* FUN_140294bc0(&DAT_140a16fd0, id) -> Object* */
+/* inreg-path (true-I1) capture: the inreg==1 spawns are persistent GOM-registry members — the actual
+ * I1 subjects (ships/units), as opposed to the pooled projectiles that take the notreg branch. Capture
+ * the first 64 individually (DTWA1) to settle whether THOSE dense-append (new_id==count, count grows
+ * by 1) or reuse a freed registry slot. */
+static uint32_t g_dtwa_reg_events=0;
+static uint8_t  g_dtwa_regseen[8192];  /* separate bitmap: registry-id reuse among inreg spawns only */
 
 static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
                                 const float *pos, int64_t p5, int8_t p6, int8_t p7) {
@@ -3846,7 +3852,28 @@ static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
      * "slot reuse inside the GOM registry" from "a separate projectile/particle pool"). */
     { RegLookupFn lk = (RegLookupFn)(g_dt_imgbase + 0x294bc0);
       int64_t slot = lk((int64_t)(g_dt_imgbase + 0xa16fd0), new_id);
-      if (slot == ret) g_dtwa_inreg++; else g_dtwa_notreg++; }
+      if (slot == ret) {
+        g_dtwa_inreg++;
+        /* this object IS the GOM-registry member at index obj+0x58 — the true I1 subject. Capture the
+         * first 64 individually: append? (new_id==count before, count grew by 1) vs registry-slot reuse. */
+        int64_t vb2 = *(int64_t *)(reg + 0x00), ve2 = *(int64_t *)(reg + 0x08);
+        int32_t cntv_a = (int32_t)((ve2 - vb2) >> 3);
+        int append = (new_id == cnt20_b) || (new_id == cntv_b);
+        int regreused = 0;
+        if (new_id >= 0 && new_id < 65536) {
+            uint8_t m = (uint8_t)(1u << (new_id & 7)); uint32_t bi = (uint32_t)new_id >> 3;
+            if (g_dtwa_regseen[bi] & m) regreused = 1; else g_dtwa_regseen[bi] |= m;
+        }
+        if (g_dtwa_reg_events < 64) {
+            char rb[256];
+            snprintf(rb, sizeof rb,
+                "DTWA1\tev=%u\ttick=%u\tnew_id=%d\tcnt20_b=%d\tcnt20_a=%d\tcntv_b=%d\tcntv_a=%d\tappend=%d\tregreused=%d\tmgrmatch=%d\ttmpl=%lld\n",
+                g_dtwa_reg_events, g_dt_frame_ctr?*g_dt_frame_ctr:0, new_id, cnt20_b, cnt20_a,
+                cntv_b, cntv_a, append, regreused, (eng_world_manager()==mgr)?1:0, (long long)template_id);
+            log_write(rb);
+        }
+        g_dtwa_reg_events++;
+      } else g_dtwa_notreg++; }
     /* id reuse: a new id we've already handed out this session == free-list slot reuse → refutes the
      * "dense append" I1 model (the smoking gun: an append-only allocator never repeats an id). */
     if (new_id >= 0 && new_id < 65536) {
@@ -3885,9 +3912,9 @@ dtwa_diag:
         g_dtwa_last = tk;
         char db[256];
         snprintf(db, sizeof db,
-            "DTWA\ttick=%u\tcalls=%u\ti1_c20=%u\tgrew1=%u\tmono=%u\tinreg=%u\tnotreg=%u\treused=%u\tmgr_pass=%u\tmgr_fail=%u\tschemafit=%u\tnull=%u\n",
+            "DTWA\ttick=%u\tcalls=%u\ti1_c20=%u\tgrew1=%u\tmono=%u\tinreg=%u\treg_ev=%u\tnotreg=%u\treused=%u\tmgr_pass=%u\tmgr_fail=%u\tschemafit=%u\tnull=%u\n",
             tk, g_dtwa_calls, g_dtwa_i1_c20, g_dtwa_grew1, g_dtwa_mono,
-            g_dtwa_inreg, g_dtwa_notreg, g_dtwa_reused,
+            g_dtwa_inreg, g_dtwa_reg_events, g_dtwa_notreg, g_dtwa_reused,
             g_dtwa_mgr_pass, g_dtwa_mgr_fail, g_dtwa_schemafit, g_dtwa_null);
         log_write(db);
       } }
