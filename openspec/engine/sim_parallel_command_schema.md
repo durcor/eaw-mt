@@ -216,6 +216,48 @@ monotonic counter assigned as the object emits during Phase A, making the global
 serial-tick order. No float accumulation happens in the drain (the force-sums were intra-object in
 Phase A), so the drain itself introduces no FP-order divergence.
 
+> #### ✅ I4 — iteration set + order lifted (2026-06-05, decomp-program Increment I4)
+> The driver's serviced set + order is now an explicit, ordered structure (gap C). Source: `3639d0`
+> (sim-frame), `2be640` (GOM iterator), `28d400` (gsvc), `29bfe0` (master-list registration).
+>
+> **The canonical tick structure the ShardScheduler + drain must reproduce:**
+> ```
+> for gom in (mgr[3], mgr[4]):            # 3639d0:139-143 — FIXED GOM order
+>   PHASE-A (parallel by object):
+>     Pass A: walk master_update_list (GOM+0xe8), HEAD→sentinel → 3a6b80(entity, tick)
+>   barrier
+>   Pass C: walk second_update_list (GOM+0x130), list order → DynamicTransform::3ac530(entity)
+>   DRAIN (serial): Pass D creation_params (GOM+0x5f0, REVERSE vector, tick-gated → 29f810)
+>                   + the buffered SpawnCommand/Command from Phase-A
+>   [Pass B: conditional master re-walk → 3fc750, post-process]
+> ```
+> Four load-bearing findings:
+> 1. **The canonical drain key is the Pass-A ITERATION RANK, not `object_id`.** The serial tick stamps
+>    new-object ids in *visitation* order, and the master list is **head-inserted** (`20a9b0`, confirmed
+>    `29bfe0:10`) so the walk visits **newest-first ≈ descending `object_id`**. A drain that sorted by
+>    *ascending emitter `object_id`* would **reverse** the create sequence → wrong ids → desync. The
+>    `ShardScheduler`'s explicit ordered owned-object list (this increment's deliverable) IS the rank
+>    source; the drain sorts by `(gom_index, pass-A rank, emission seq)`.
+>    ⚠️ **§7's "canonical entity id" must be read as this iteration rank, not the object's `+0x50` id —
+>    precise restatement pending sign-off (Rule 6).**
+> 2. **GOM order is load-bearing for the GLOBAL id counter.** `mgr[3]` is serviced before `mgr[4]`
+>    (`3639d0`); when `use_global_id` (`mgr+0x63e`) is set, both managers draw from `DAT_140b153e0+0x80`,
+>    so `mgr[3]`'s global-counter creates must precede `mgr[4]`'s (I1 saw both counters fire in one run).
+> 3. **The engine ALREADY has a native deferred-create drain** (Pass D: `creation_params` `GOM+0x5f0`,
+>    drained at end-of-tick in reverse-vector order, tick-gated, `2be640:104-129` → `29f810`). The
+>    rewrite's `SpawnCommand` drain **generalizes an existing mechanism** — "defer creates to a tick-end
+>    drain" is native, not a retrofit. (Firing-path creates `3825b0` are still immediate in the serial
+>    tick; the rewrite buffers them into the same drain.)
+> 4. **The indirect-dispatch fan-out risk is NOT realized.** `28d400`'s `vfunc+0xb0` (28d400:30) is a
+>    SINGLE mode-level frame-service call (the rest of `28d400` is network-vote glue —
+>    `PENDING_TACTICAL_BATTLE_VOTE` → `OutgoingEventQueueClass`); the per-entity iteration below it is the
+>    concrete `2be640` GOM-list walk, and DIFFTRACE already pins the empirical serviced set. No per-entity
+>    vtable fan-out to chase.
+>
+> **Pass C is a second parallel phase** (DynamicTransform reads Pass-A position writes) → a barrier
+> separates Phase-A from Pass C; both shard by object. This feeds `ShardScheduler` (Int. #3): two
+> object-granular parallel phases + a serial drain, per GOM, GOMs in fixed order.
+
 ---
 
 ## 8. Per-behavior / per-slice op mapping
