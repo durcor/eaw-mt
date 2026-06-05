@@ -3770,13 +3770,14 @@ static int64_t eng_world_manager(void) {
     int64_t combat = *(int64_t *)(g_dt_imgbase + 0xb15418);
     return combat ? *(int64_t *)(combat + 0x18) : 0;
 }
-/* Class 2: append-create. Returns the new object's id (obj+0x58). NOT called this increment. */
+/* Class 2: append-create. Returns the new object's OWN id (obj+0x50 = the monotonic id allocated by
+ * FUN_1402ac980 off mgr+0x620; NOT obj+0x58, which is param_3 = the owner/parent ref). NOT called yet. */
 __attribute__((used)) static int64_t eng_create_object(uint32_t template_id, const float pos[3], uint32_t flags) {
     int64_t mgr = eng_world_manager();
     if (!mgr) return -1;
     EngCreateObjFn fn = (EngCreateObjFn)(g_dt_imgbase + 0x29f810);
     int64_t obj = fn(mgr, (int64_t)template_id, (int32_t)flags, pos, 0, 1, 0);
-    return obj ? (int64_t)*(int32_t *)(obj + 0x58) : -1;
+    return obj ? (int64_t)*(int32_t *)(obj + 0x50) : -1;
 }
 /* Class 2b: per-object +0x38 signal fan-out (analogue of one FUN_140220ed0 call). NOT called yet. */
 __attribute__((used)) static void eng_apply_signal(void *emitter, uint32_t sig_id, const void *payload) {
@@ -3792,93 +3793,88 @@ __attribute__((used)) static void eng_flush_sfx(uint32_t sfx_id) {
 }
 
 /* ── Piece 2a: DTWA-SPAWN — detours GameObjectManager::CreateObject (RVA 0x29f810) at entry. ─────────
- * Snapshot the global object registry (0xa16fd0) counts BEFORE the real call, run it, then check the
- * new object's id (obj+0x58). Load-bearing I1 invariant: new id == registry element count before the
- * append (dense append == canonical id order). We measure BOTH registry representations — the begin/
- * end vector (+0x00/+0x08, count=(end-begin)>>3) and the id-indexed table (+0x20/+0x28) — rather than
- * assume which is the dense one. We also confirm eng_world_manager() resolves the SAME manager the
- * engine passed as param_1, and that the SpawnCommand schema captures the call's (template,pos,flags).
+ * RE-POINTED 2026-06-05 to the CORRECT id field. The static append-site decompile (commit 4ab7467)
+ * found the object carries TWO id-like fields 8 bytes apart:
+ *   obj+0x50 (plVar4[10]) = the object's OWN unique id, allocated by FUN_1402ac980(mgr) as a
+ *                           POST-INCREMENT monotonic counter at mgr+0x620 (saturating 0x3fffff,
+ *                           per-manager, never reused). Key of the canonical map at mgr+0x80. THIS is
+ *                           the I1 subject — the dense, monotonic, gap-free id.
+ *   obj+0x58 (plVar4[0xb]) = CreateObject's param_3 = an OWNER/PARENT ref (shared by siblings, reused).
+ * The earlier DTWA rounds read obj+0x58 and "contradicted" I1 — a DTSPL2 wrong-field harness bug. This
+ * version reads obj+0x50 and proves the allocator directly: snapshot ctr_b = *(int32_t*)(mgr+0x620)
+ * BEFORE the real call; after, the OWN id must equal ctr_b (post-increment returns the old value) and
+ * the counter must have advanced by exactly one (ctr_a == ctr_b+1). That pair IS strict, gap-free,
+ * per-manager monotonicity. We also keep the eng_world_manager()==param_1 resolution check.
  * No mutation. Lean EAW_ORACLE build; runtime-gated by EAW_DIFFTRACE=1.
  * Prologue (objdump 0x29f810): 4c894c2420 / 4889542410 / 53 / 4154 / 4156 = 15 bytes, clean before
  * `push r15`; all position-independent (mov [rsp+x],reg + pushes). */
 #define DTWA_29F810_RVA 0x29f810ULL
+#define DTWA_MGR_CTR_OFF 0x620          /* per-manager monotonic id counter (FUN_1402ac980 post-incr) */
+#define DTWA_OBJ_OWNID_OFF 0x50         /* obj's own monotonic id (plVar4[10]) */
+#define DTWA_OBJ_OWNER_OFF 0x58         /* obj's owner/parent ref (plVar4[0xb] = param_3) */
+#define DTWA_SATUR_ID 0x3fffff          /* counter saturation value (also the constructor init) */
 static const BYTE dtwa_29f810_prologue[15] = {  /* mov [rsp+0x20],r9; mov [rsp+0x10],rdx; push rbx/r12/r14 */
     0x4c,0x89,0x4c,0x24,0x20, 0x48,0x89,0x54,0x24,0x10, 0x53, 0x41,0x54, 0x41,0x56
 };
 typedef int64_t (*Create29f810Fn)(int64_t,int64_t,int32_t,const float*,int64_t,int8_t,int8_t);
 static Create29f810Fn g_dtwa_29f810_trampoline = NULL;
-static uint32_t g_dtwa_calls=0, g_dtwa_null=0, g_dtwa_i1_c20=0, g_dtwa_i1_cv=0,
-                g_dtwa_mono=0, g_dtwa_mgr_pass=0, g_dtwa_mgr_fail=0, g_dtwa_schemafit=0, g_dtwa_grew1=0;
-static int64_t  g_dtwa_last_id = -1;
-static int      g_dtwa_shown = 0;
+/* id_eq_ctr = own_id == counter-before (id is the pre-increment value); ctr_grew1 = counter advanced
+ * by exactly one; both == calls (with fails 0) is the bit-exact I1 confirmation. satur/errpath flag the
+ * 22-bit overflow + the mgr+0x63e early-return path where no fresh id is assigned. */
+static uint32_t g_dtwa_calls=0, g_dtwa_null=0, g_dtwa_id_eq_ctr=0, g_dtwa_ctr_grew1=0,
+                g_dtwa_mono=0, g_dtwa_mgr_pass=0, g_dtwa_mgr_fail=0, g_dtwa_schemafit=0,
+                g_dtwa_satur=0, g_dtwa_errpath=0, g_dtwa_idfail=0, g_dtwa_ctrfail=0;
 static uint32_t g_dtwa_last = 0xFFFFFFFFu;
-/* round-2 provenance probes: is obj+0x58 the DAT_140a16fd0 index for THIS object (inreg), and is a
- * new id ever handed out twice this session (reused == free-list slot reuse, refuting dense-append)? */
-static uint32_t g_dtwa_inreg=0, g_dtwa_notreg=0, g_dtwa_reused=0;
-static uint8_t  g_dtwa_idseen[8192];   /* bitmap of object ids 0..65535 seen this session */
-static int      g_dtwa_mgrshown=0;
-typedef int64_t (*RegLookupFn)(int64_t,int32_t);   /* FUN_140294bc0(&DAT_140a16fd0, id) -> Object* */
-/* inreg-path (true-I1) capture: the inreg==1 spawns are persistent GOM-registry members — the actual
- * I1 subjects (ships/units), as opposed to the pooled projectiles that take the notreg branch. Capture
- * the first 64 individually (DTWA1) to settle whether THOSE dense-append (new_id==count, count grows
- * by 1) or reuse a freed registry slot. */
-static uint32_t g_dtwa_reg_events=0;
-static uint8_t  g_dtwa_regseen[8192];  /* separate bitmap: registry-id reuse among inreg spawns only */
+static int      g_dtwa_shown = 0, g_dtwa_mgrshown = 0;
+/* per-manager last own-id, to confirm each manager's id strictly increases across its spawns. Few
+ * managers exist; a tiny linear table suffices. */
+#define DTWA_NMGR 16
+static int64_t  g_dtwa_mgr_key[DTWA_NMGR];
+static int32_t  g_dtwa_mgr_lastid[DTWA_NMGR];
+static int      g_dtwa_nmgr = 0;
+static uint32_t g_dtwa_detail = 0;      /* first-N per-call detail lines */
 
+/* The id source is selected by mgr+0x63e: when SET, FUN_1402ac980 delegates to FUN_14028a9e0 which
+ * post-increments a GLOBAL counter at DAT_140b153e0+0x80 (RVA 0xb15460); when CLEAR it post-increments
+ * the per-manager counter mgr+0x620. We snapshot BOTH before the call and validate against the one the
+ * flag selects, so the check holds in every game mode. */
+#define DTWA_GLOBAL_CTR_RVA 0xb15460ULL
 static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
                                 const float *pos, int64_t p5, int8_t p6, int8_t p7) {
-    /* snapshot registry counts BEFORE the append (cheap; only retained when difftrace is on). */
-    int64_t reg = g_dt_imgbase ? (int64_t)(g_dt_imgbase + 0xa16fd0) : 0;
-    int32_t cnt20_b = 0, cntv_b = 0; int have_before = 0;
-    if (reg && dt_on()) {
-        cnt20_b = *(int32_t *)(reg + 0x28);
-        int64_t vb = *(int64_t *)(reg + 0x00), ve = *(int64_t *)(reg + 0x08);
-        cntv_b = (int32_t)((ve - vb) >> 3);
+    /* snapshot BOTH id counters + the path-select flag BEFORE the append. */
+    int64_t gctr_p = g_dt_imgbase ? (int64_t)(g_dt_imgbase + DTWA_GLOBAL_CTR_RVA) : 0;
+    int32_t ctr_b = 0, gctr_b = 0; int8_t errflag_b = 0; int have_before = 0;
+    if (mgr && dt_on()) {
+        ctr_b      = *(int32_t *)(mgr + DTWA_MGR_CTR_OFF);
+        gctr_b     = gctr_p ? *(int32_t *)gctr_p : 0;
+        errflag_b  = *(int8_t  *)(mgr + 0x63e);   /* SET => global path, CLEAR => per-manager path */
         have_before = 1;
     }
     int64_t ret = g_dtwa_29f810_trampoline(mgr, template_id, flags, pos, p5, p6, p7);
     if (!dt_on() || !have_before) goto dtwa_diag;
     if (ret == 0) { g_dtwa_null++; goto dtwa_diag; }
     {
-    int32_t new_id  = *(int32_t *)(ret + 0x58);
-    int32_t cnt20_a = *(int32_t *)(reg + 0x28);
+    int32_t own_id    = *(int32_t *)(ret + DTWA_OBJ_OWNID_OFF);   /* the I1 subject */
+    int32_t owner_ref = *(int32_t *)(ret + DTWA_OBJ_OWNER_OFF);   /* param_3 (for the detail line only) */
+    /* the counter the allocator actually used this call (flag set => global, else per-manager). */
+    int32_t sel_b = errflag_b ? gctr_b : ctr_b;
+    int32_t sel_a = errflag_b ? (gctr_p ? *(int32_t *)gctr_p : 0) : *(int32_t *)(mgr + DTWA_MGR_CTR_OFF);
     g_dtwa_calls++;
-    if (new_id == cnt20_b)        g_dtwa_i1_c20++;     /* append into the id-indexed table */
-    if (new_id == cntv_b)         g_dtwa_i1_cv++;      /* append into the begin/end vector */
-    if (cnt20_a == cnt20_b + 1)   g_dtwa_grew1++;      /* the id-table grew by exactly one */
-    if (g_dtwa_last_id < 0 || new_id > (int32_t)g_dtwa_last_id) g_dtwa_mono++;  /* strictly increasing */
-    g_dtwa_last_id = new_id;
-    /* registry membership: is obj+0x58 actually the DAT_140a16fd0 index for THIS object? (distinguishes
-     * "slot reuse inside the GOM registry" from "a separate projectile/particle pool"). */
-    { RegLookupFn lk = (RegLookupFn)(g_dt_imgbase + 0x294bc0);
-      int64_t slot = lk((int64_t)(g_dt_imgbase + 0xa16fd0), new_id);
-      if (slot == ret) {
-        g_dtwa_inreg++;
-        /* this object IS the GOM-registry member at index obj+0x58 — the true I1 subject. Capture the
-         * first 64 individually: append? (new_id==count before, count grew by 1) vs registry-slot reuse. */
-        int64_t vb2 = *(int64_t *)(reg + 0x00), ve2 = *(int64_t *)(reg + 0x08);
-        int32_t cntv_a = (int32_t)((ve2 - vb2) >> 3);
-        int append = (new_id == cnt20_b) || (new_id == cntv_b);
-        int regreused = 0;
-        if (new_id >= 0 && new_id < 65536) {
-            uint8_t m = (uint8_t)(1u << (new_id & 7)); uint32_t bi = (uint32_t)new_id >> 3;
-            if (g_dtwa_regseen[bi] & m) regreused = 1; else g_dtwa_regseen[bi] |= m;
-        }
-        if (g_dtwa_reg_events < 64) {
-            char rb[256];
-            snprintf(rb, sizeof rb,
-                "DTWA1\tev=%u\ttick=%u\tnew_id=%d\tcnt20_b=%d\tcnt20_a=%d\tcntv_b=%d\tcntv_a=%d\tappend=%d\tregreused=%d\tmgrmatch=%d\ttmpl=%lld\n",
-                g_dtwa_reg_events, g_dt_frame_ctr?*g_dt_frame_ctr:0, new_id, cnt20_b, cnt20_a,
-                cntv_b, cntv_a, append, regreused, (eng_world_manager()==mgr)?1:0, (long long)template_id);
-            log_write(rb);
-        }
-        g_dtwa_reg_events++;
-      } else g_dtwa_notreg++; }
-    /* id reuse: a new id we've already handed out this session == free-list slot reuse → refutes the
-     * "dense append" I1 model (the smoking gun: an append-only allocator never repeats an id). */
-    if (new_id >= 0 && new_id < 65536) {
-        uint8_t m = (uint8_t)(1u << (new_id & 7)); uint32_t bi = (uint32_t)new_id >> 3;
-        if (g_dtwa_idseen[bi] & m) g_dtwa_reused++; else g_dtwa_idseen[bi] |= m;
+    if (errflag_b != 0) g_dtwa_errpath++;     /* informational: count global-path spawns */
+    if (own_id == DTWA_SATUR_ID) g_dtwa_satur++;
+    /* I1 core: own id == pre-increment counter, and the counter advanced by exactly one. */
+    if (own_id == sel_b)        g_dtwa_id_eq_ctr++; else g_dtwa_idfail++;
+    if (sel_a == sel_b + 1)     g_dtwa_ctr_grew1++; else g_dtwa_ctrfail++;
+    /* per-(manager,path) strict monotonicity of the own id. global-path spawns key on a sentinel so
+     * all managers sharing the global counter are tracked as one stream. */
+    { int64_t key = errflag_b ? (int64_t)-1 : mgr;
+      int slot = -1;
+      for (int i = 0; i < g_dtwa_nmgr; i++) if (g_dtwa_mgr_key[i] == key) { slot = i; break; }
+      if (slot < 0 && g_dtwa_nmgr < DTWA_NMGR) { slot = g_dtwa_nmgr++; g_dtwa_mgr_key[slot] = key; g_dtwa_mgr_lastid[slot] = -1; }
+      if (slot >= 0) {
+        if (g_dtwa_mgr_lastid[slot] < 0 || own_id > g_dtwa_mgr_lastid[slot]) g_dtwa_mono++;
+        g_dtwa_mgr_lastid[slot] = own_id;
+      } else { g_dtwa_mono++; }   /* >16 streams (won't happen); don't penalise */
     }
     /* manager-pointer resolution: our adapter must resolve the same `this` the engine got as param_1. */
     { int64_t mgr_res = eng_world_manager();
@@ -3896,13 +3892,23 @@ static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
       } }
     /* SpawnCommand schema fidelity: (template,flags) are scalars; pos must be a readable float[3]. */
     if (pos) g_dtwa_schemafit++;
-    if (!(new_id == cnt20_b || new_id == cntv_b) && !g_dtwa_shown) {
-        g_dtwa_shown = 1;
-        char xb[256];
+    /* first 64 per-call detail lines: own_id vs selected counter vs owner_ref — direct allocator evidence. */
+    if (g_dtwa_detail < 64) {
+        char rb[256];
+        snprintf(rb, sizeof rb,
+            "DTWA1\tev=%u\ttick=%u\town_id=%d\tsel_b=%d\tsel_a=%d\towner_ref=%d\tid_eq_ctr=%d\tgrew1=%d\tgpath=%d\tmgrmatch=%d\ttmpl=%lld\n",
+            g_dtwa_detail, g_dt_frame_ctr?*g_dt_frame_ctr:0, own_id, sel_b, sel_a, owner_ref,
+            (own_id==sel_b)?1:0, (sel_a==sel_b+1)?1:0, errflag_b?1:0,
+            (eng_world_manager()==mgr)?1:0, (long long)template_id);
+        log_write(rb);
+        g_dtwa_detail++;
+    }
+    if ((own_id != sel_b || sel_a != sel_b + 1) && !g_dtwa_shown) {
+        g_dtwa_shown = 1; char xb[256];
         snprintf(xb, sizeof xb,
-            "DTWAMISS\ttick=%u\tnew_id=%d\tcnt20_b=%d\tcntv_b=%d\tcnt20_a=%d\ttmpl=%lld\tflags=%d\n",
-            g_dt_frame_ctr?*g_dt_frame_ctr:0, new_id, cnt20_b, cntv_b, cnt20_a,
-            (long long)template_id, flags);
+            "DTWAMISS\ttick=%u\town_id=%d\tsel_b=%d\tsel_a=%d\towner_ref=%d\tgpath=%d\ttmpl=%lld\tflags=%d\n",
+            g_dt_frame_ctr?*g_dt_frame_ctr:0, own_id, sel_b, sel_a, owner_ref,
+            errflag_b?1:0, (long long)template_id, flags);
         log_write(xb);
     }
     }
@@ -3912,9 +3918,9 @@ dtwa_diag:
         g_dtwa_last = tk;
         char db[256];
         snprintf(db, sizeof db,
-            "DTWA\ttick=%u\tcalls=%u\ti1_c20=%u\tgrew1=%u\tmono=%u\tinreg=%u\treg_ev=%u\tnotreg=%u\treused=%u\tmgr_pass=%u\tmgr_fail=%u\tschemafit=%u\tnull=%u\n",
-            tk, g_dtwa_calls, g_dtwa_i1_c20, g_dtwa_grew1, g_dtwa_mono,
-            g_dtwa_inreg, g_dtwa_reg_events, g_dtwa_notreg, g_dtwa_reused,
+            "DTWA\ttick=%u\tcalls=%u\tid_eq_ctr=%u\tgrew1=%u\tmono=%u\tidfail=%u\tctrfail=%u\tsatur=%u\terrpath=%u\tmgr_pass=%u\tmgr_fail=%u\tschemafit=%u\tnull=%u\n",
+            tk, g_dtwa_calls, g_dtwa_id_eq_ctr, g_dtwa_ctr_grew1, g_dtwa_mono,
+            g_dtwa_idfail, g_dtwa_ctrfail, g_dtwa_satur, g_dtwa_errpath,
             g_dtwa_mgr_pass, g_dtwa_mgr_fail, g_dtwa_schemafit, g_dtwa_null);
         log_write(db);
       } }
