@@ -3964,26 +3964,37 @@ static const BYTE dtwa_240940_prologue[17] = {  /* mov rax,rsp; mov [rax+0x18],r
 };
 typedef void (*Sig240940Fn)(int64_t,uint32_t,const void*);
 static Sig240940Fn g_dtwa_240940_trampoline = NULL;
-static uint32_t g_dtwasig_calls=0, g_dtwasig_sigok=0, g_dtwasig_disp0=0;
-static uint32_t g_dtwasig_sigseen[16]; static int g_dtwasig_nseen=0;
+#define DTWASIG_NSIG 48
+static uint32_t g_dtwasig_calls=0, g_dtwasig_sigok=0, g_dtwasig_disp0=0, g_dtwasig_pl0=0, g_dtwasig_emok=0;
+static uint32_t g_dtwasig_sigseen[DTWASIG_NSIG], g_dtwasig_sigcnt[DTWASIG_NSIG]; static int g_dtwasig_nseen=0;
+static uint32_t g_dtwasig_sigover=0;   /* distinct sig_ids beyond DTWASIG_NSIG (table-full overflow) */
 static uint32_t g_dtwasig_last=0xFFFFFFFFu;
 
 static void dtwa_240940_hook(int64_t dispatcher, uint32_t sig_id, const void *payload) {
     g_dtwa_240940_trampoline(dispatcher, sig_id, payload);
     if (!dt_on()) return;
     g_dtwasig_calls++;
-    if (dispatcher == 0) g_dtwasig_disp0++;
-    if (sig_id < 0x1000)  g_dtwasig_sigok++;     /* sane signal-id range (Command.sig_id is a small enum) */
-    { int found=0; for (int i=0;i<g_dtwasig_nseen;i++) if (g_dtwasig_sigseen[i]==sig_id) { found=1; break; }
-      if (!found && g_dtwasig_nseen<16) g_dtwasig_sigseen[g_dtwasig_nseen++]=sig_id; }
+    /* Command-schema field recoverability (the three fields a Class-2b Command needs):
+     *  emitter = dispatcher-0x38 (the containing object); recoverable iff dispatcher is a real ptr.
+     *  sig_id  = small enum; payload = opaque blob ptr. We confirm each is present, not dropped. */
+    if (dispatcher == 0)              g_dtwasig_disp0++;
+    else if (dispatcher >= 0x38)      g_dtwasig_emok++;   /* dispatcher-0x38 is a valid emitter base addr */
+    if (payload == NULL)              g_dtwasig_pl0++;
+    if (sig_id < 0x1000)              g_dtwasig_sigok++;   /* sane signal-id range (Command.sig_id enum) */
+    /* per-sig histogram: quantify the live Class-2b channel (the modeled 8 sigs are a subset) */
+    { int found=0; for (int i=0;i<g_dtwasig_nseen;i++) if (g_dtwasig_sigseen[i]==sig_id) { g_dtwasig_sigcnt[i]++; found=1; break; }
+      if (!found) { if (g_dtwasig_nseen<DTWASIG_NSIG) { g_dtwasig_sigseen[g_dtwasig_nseen]=sig_id; g_dtwasig_sigcnt[g_dtwasig_nseen]=1; g_dtwasig_nseen++; }
+                    else g_dtwasig_sigover++; } }
     { uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
       if (tk != g_dtwasig_last && (tk & 0x3ffu)==0) {   /* every 1024 ticks */
         g_dtwasig_last = tk;
-        char db[320];
-        int off = snprintf(db, sizeof db, "DTWASIG\ttick=%u\tcalls=%u\tsigok=%u\tdisp0=%u\tsigs=",
-                           tk, g_dtwasig_calls, g_dtwasig_sigok, g_dtwasig_disp0);
-        for (int i=0;i<g_dtwasig_nseen && off<(int)sizeof db-12;i++)
-            off += snprintf(db+off, sizeof db-off, "%x,", g_dtwasig_sigseen[i]);
+        char db[1024];
+        int off = snprintf(db, sizeof db,
+            "DTWASIG\ttick=%u\tcalls=%u\tsigok=%u\temok=%u\tdisp0=%u\tpl0=%u\tdistinct=%d\tsigover=%u\thist=",
+            tk, g_dtwasig_calls, g_dtwasig_sigok, g_dtwasig_emok, g_dtwasig_disp0,
+            g_dtwasig_pl0, g_dtwasig_nseen, g_dtwasig_sigover);
+        for (int i=0;i<g_dtwasig_nseen && off<(int)sizeof db-20;i++)
+            off += snprintf(db+off, sizeof db-off, "%x:%u,", g_dtwasig_sigseen[i], g_dtwasig_sigcnt[i]);
         snprintf(db+off, sizeof db-off, "\n");
         log_write(db);
       } }
