@@ -288,7 +288,9 @@ A correct implementation must pass, in addition to the existing per-unit bit-exa
 - **Still requires engine source (not built):** the double-buffered frozen snapshot (boundary-scope
   work-item #2) and the object-granular shard scheduler. (The `WorldApply` real adapter now exists
   hook-side and is in-game-validated for schema fidelity; manager-resolution + the I1 restatement are
-  the open items above.)
+  the open items above.) **→ These three items are now turned into a build-ready drop-in interface spec
+  with named binary bindings, exact signatures/offsets, and the manager-resolution fix closed on paper
+  (resolve from `requester+0x2b8`) in `engine_integration_contract.md`.**
 - **Out of scope (deliberately serial):** the AI Lua pump (≈0.02ms/tick — left serial sidesteps the
   shared-`global_State` problem, boundary-scope work-item #5).
 
