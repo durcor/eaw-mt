@@ -330,6 +330,26 @@ depends on it):
      Starship oracle:** capture a battle with maneuvering Starship-class units (fighter/corvette;
      player-driven or a loaded save). The lift itself remains internally consistent (16 host checks);
      validation is blocked on test data, not a known defect.
+   - **DTVELS provenance RE-VERIFIED 2026-06-04 (prompted by the DTSPL2 wrong-object lesson — "a
+     clean precondition survey does NOT by itself prove trigger-absent").** Unlike DTSPL2, this one is
+     NOT a harness bug — the full chain is verified against RTTI + the on-disk vtable: (1) RTTI
+     `Phase0RttiMap.tsv:1258` maps `.?AVStarshipLocomotorBehaviorClass@@` to vtable **RVA `0x8ae250`**
+     (the exact RVA the harness gates on); (2) reading the binary vtable at `0x8ae250` slot 6 (vfunc_6)
+     yields **`0x6236b0`** = `starship_tick`; (3) the lifted integrator `0x6224b0` (`integrate_velocity`)
+     is called **only** from `0x6236b0`, and `functions.tsv` namespaces both to
+     `StarshipLocomotorBehaviorClass` — so the integrator executes *only* via Starship's vfunc_6;
+     (4) DTVELS reads `coord+0xa8` (= `LocomotorState`) at `+0x14/18/1c`, the same struct/offset the
+     integrator writes. Empirically every captured battle's locomotors are **only** Fighter
+     (`0x8a6198`, 23393×) + SimpleSpace (`0x8aeaf8`, 12280×) — **never** Starship; `DTVELS`=0 across all
+     logs. ⇒ a **genuine test-data gap** (no `StarshipLocomotorBehaviorClass` unit has appeared, so
+     `6236b0`/`6224b0` never run), NOT a wrong-object error. Note the contrast with DTSPL2: there the
+     dominant path *was* running and the harness read the wrong sibling struct; here the function does
+     not execute at all, so no harness redesign reaches it — only the right unit type does. **Robust
+     closure when a Starship-unit battle is available:** convert DTVELS from the current passive
+     sibling-struct snapshot (checked offline against the fragile `pos[t]−pos[t−1]==vel[t]` invariant)
+     to a `0x6224b0`/`0x6236b0` **entry detour** that recomputes `integrate_velocity` in `sim/locomotor`
+     terms and bit-compares to the engine's own written velocity — the same pattern that gave DTSPL2 its
+     decisive 1.37M bit-exact PASS.
    - **Starship auto-targeting added 2026-05-30** (`winmm_proxy.c` `dt_loco_vtbl_rva`): the harness
      scans each ship's behavior array (`coord+0x278`/`+0x290`) for its locomotor vtable, tags `DTVEL`
      with the family (`loco=<rva>`), and emits a dedicated `DTVELS` line for the first ship whose
