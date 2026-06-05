@@ -31,7 +31,28 @@ live data, (ii) carries **no** control-flow risk, and (iii) does not need any ne
 
 ---
 
-## 1. Milestone a0 — `DT-DRAIN`: confirm the canonical key reproduces live serial order (DO THIS)
+## 1. Milestone a0 — `DT-DRAIN`: confirm the canonical key reproduces live serial order ✅ PASS 2026-06-05
+
+> **✅ a0 PASS (2026-06-05, evidence `eaw-mt.log.dtdrain-pass`).** Built observe-only into `winmm_proxy.c`
+> (`b3a76b0_hook` stamps each firing ship's visitation rank + `obj+0x50`; the DTWA-SPAWN hook attributes
+> each firing-path `29f810` create to the current emitter and counts key inversions at every emitter
+> transition). Over a multi-tick-cycle capture: **attr=195,720** attributed firing-path creates,
+> **trans=102,397** emitter transitions —
+> - **`rank_down = 0`** (zero of 102,397): the `(gom,rank,seq)` key **never** inverts the live emission
+>   order ⇒ it reproduces the serial tick.
+> - **`id_up = 0, id_eq = 0, id_down = 102,397`** (100%): **every** emitter transition has *decreasing*
+>   `object_id` ⇒ the live emission order is strictly descending-id, so an `(object_id,seq)` drain key
+>   would reverse 100% of transitions → desync. This is the in-game negative control, and it is total.
+> - `DTDRAIN1` detail shows the atom: e.g. `rank 6→7` while `id 162172→162171` — head-insert's `rank+1 ↔
+>   id−1`, exactly the I4 prediction. (`unattr=45,726` = creates outside the firing window — Pass-D
+>   deferred / death / menu fx — correctly excluded.)
+>
+> ⇒ The §7 canonical drain key is confirmed against the live engine; the rank correction (I4) is proven
+> load-bearing in-game. The host gate's negative control now has its in-game twin.
+
+The host gate proved, with a toy, that the `(gom_index, rank, seq)` key reproduces the serial tick and
+that an `object_id` key does **not** (the negative control). a0 is the **in-game** version of that exact
+test — observe-only, the same risk class as every shipped DT* oracle.
 
 The host gate proved, with a toy, that the `(gom_index, rank, seq)` key reproduces the serial tick and
 that an `object_id` key does **not** (the negative control). a0 is the **in-game** version of that exact
@@ -101,8 +122,8 @@ restructure's *control flow* is sound in-game, then becomes the substrate for re
 ## 3. Sequencing (the recommendation)
 
 ```
-a0  DT-DRAIN passive key oracle      ← DO NOW (no risk, no lift, validates the core claim in-game)
- └─ a1  1-shard tick restructure     ← then (control-flow takeover, immediate creates, signal/sfx drain)
+a0  DT-DRAIN passive key oracle      ← ✅ DONE 2026-06-05 (rank_down=0; id_down=100% — key confirmed in-game)
+ └─ a1  1-shard tick restructure     ← NEXT (control-flow takeover, immediate creates, signal/sfx drain)
      └─ (b)  lift remaining Phase-A bodies (399450/381dc0, 3ac530, …)   ← only once a1 holds
          └─ a2  ≥2-shard with snapshot + deferred creates              ← the real parallel finish line
 ```
