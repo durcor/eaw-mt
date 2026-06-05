@@ -263,8 +263,9 @@ undefined8 FUN_1403825b0(longlong param_1,longlong *param_2,longlong param_3)
           puVar11 = &local_230;
           uVar19 = CONCAT31((int3)((uint)uVar16 >> 8),1);
           plVar12 = (longlong *)
-                    FUN_14029f810(*(undefined8 *)(*(longlong *)(param_1 + 0x10) + 0x2b8),lVar7,
-                                  *(undefined4 *)(lVar9 + 0x4c),&local_2b8,puVar11,uVar19,0);
+                    FUN_14029f810(*(GameObjectManagerClass **)
+                                   (*(longlong *)(param_1 + 0x10) + 0x2b8),lVar7,
+                                  *(int *)(lVar9 + 0x4c),&local_2b8,puVar11,1,0);
           iVar6 = 0;
           uVar16 = 0;
           local_res20 = (undefined **)0x0;

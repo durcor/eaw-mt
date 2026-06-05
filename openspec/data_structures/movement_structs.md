@@ -308,6 +308,67 @@ Field map of `HardPointClass` (`e`). Earlier "movement" labels corrected:
 
 ---
 
+## ✅ I1 — GOM `CreateObject` apply layout + id allocator (2026-06-05)
+
+Decomp-program Increment **I1** (struct completion for the sim-tick closure, `sim_tick_decomp_program.md`).
+Ground-truthed from the constructor `FUN_140388b60`, `CreateObject` `FUN_14029f810`, the id-incrementer
+`FUN_1402ac980`/`FUN_14028a9e0`, and the spawn caller `FUN_1403825b0` — then applied as named Ghidra
+fields (`Phase2ApplyStructs.java`, +20 fields; the GOM param of `29f810` and the object/GOM params of
+`388b60` are now retyped so the whole apply path renders named — verified in `decomp/29f810.c`,
+`388b60.c`, `3825b0.c`).
+
+### GameObjectClass — the create/id cluster (new in I1)
+
+| Offset | Field | Width | Meaning (citation) |
+|---|---|---|---|
+| `+0x50` | `object_id` | int | **Lockstep id (invariant I1).** Ctor `388b60` writes `2ac980()` here (`object_id = iVar5`); pre-real-alloc value is `0x3fffff`. `29f810` then inserts `(object_id, obj)` into the GOM id-index map. Saturates at `0x3fffff`. |
+| `+0x58` | `type_index` | int | `obj[0xb]`, read as `(int)`; indexes the GOM per-type table (`GOM+0xd0`, stride 0x38, `29f810`) and the global type registry `DAT_140a16fd0`. |
+| `+0x298` | `type_def` | ptr | `obj[0x53]`; GameObjectType/template-definition ptr — source of every classification flag/float read across `29f810` (`+0x41/+0x54/+0x1648/+0x23e8/+0x2120/…`). |
+| `+0x2a0` | `render_anim_obj` | ptr | `obj[0x54]`; render/anim object (`265280` set-speed, `265ae0` anim-state) — Class-3 presentation. |
+| `+0x2b8` | `manager` | ptr→GOM | `obj[0x57]`; **back-ref to the owning `GameObjectManager`.** `388b60` gates id-alloc on `manager != 0`; `3825b0:266` passes `*(obj+0x2b8)` as the GOM to `CreateObject`. **== the contract's `requester+0x2b8`** (`engine_integration_contract.md` Int. #1). |
+
+### GameObjectManagerClass — the `CreateObject` apply target (new in I1)
+
+`FUN_14029f810(gom, template, flags, pos, …)` allocates+constructs via `FUN_140769c58`(alloc 0x8a0) →
+`FUN_140388b60`(ctor), then inserts the new object's ref (`obj+0x18`) into a fixed set of buckets via the
+**bucket-insert primitive `FUN_14020a9b0`** (not yet lifted — that's I2). Bucket/field offsets:
+
+| Offset | Field | Insert condition (`29f810`) |
+|---|---|---|
+| `+0x38` | `bucket_primary` | **unconditional** — every created object joins this |
+| `+0x40`/`+0x48` | `observer_sentinel`/`observer_head` | iterated (not inserted): nearby-object sweep, walk `*(GOM+0x48)` via `node+0x8` until `==GOM+0x40` |
+| `+0x80` | `id_index_map` | unconditional — `FUN_140241df0(GOM+0x80, …, &object_id)` keys obj by its id |
+| `+0xc8` | `category_array` | unconditional — insert at `*(GOM+0xc8) + flags*0x48` (a 0x48-stride bucket array indexed by the create `flags` arg) |
+| `+0xd0` | `type_table` | indexed (not inserted): `*(GOM+0xd0) + type_index*0x38` |
+| `+0xd8`/`+0xe0` | `notify_list_d8`/`notify_list_e0` | create-notify listeners (`vfunc+8`, ref `obj+0x28`); `+0xe0` gated by `39ac80(obj)` |
+| `+0x408` | `owning_multilist` | iff `FUN_140370320(template,0x4a) != 0` |
+| `+0x1c8` | `category_list_1c8` | iff `FUN_140374da0(template,obj)` |
+| `+0x210` | `category_list_210` | iff `template+0x64c > 0` |
+| `+0x258` | `category_list_258` | iff `template+0x52` |
+| `+0x2a0` | `category_list_2a0` | iff `obj+0x334 != -1` |
+| `+0x2e8` | `category_list_2e8` | iff `template+0x1e20 \|\| +0x1df8 \|\| +0x21f4 > 0` |
+| `+0x330` | `category_list_330` | iff `obj+0x368 != -1` |
+| `+0x378` | `category_list_378` | iff `obj+0x397 != -1` |
+| `+0x560` | `category_list_560` | iff `obj+0x335 != -1` |
+| `+0x5a8` | `category_list_5a8` | iff `template+0x13` |
+| `+0x558` | `optional_observer` | conditional create-notify target (template flags `+0x54/+0x56/+0x57`) |
+
+### The id allocator (invariant I1, confirmed)
+
+`FUN_1402ac980(gom)` returns the next id and post-increments the counter; the object stores it at
+`obj+0x50`:
+- `gom+0x63e` (`use_global_id`, u8): if `!= 0`, ids come from the **global** counter object `DAT_140b153e0`
+  (counter at `+0x80`, incremented by `FUN_14028a9e0`); otherwise from the **per-manager** counter
+  `gom+0x620` (`id_counter`, int).
+- Both saturate: at `0x3ffffe` the next value clamps to `0x3fffff` (then stays). This is the I1
+  ceiling already validated in-game (DTWA 9756/9756, schema §10).
+- `gom+0x63c` (`create_flag_63c`, u8) is passed to `FUN_1403935b0` during post-insert setup.
+
+This is exactly the dual-counter (global/per-manager) selection the parallel command schema's I1 oracle
+checks; the named fields make `EngineWorldApply::create_object` (Int. #1) and the I2 bucket lift readable.
+
+---
+
 ## Phase-2 TODO (priority order)
 1. ~~Entity transform/position offset~~ — **RESOLVED** (render-side node-manager chain; not a sim
    field — see GameObjectClass §). No harness fold.
