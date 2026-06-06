@@ -1,0 +1,63 @@
+// sim/firing_intercept.h — (b) firing-body lift, b2 piece 1: the projectile-intercept lead solver.
+//
+// The fire-control body FUN_1403825b0 (the §0 blocker) computes WHERE to aim a projectile so it hits a
+// moving target. Per the b1 read-set classification (firing_body_lift_scope.md §7), the aim/intercept
+// GEOMETRY is the clean, snapshot-able half: it reads only a flat target slice (pos/vel) + a reference-
+// frame velocity, with no vfunc dispatch and no cross-entity write. This file lifts the matrix-free core
+// of that half:
+//
+//   firing_predict_pos_linear  = FUN_140393b70 SIMPLE mode (DAT_140b2c37c == 0): linear extrapolation of
+//                                the target's position at a future time t.  (The complex/curved mode —
+//                                DAT_140b2c37c != 0, an iterative matrix integration via FUN_14022d390 —
+//                                is a LATER b2 piece, alongside the circumcenter FUN_14038ee10.)
+//   firing_intercept_lead      = FUN_140399e20: the quadratic projectile-intercept solver (the fallback /
+//                                direct-aim path of the full lead solver FUN_140399450). Solves for the
+//                                earliest positive impact time, then leads the aim to the predicted spot.
+//
+// SNAPSHOT-READY: every cross-object read is hoisted to an explicit `vec3` parameter, so a Phase-A worker
+// feeds these from `FrozenSnapshot` (no live pointer chasing). The reference-frame velocity `frame_vel`
+// is the engine's `ref + {0xc,0x1c,0x2c}` where `ref = (tgt+0xa8 ? *(tgt+0xa8)+0x164 : tgt+0x248)` —
+// resolved by the caller/snapshot, passed in here.
+//
+// THREADING: the binary writes its result through GLOBAL scratch (FUN_140393b70 → DAT_140b2ec18..30;
+// FUN_140399e20 has none). This lift returns by value — the global scratch is LOCALIZED, removing that
+// parallel hazard (one of the three the b1 scope flagged).
+//
+// ── FP fidelity (per the #8-part-2 / DTARG2 banked non-associativity lessons) ─────────────────────────
+// Every sum/product below preserves the binary's operand ORDER and grouping. Notable groupings from the
+// 0x399e20 / 0x393b70 decompile:
+//   a (quadratic 'A')   = (rvy*rvy + rvx*rvx + rvz*rvz) - (((g*speed)*g)*speed)
+//   b (quadratic 'B')   = (rvy*sy + sx*rvx + rvz*sz) * 2.0
+//   c (quadratic 'C')   = (sx*sx + sy*sy + sz*sz)
+//   disc                = (b*b) - ((a*4.0)*c)
+//   t1 = (sqrt(disc) - b) / (a*2.0)      t2 = ((-b) - sqrt(disc)) / (a*2.0)      // pick smallest > 0
+//   linear (a==0): t    = (-c) / b   (used iff b != 0 and t >= 0)
+//   predict_pos.k       = (tgt_vel.k - frame_vel.k) * (g*t) + tgt_pos.k    // k = x,y,z
+// Constants (resolved via the targeting_aim notes): DAT_1408007d4 = 2.0, DAT_1408007e0 = 4.0,
+// DAT_140800860 = sign-bit mask (≡ IEEE unary minus), DAT_140b0a340 = the game-speed scalar (`gamespeed`).
+#pragma once
+#include "eaw_types.h"
+
+namespace sim {
+
+// FUN_140393b70 (simple/linear mode): predict the target's world position at a future time `t` seconds.
+//   ref-relative velocity (tgt_vel - frame_vel) is extrapolated over (gamespeed * t), added to tgt_pos.
+eaw::vec3 firing_predict_pos_linear(const eaw::vec3& tgt_pos, const eaw::vec3& tgt_vel,
+                                    const eaw::vec3& frame_vel, eaw::f32 gamespeed, eaw::f32 t);
+
+// FUN_140399e20: quadratic projectile-intercept lead solver. Returns the lead AIM POINT in the binary's
+// convention: (muzzle - tgt_pos) + predicted_impact_pos. Returns {0,0,0} when there is no real positive-
+// time solution (the binary's sentinel; the caller fires only if the result is non-zero). If
+// `out_has_solution` is non-null it is set to whether a solution was found.
+//   tgt_pos/tgt_vel : target world position / velocity (snapshot)
+//   frame_vel       : reference-frame velocity ref+{0xc,0x1c,0x2c} (snapshot)
+//   muzzle          : the firing point (param_4)
+//   shooter_ref     : the relative-velocity reference point (param_5)
+//   gamespeed       : DAT_140b0a340 game-speed scalar
+//   proj_speed      : projectile muzzle speed (param_6)
+eaw::vec3 firing_intercept_lead(const eaw::vec3& tgt_pos, const eaw::vec3& tgt_vel,
+                                const eaw::vec3& frame_vel, const eaw::vec3& muzzle,
+                                const eaw::vec3& shooter_ref, eaw::f32 gamespeed,
+                                eaw::f32 proj_speed, bool* out_has_solution = nullptr);
+
+} // namespace sim
