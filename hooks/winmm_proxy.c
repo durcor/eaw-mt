@@ -5986,6 +5986,123 @@ static void install_reveal_5373c0_hook(void)
 }
 
 /* =========================================================================
+ * DTFINT — in-game bit-exact oracle for the lifted PROJECTILE-INTERCEPT LEAD SOLVER
+ * (sim/firing_intercept.cpp, b2 piece 1, from FUN_140399e20 + FUN_140393b70 simple mode).
+ *
+ * 399e20 is the quadratic projectile-intercept solver (the direct-aim path of the full lead solver
+ * 399450). We entry-detour it, snapshot its inputs BEFORE the call — target pos (+0x78/+0x7c/+0x80),
+ * target vel (+0x254/+0x264/+0x274), reference-frame velocity ref+{0xc,0x1c,0x2c} where
+ * ref=(tgt+0xa8 ? *(tgt+0xa8)+0x164 : tgt+0x248), muzzle (param_4), shooter-ref (param_5), projectile
+ * speed (param_6), gamespeed (DAT_140b0a340) — run the binary, then recompute the lead aim via the lifted
+ * formula (identical grouping to sim/firing_intercept.cpp; the discriminant root uses the engine's OWN
+ * sqrt 776d48 so the only floating intrinsic matches bit-for-bit). Compare the 3-float output bit-for-bit.
+ *
+ * The internal predictor 393b70 has two modes selected by DAT_140b2c37c: 0 = linear (lifted), != 0 =
+ * curved/iterative (deferred). We bit-compare linear-mode solved calls + no-solution calls (binary writes
+ * {0,0,0}); curved-mode solved calls are counted only (coverage of whether the curved lift is needed).
+ *
+ * Prologue (15 bytes, position-independent): 48 8b c4 / 48 89 58 08 / 57 / 48 81 ec 90 00 00 00
+ *   = mov rax,rsp; mov [rax+8],rbx; push rdi; sub rsp,0x90.
+ * Entry (MS x64): rcx=p1, rdx=out(float[3]), r8=target, r9=muzzle(float[3]), [stk]=sref(float[3]), speed.
+ * Observe-only; all under dt_on() (EAW_DIFFTRACE=1). */
+#define FINT_399E20_RVA 0x399e20ULL
+static const BYTE fint_399e20_prologue[15] = {
+    0x48,0x8b,0xc4, 0x48,0x89,0x58,0x08, 0x57, 0x48,0x81,0xec,0x90,0x00,0x00,0x00
+};
+typedef int64_t (*Fint399e20Fn)(int64_t,float*,int64_t,float*,float*,float);
+typedef float   (*FintSqrtFn)(float);
+static Fint399e20Fn g_fint_tramp = NULL;
+static uint32_t g_fint_calls=0, g_fint_ok=0, g_fint_bad=0, g_fint_nosol=0, g_fint_nosolbad=0,
+                g_fint_complex=0, g_fint_lines=0;
+static uint32_t g_fint_surv_last=0xFFFFFFFFu;
+
+static int64_t fint_399e20_hook(int64_t p1, float *out, int64_t tgt, float *muzzle, float *sref, float speed)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr=(volatile uint32_t*)((BYTE*)exe+0xb0a320); g_dt_imgbase=(uintptr_t)exe; }
+    }
+    if (!(out && tgt && muzzle && sref && g_dt_imgbase && dt_on()))
+        return g_fint_tramp(p1, out, tgt, muzzle, sref, speed);
+
+    /* snapshot inputs BEFORE the call (399e20 does not mutate the target). */
+    float g = (float)*(int32_t*)(g_dt_imgbase + 0xb0a340);   /* (float)DAT_140b0a340: INT32 hz (=30), not a float reinterpret */
+    int32_t predmode = *(int32_t*)(g_dt_imgbase + 0xb2c37c);
+    float tpx=*(float*)(tgt+0x78),  tpy=*(float*)(tgt+0x7c),  tpz=*(float*)(tgt+0x80);
+    float tvx=*(float*)(tgt+0x254), tvy=*(float*)(tgt+0x264), tvz=*(float*)(tgt+0x274);
+    int64_t ref=*(int64_t*)(tgt+0xa8); ref = ref ? ref+0x164 : tgt+0x248;
+    float fvx=*(float*)(ref+0xc), fvy=*(float*)(ref+0x1c), fvz=*(float*)(ref+0x2c);
+    float mx=muzzle[0], my=muzzle[1], mz=muzzle[2];
+    float rsx=sref[0],  rsy=sref[1],  rsz=sref[2];
+
+    int64_t r = g_fint_tramp(p1, out, tgt, muzzle, sref, speed);
+
+    /* recompute — mirror sim/firing_intercept.cpp exactly; engine sqrt (776d48) for the root. */
+    FintSqrtFn esqrt = (FintSqrtFn)(g_dt_imgbase + 0x776d48);
+    float relx=mx-tpx, rely=my-tpy, relz=mz-tpz;
+    float sx=mx-rsx, sy=my-rsy, sz=mz-rsz;
+    float rvy=(tvy-fvy)*g, rvx=(tvx-fvx)*g, rvz=(tvz-fvz)*g;
+    float a=(rvy*rvy+rvx*rvx+rvz*rvz)-(((g*speed)*g)*speed);
+    float b=(rvy*sy+sx*rvx+rvz*sz)*2.0f;
+    float c=sx*sx+sy*sy+sz*sz;
+    float disc=b*b-a*4.0f*c;
+    float t=0.0f; int solved=0;
+    if (0.0f<=disc) {
+        if (a==0.0f) { if (b!=0.0f){ t=(-c)/b; if (0.0f<=t) solved=1; } }
+        else {
+            float root=esqrt(disc);
+            float t1=(root-b)/(a*2.0f);
+            float t2=((-b)-root)/(a*2.0f);
+            if (0.0f<t1){ if(0.0f<t2){ if(t2<=t1)t1=t2; t=t1; solved=1; } else { t=t1; solved=1; } }
+            else if (0.0f<t2){ t=t2; solved=1; }
+        }
+    }
+    float aim[3];
+    if (!solved){ aim[0]=aim[1]=aim[2]=0.0f; }
+    else { float f=g*t;
+        aim[0]=relx+((tvx-fvx)*f+tpx);
+        aim[1]=rely+((tvy-fvy)*f+tpy);
+        aim[2]=relz+((tvz-fvz)*f+tpz); }
+
+    g_fint_calls++;
+    int ok=1, compared=0;
+    if (!solved)            { ok=(memcmp(out,aim,12)==0); g_fint_nosol++; if(!ok)g_fint_nosolbad++; compared=1; }
+    else if (predmode!=0)   { g_fint_complex++; }                 /* curved predictor: deferred, skip */
+    else                    { ok=(memcmp(out,aim,12)==0); compared=1; if(ok)g_fint_ok++; else g_fint_bad++; }
+
+    int32_t now=(int32_t)*g_dt_frame_ctr;
+    int want = (compared && !ok) || (g_fint_calls<=40) || ((now&0x3ff)==0);
+    if (want && g_fint_lines<20000u) {
+        g_fint_lines++;
+        char ln[320];
+        snprintf(ln,sizeof ln,
+          "DTFINT\ttick=%d\tsolved=%d\tmode=%d\taim_a=(%a,%a,%a)\taim_p=(%a,%a,%a)\tok=%d\n",
+          now, solved, predmode, (double)out[0],(double)out[1],(double)out[2],
+          (double)aim[0],(double)aim[1],(double)aim[2], ok);
+        log_write(ln);
+    }
+    if (now!=(int32_t)g_fint_surv_last && ((uint32_t)now&0x1ffu)==0) {
+        g_fint_surv_last=(uint32_t)now;
+        char sv[256];
+        snprintf(sv,sizeof sv,
+          "DTFINTSURVEY\ttick=%d\tcalls=%u\tok/bad=%u/%u\tnosol(ok)=%u(bad %u)\tcomplex=%u\n",
+          now, g_fint_calls, g_fint_ok, g_fint_bad, g_fint_nosol, g_fint_nosolbad, g_fint_complex);
+        log_write(sv);
+    }
+    return r;
+}
+
+static void install_fint_399e20_hook(void)
+{
+    void *t=NULL;
+    if (install_targ_tramp(FINT_399E20_RVA, fint_399e20_prologue, sizeof fint_399e20_prologue,
+                           (void*)fint_399e20_hook, &t, "FUN_140399e20")) {
+        g_fint_tramp = (Fint399e20Fn)t;
+        log_write("[eaw-mt] DTFINT: projectile-intercept lead solver (FUN_140399e20) oracle installed\n");
+    }
+}
+
+/* =========================================================================
  * DTTK — in-game oracle for the lifted TELEKINESIS interp-timeline core
  * (sim/telekinesis_target.cpp, from FUN_14063f210). Behavior #8 (part 1).
  *
@@ -9811,6 +9928,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b14020acd0_hook();/* DTARG2: Targeting team-targeting aim-geometry bit-exact (EAW_DIFFTRACE=1) */
         install_b397640_hook();   /* DTLURE: Lure shared squared-distance bit-exact (EAW_DIFFTRACE=1) */
         install_reveal_5373c0_hook(); /* DTREVEAL: Reveal move-threshold gate bit-exact (EAW_DIFFTRACE=1) */
+        install_fint_399e20_hook();   /* DTFINT: projectile-intercept lead solver bit-exact (EAW_DIFFTRACE=1) */
         install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
         install_spl625990_hook(); /* DTSPL2: SimpleSpaceLocomotor vfunc_59 cubic-Hermite mover (EAW_DIFFTRACE=1) */
         install_dtwa_spawn_hook();/* DTWA-SPAWN: CreateObject I1 append-order + manager-resolution oracle (EAW_DIFFTRACE=1) */
