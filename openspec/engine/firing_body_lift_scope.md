@@ -234,7 +234,67 @@ firing workers would race it. Inventory of firing-path global mutable scratch to
   branch-heavy, graph-chasing decision stays on the ordered path. **Recommend taking the §5 gate decision
   after b2 lands, with this b1 evidence on the table.**
 
-## 8. Cross-refs
+## 8. b4 REVISIT (2026-06-06) — can the expensive fire-control parallelize? A reframe + its hazards
+
+a2.0 measured the cheap-mass-only fallback at a **~2× ceiling** (p≈0.65), weakest in big battles because
+the serial **fire-control** carries ~35% of per-object time on a few units (each fire-call ~28× an average
+cheap body). The user asked to revisit b4 — can the expensive part parallelize to lift the ceiling? This
+section is that investigation. **Finding: b1's "the gate isn't snapshot-servable" was the wrong frame; a
+parallel fire pass is PLAUSIBLE — but gated on resolving several shared-scratch hazards, one of them hard.**
+
+### 9.1 The expensive part decoded — it IS the b1 fan-out
+The opportunity-scan (`387400:250-281`) is a random-start linear scan (one LCG draw spreads targeting load)
+that picks the FIRST valid candidate; its per-candidate evaluator **`385190`** does a **spatial query**
+(`2acb60`→`20e780`) then the **full b1 gate-predicate evaluation** per candidate — `35f470` (global-scratch
+fog), `39a540` (sensor grid), the `0x11` target-query + `0x118` score **vfuncs**, `39b140`/`383ba0`/`540140`
+/`383f70`. So the scan is exactly the deep vfunc/sensor/global-scratch graph b1 flagged. A field-copy
+`FrozenSnapshot` cannot serve it (b1 §7.2) — confirmed.
+
+### 9.2 The reframe — fire as a READ-ONLY PHASE needs no snapshot and no predicate lift
+b1 implicitly assumed firing must run *concurrently* with movement (mid-tick mutation) ⇒ needs a snapshot
+⇒ needs the predicates lifted to read it (intractable). **But if the fire pass is a SEPARATE phase AFTER
+the cheap-mass movement/sensor settle, with all its WRITES deferred, then every cross-object read the gate
+predicates make is live-but-STABLE** — nothing mutates it during the phase. No snapshot, no predicate lift.
+The work shifts from lifting the READS (the intractable b4) to **deferring the WRITES** (the already-scoped
+b3 §3): creates → `SpawnCommand`, the two Class-2b edits (`220e90`/`3a06a0`) → `Command`, SFX → `SfxCommand`
+(a1). Architecture:
+```
+  Phase A ∥   cheap-mass (movement + transform + sensor/fog)   → positions + sensor grid settle
+  barrier
+  Phase B ∥   FIRE PASS — binary fire-control per firing unit, reads stable live state, writes OWN state,
+              BUFFERS creates + Class-2b + SFX (no live mutation of what other units read)
+  barrier
+  Phase C ·   drain buffers in canonical (gom,rank,seq) order   (BUILT)
+```
+This parallelizes the **expensive 35%** too → p → ~0.9+ → **4-core ~3.5×, 8-core ~6×** (vs the fallback's ~2×).
+
+### 9.3 The hazards that gate it (why it is not free)
+1. **Create-deferral (§0 blocker)** — `3825b0` consumes the create result inline; deferral needs its
+   create+init section restructured to emit the `SpawnCommand` payload (§3). **Bounded** (the payload is
+   mapped) but real; the predicates around it stay binary.
+2. **The spatial-query shared result buffer (the HARD one)** — `2acb60` returns a *persistent shared*
+   spatial index; `20e780` writes the query result list into it (`index+8`), which `385190` then reads.
+   Concurrent queries from different firing units **race on that shared buffer**. Localizing it means
+   per-thread query buffers (refactor the query API) or a lock (serializes the query — part of the
+   expensive scan, eroding the win). This is statefuller than a global scalar and is the main risk.
+3. **Global mutable scratch** — already inventoried (§8.3): `DAT_140b2c380..394` (399450),
+   `DAT_140b2ec18..30` (393b70), `DAT_140a28538/40/44` (35f470 fog). All thread-local-izable.
+4. **RNG** → per-entity substream (the scan's start-index draw; already the I2 design).
+5. **UNVERIFIED: the query vfuncs** (`0x11`, `0x118`) must be READ-ONLY — if any caches into shared state
+   it races. Needs a write-audit (can't assume).
+6. **Full write-audit** of the fire path (`3a76b0`/`387400`/`3825b0`) to confirm the ONLY live writes are
+   own-state + the (deferred) creates/Class-2b/SFX. A single un-audited live cross-write is a latent desync.
+
+### 9.4 Verdict
+**The parallel-fire-pass is a real path to a much higher ceiling (~3.5–6× vs ~2×), and it reframes b1's
+pessimism — read-only phasing replaces the intractable predicate-read lift with the scoped write-deferral.**
+But it is **moderate-to-high effort with real risk**, chiefly the spatial-query shared buffer (#2) and the
+write-audit (#5/#6). It is NOT the "shelve / cheap-2×" option; it reopens b3 (now well-motivated) plus a
+**fire-path write-audit increment** (the new prerequisite) before any parallel fire takeover. Recommend:
+if a higher ceiling is wanted, do the **write-audit + spatial-query thread-safety assessment FIRST** (cheap,
+decisive — same spirit as a2.0) to confirm #2/#5/#6 are tractable before committing to b3 + the takeover.
+
+## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
 - Command ops / drain key: `sim_parallel_command_schema.md` §7 (I4 box, the `(gom,rank,seq)` key a0 confirmed).

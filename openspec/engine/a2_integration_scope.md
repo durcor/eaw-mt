@@ -106,6 +106,14 @@ shelve a2. This measurement is cheap, decisive, and must precede the takeover.
 > speedup is a genuine win for a CPU-bound game (TR big-battle fast-forward is CPU-bound), but it is not
 > dramatic and degrades under load. Options if NOT worth it: revisit b4 (parallelize the opportunity-scan
 > despite the fan-out) for a higher ceiling, or shelve a2 and bank the lifts.
+>
+> **➡ b4 REVISITED 2026-06-06 (`firing_body_lift_scope.md` §8):** the opportunity-scan IS the b1 fan-out,
+> but a **parallel FIRE PASS** (a read-only phase *after* movement, with WRITES deferred) avoids the
+> intractable predicate-read lift — the gate predicates read live-but-STABLE state, needing only write-
+> deferral (b3) + scratch localization, not a snapshot. That raises the ceiling to **~3.5–6×**. Gated on
+> real hazards (chiefly the spatial-query's shared result buffer + a fire-path write-audit). ⇒ if a higher
+> ceiling is wanted, the next step is the **fire-path write-audit + spatial-query thread-safety assessment**
+> (cheap, decisive, a2.0-spirit) BEFORE committing to b3 + the parallel-fire takeover.
 
 ---
 
