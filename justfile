@@ -101,6 +101,9 @@ sim-test:
     sim/tests/firing_intercept_test.cpp sim/firing_intercept.cpp sim/sim_rng.cpp -o /tmp/eaw_firing_intercept_test
   /tmp/eaw_firing_intercept_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/firing_spawn_test.cpp sim/firing_spawn.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_firing_spawn_test
+  /tmp/eaw_firing_spawn_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/dynamic_transform_test.cpp sim/dynamic_transform.cpp -o /tmp/eaw_dynamic_transform_test
   /tmp/eaw_dynamic_transform_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \

@@ -129,7 +129,7 @@ This extends the D-gap struct work (I1) with the *exact* firing read-set — b1'
 |---|---|---|---|---|
 | **b1** | **Decompile + classify** the firing leaves (`381dc0`✅,`385e70`✅,`383f70`,`385c70`,`399e20`,`38ee10`,`3a06a0`✅) and pin the **exact** target read-set (§4) + gate-predicate read-set. Produces the per-call class table with NO gaps. | (D) firing read-set; readability | n/a (enables) | Low |
 | **b2** | **Lift the pure-numeric aim/intercept cluster** bit-exact, reading target motion from **explicit params** (snapshot-ready): `399450` (⚠ localize `DAT_140b2c380..394` scratch → thread-safe), `381dc0` (RNG→substream), `399e20`, `38ee10`, `385e70`. **✅ piece 1 DONE 2026-06-05 (host + in-game):** `399e20` + `393b70` linear mode → `sim/firing_intercept.{h,cpp}` (the matrix-free quadratic intercept; global scratch `DAT_140b2ec18..30` localized to returns; host test 5 cases PASS). **DTFINT in-game oracle = BIT-EXACT 473,306/473,306** solved linear-mode calls (`eaw-mt.log.dtfint-pass`), 11 no-solution sentinels matched, **`complex=0`** (the curved predictor `393b70` `DAT_140b2c37c!=0` is DORMANT in practice → the linear lift covers 100% of live calls). **✅ piece 2 (`381dc0` weapon dispersion) DONE 2026-06-06 (host):** `firing_apply_spread` → `sim/firing_intercept.cpp` (branch ladder + 3× `range_f(-m,m)` reusing the lifted `SimRng`; magnitudes hoisted to inputs). RNG-retrofit (per-entity substream) so output differs from the global-LCG binary BY DESIGN — validated by sim_rng.h's reproducibility contract (host: no-draw paths leave rng untouched, perturbing paths consume exactly 3 steps within [-m,m], same seed ⇒ same output). **Remaining:** curved-lead (`393b70` complex + `38ee10` circumcenter, both need matrix leaf `22d390`) — known dormant edge (DTFINT `complex=0`), low priority; `399450` full lead solver (orchestrates 399e20/38ee10/393b70); `385e70` LOS/muzzle feasibility. | aim geometry | **numeric bit-exact** (trampoline vs lifted over live input stream — the project's proven loop) | Med (global-scratch localization) |
-| **b3** | **`SpawnCommand` payload + Phase-B applier** (§3) + the two Class-2b `Command` ops (`220e90`, `3a06a0`). Host-assemble: Phase-A computes payload, Phase-B drain creates+applies. | (A/B) the create restructure | host §9 gate (drain N≡serial) **+** in-game DTWA structural (projectile carries identical init fields) | Med |
+| **b3** | **`SpawnCommand` payload + Phase-B applier** (§3) + the two Class-2b `Command` ops (`220e90`, `3a06a0`). Host-assemble: Phase-A computes payload, Phase-B drain creates+applies. **✅ HOST DONE 2026-06-06** — see §8.8. | (A/B) the create restructure | host §9 gate (drain N≡serial) **+** in-game DTWA structural (projectile carries identical init fields) | Med |
 | **b4** | **The fire-decision gate** reading snapshot — lift/prove-pure the predicate cascade (the §2 fan-out row). | the gate | **structural** (same fire decisions + cadence under same snapshot, long multi-battle capture) | **High (fan-out)** |
 | **b5** | **1-shard in-game firing takeover** (the a1 successor): drive the lifted firing body from `sim/` on a snapshot, buffer all emits, drain canonically; DIFFTRACE structural-equivalent to the binary. Then a2 = run b5 on ≥2 shards. | the contract's 3 interfaces, live | structural DIFFTRACE vs serial binary + a1's DTWA/DTDRAIN invariants hold | High (integration) |
 
@@ -384,6 +384,41 @@ prerequisites for the parallel fire pass are complete; the remaining work is the
 Class-2b + UI-queue deferral) + scratch localization + the short-lock+copy. (Caveat per Rule 2: other rare
 targeting-behavior subclasses are not individually audited; the two majority classes share the method, and
 `vfunc_2` is the universal base accessor.)
+
+### 8.8 b3 HOST DONE (2026-06-06) — the create+init restructure, drain-gate-green
+Built the §3 keystone as source-only, host-validated code (the parallel-fire-pass build prerequisite from
+§8.6). **Files:** `sim/firing_spawn.{h,cpp}` + `sim/tests/firing_spawn_test.cpp` (wired into `just sim-test`),
+plus the `ProjectileInit` payload embedded by value in `SpawnCommand` (`sim/command_sink.h`). Full sim suite
+green; existing `sim_parallel_test`/`shard_scheduler_test` unaffected by the `SpawnCommand` growth.
+
+**The load-bearing design finding (recorded for the in-game build): the WHOLE inline-consumed block
+`3825b0:261-401` becomes the SpawnCommand APPLIER — b3 needs NO new command op kind.** Both Class-2b edits
+DEPEND on the freshly-created projectile (`220e90` listener needs `vfunc_2(proj,8)`; `3a06a0` shot-register
+needs `proj`), so they cannot be separately-buffered Phase-A signals — they belong in the post-create applier
+sequence, which already runs in canonical `(gom,rank,seq)` order. So the cut is:
+- **Phase A (parallel, pure):** compute the `ProjectileInit` payload (firer id, target+sub-id, damage,
+  lifetime, muzzle speed, vis frame, shroud, guided/ballistic launch geometry) from firer own-state + the
+  target snapshot — no cross-entity write — and emit ONE `SpawnCommand`. (`firing_build_projectile_init` /
+  `firing_make_spawn`, faithful to the 3825b0 branch logic + FP grouping: charge scale `mod*dmg`, muzzle
+  accumulations `addend+acc`.)
+- **Phase B (serial drain):** `create_object` runs 29f810 → writes proj+0xe8 from the payload
+  (`firing_apply_projectile_record`) → the post-create transform copy (ballistic, reads the NEW proj's own
+  transform) → `220e90` → `3a06a0`. This dissolves the §0 inline-consume blocker structurally.
+
+**Gate (host §9, the in-host twin of the later in-game DTWA-structural oracle):** M=240 firers each emit one
+projectile spawn; for every N ∈ {1,2,4,8} × {round-robin, contiguous} partition × shuffled within-shard
+processing, the drained `(assigned-id, applied ProjectileRecord)` sequence is **BIT-IDENTICAL** to the serial
+drain — ids are the contiguous append run (I1), each record matches the applier output for its rank. Plus a
+**negative control** (mis-tagging rank by emit order ⇒ divergent id→record assignment, proving the canonical
+key is load-bearing here too) and three branch-fidelity unit cases (owner-vs-template damage/lifetime/speed,
+charge scale, vis frame, guided lead = rot·delta vs ballistic launch_dir).
+
+**Caps honored (§6):** payload values are computed from RESOLVED ENV inputs (the firer-stat getters
+`3857d0`/`397780`/`5400f0`/`3952a0`/… stay ENV, same pattern as `firing_intercept`); per-field bit-exactness
+vs the binary is deferred to the in-game DTWA-structural oracle (the host gate proves the RESTRUCTURE
+preserves order + the id→init mapping, not the binary's exact arithmetic). **Remaining for the parallel-fire
+build:** the in-game DTWA-structural capture (projectile carries identical init fields under the restructure)
++ the global-scratch localization + RNG substreams + the short-lock+copy around the spatial query (§8.6).
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).

@@ -125,6 +125,36 @@ struct SfxCommand {
     uint32_t sfx_id  = 0;
 };
 
+// ── (b3) The projectile-spawn INIT payload (firing_body_lift_scope.md §3) ───────────────────────
+// The firing body FUN_1403825b0 creates a projectile (29f810, 3825b0:266) and then writes its motion/
+// combat record at proj+0xe8 (= plVar12[0x1d]) INLINE (3825b0:289-401). That inline consume is the §0
+// blocker for deferral. b3 resolves it by splitting the body at the write-class line:
+//   * PHASE A (per-firer, parallel, reads only own-state + the target SNAPSHOT) computes this payload —
+//     pure DATA, no cross-entity write — and emits ONE SpawnCommand carrying it.
+//   * PHASE B (serial drain, canonical (gom,rank,seq) order) runs the WHOLE inline-consumed block as the
+//     SpawnCommand APPLIER: 29f810 create → write proj+0xe8 from this payload → the post-create transform
+//     copy (ballistic branch, reads the NEW proj's own transform) → the two Class-2b edits (220e90
+//     listener on target+0x38, 3a06a0 shot-register). Both Class-2b edits DEPEND on the created proj
+//     (220e90 needs vfunc_2(proj,8); 3a06a0 needs proj), so they live in the applier, in canonical order
+//     — NOT as separately-buffered Phase-A signals. Net: b3 needs no new op kind; it enriches SpawnCommand
+//     with this payload and makes create_object perform the full post-create init.
+// The field→offset map (proj+0xe8 record, "rec"): see firing_spawn.h. All values are Phase-A pure data.
+struct ProjectileInit {
+    bool     present       = false;   // this SpawnCommand carries a projectile init (vs a plain create)
+    uint32_t firer_id      = 0;       // rec+0x58 = firer object_id (*(owner+0x50))  [3825b0:290]
+    void*    target        = nullptr; // rec+0x08 = target GameObject* (param_2)     [3825b0:326]
+    int32_t  target_sub_id = -1;      // rec+0x10 = target hardpoint sub-id (param_3+0x18 or -1) [3825b0:352-358]
+    float    damage        = 0.0f;    // rec+0x64 [3825b0:292-303]
+    uint32_t lifetime      = 0;       // rec+0x68 raw bits (range/lifetime; int-or-float in binary) [304-311]
+    float    muzzle_speed  = 0.0f;    // rec+0x6c [3825b0:312-329]
+    bool     has_vis_frame = false;   // owner_type+0x4a4 > 0   [3825b0:330]
+    int32_t  vis_frame     = 0;       // rec+0x60 = b15418+0x10 + owner+0x4a4 frame   [3825b0:336-338]
+    void*    shroud        = nullptr; // rec+0xb0 = local_res20 (shroud/visibility ptr) [3825b0:340]
+    bool     guided        = false;   // template+0x1fe8 == 1 (guided/missile vs ballistic) [3825b0:359]
+    float    launch_dir[3] = {0,0,0}; // rec+0x3c/0x40/0x44 (ballistic launch dir)    [3825b0:398-400]
+    float    guided_lead[3]= {0,0,0}; // rec+0x24/0x28/0x2c (guided lead offset)       [3825b0:374-382]
+};
+
 // One buffered object-creation op (channel = Class 2). Models the inline
 // GameObjectManager::CreateObject (FUN_14029f810) call a Phase-A unit would run to spawn a
 // projectile / impact-fx / detached child. Deferred to the serial Phase-B drain because CreateObject
@@ -139,8 +169,13 @@ struct SpawnCommand {
     //   mgr = *(GameObjectManager**)((char*)requester + 0x2b8)   // never a global singleton
     void*    requester   = nullptr;  // emitting GameObject*; manager = *(requester+0x2b8) = 29f810 param_1
     uint32_t template_id = 0;        // object-type/template (29f810 param_2)
-    float    pos[3]      = {0, 0, 0};// world spawn position (29f810 param_4)
+    int32_t  team        = -1;       // team id (29f810 param_3 = *(team_entry+0x4c))  [3825b0:268]
+    float    pos[3]      = {0, 0, 0};// world spawn position / launch orientation (29f810 param_4)
     uint32_t flags       = 0;        // spawn-kind packed (projectile / fx / detached; param_3/6/7)
+    // (b3) post-create init the drain applies to the new object. `projectile.present == false` for a
+    // plain create (the existing behaviour; the applier just creates). By value so the ShardBuffer's
+    // copy (BufferedOp.spawn = cmd) carries it with no dangling-pointer risk.
+    ProjectileInit projectile{};
 };
 
 // The Phase-A seam. Lifted compute units take a CommandSink& and EMIT instead of dispatching
