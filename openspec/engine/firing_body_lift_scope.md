@@ -578,18 +578,29 @@ listed. The firing body `3825b0` reaches exactly two scratch-using leaves:
 - **`3825b0:231` → `FUN_140399450` (FULL lead solver, 2512B):** its MAIN path writes+reads
   `DAT_140b2c380..394` as a within-call temp (399450:198-235); it delegates to the thread-safe `399e20`
   ONLY in fallback branches (209/252/265). ⇒ **REFINEMENT of §8.10 step 1: "399e20/393b70 drop in" does
-  NOT cover 399450** — the main lead-math path uses `b2c380` directly and needs a FULL lift. That lift can
-  REUSE the existing `firing_intercept` leaf lifts for the 399e20/393b70 delegation, which also covers
-  `b2ec18`.
+  NOT cover 399450** — the main lead-math path uses `b2c380` directly and needs a FULL lift. **FURTHER
+  finding (the lift is harder than "reuse firing_intercept"):** `b2c380..394` is not a plain temp — it is
+  the **closure environment for a callback root-finder**. 399450:213-217 writes the scratch, then
+  `FUN_1407d68e0(…, FUN_1403aba90, [DAT_1408007b4..DAT_1408007f8], …, 0xf)` (399450:219) runs a numeric
+  solver that calls the objective `FUN_1403aba90`, which READS `b2c380/384/388/38c/390/394` back; 399450
+  then reads `b2c380/384` again (222/234/235) to form the lead point. So localizing 399450 means
+  reimplementing the solver objective `FUN_1403aba90` + driving `FUN_1407d68e0` from per-thread/local
+  state (or TLS-backing the six globals, which the callback hardcodes) — NOT a thin wrapper over the
+  lifted `399e20` (399e20 is only the close-range / degenerate fallback).
 - **`393b70` (`b2ec18..30` scratch)** is reached ONLY via `399e20` (393b70 callers = 399e20 + itself), not
   directly by 3825b0 ⇒ localized for free once 399450's lift uses lifted `firing_intercept`. `399e20`
   itself is already scratch-free.
 
-⇒ Global-scratch localization on the PhaseB path = **TWO per-function lifts** — `399450` (full lead solver,
-reusing `firing_intercept`) + `35f470` (fog, per-thread result buffer) — each a decode → host bit-exact →
-in-game DTFINT-style oracle, per the established per-function workflow. (Alternative per the §8.10 "lift OR
-arena" note: a per-scratch-group lock around each leaf is correct + cheap but serializes them, which can
-bottleneck the ~p≈0.65 parallel fraction (a2.0) — lifting is the speedup-preserving choice.)
+⇒ Global-scratch localization on the PhaseB path = **TWO per-function lifts** — `399450` (full lead solver
++ its `FUN_1403aba90`/`FUN_1407d68e0` root-finder) + `35f470` (fog, per-thread result buffer) — each a
+decode → host bit-exact → in-game DTFINT-style oracle. Both are session-scale (399450 the larger, given
+the callback-closure). **Two viable mechanisms (the §8.10 "lift OR arena" choice, now sharper):**
+(a) **LIFT** each leaf to per-thread/return-by-value — speedup-preserving, but 399450 needs the objective +
+solver reimplemented; (b) **LOCK** each scratch group (one mutex per group, entry-detour `lock();real();
+unlock();`) — correct + cheap + unblocks N-shard immediately, but serializes those leaves. Which is right
+depends on how much of the fire body's cost lives in 399450+35f470: if small, (b) costs almost nothing; if
+large, (a) is needed to keep the ~p≈0.65 parallel fraction (a2.0). ⇒ **An a2.0-style per-leaf timing
+measurement should gate the lift-vs-lock decision before either is built.**
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
