@@ -136,8 +136,9 @@ This extends the D-gap struct work (I1) with the *exact* firing read-set — b1'
 Pass-C `3ac530` is an **independent quick win** (self-body, render outputs deferred) — slot it as **b2′**
 alongside b2 (same numeric-oracle method), not on the firing critical path. **✅ b2′ DONE 2026-06-06
 (host):** `sim/dynamic_transform.{h,cpp}` — the 3×4 transform rebuild from Euler pose + position via the
-three Givens leaves (`480f0`/`cf8d0`/inline) + fixed +90° roll, pure self body, host test PASS. DTDYN
-in-game oracle to follow.
+three Givens leaves (`480f0`/`cf8d0`/inline) + fixed +90° roll, pure self body, host test PASS.
+**DTDYN in-game oracle = BIT-EXACT 1,729,364/1,729,364** (`eaw-mt.log.dtdyn-pass`, real rotations incl.
+357° poses) — Pass-C closed host + in-game; the cheap-mass self-body the fallback parallelizes is validated.
 
 **Dependency:** b1 → b2 → b3 → b4 → b5. b2/b2′/b3 are de-riskable in parallel; b4 is the long pole.
 
