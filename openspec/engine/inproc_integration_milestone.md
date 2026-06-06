@@ -100,7 +100,30 @@ For every Class-2 spawn (`29f810`) and Class-2b signal (`240940`) emitted during
 
 ---
 
-## 2. Milestone a1 — safe gated SFX takeover (first control-flow step) 🔨 BUILT 2026-06-05
+## 2. Milestone a1 — safe gated SFX takeover (first control-flow step) ✅ PASS 2026-06-05
+
+> **✅ a1 PASS (2026-06-05, evidence `eaw-mt.log.dta1-pass`).** Armed in-game (`just difftrace=1 a1=1
+> launch-foc-desktop`) across multiple menu-demo battle loops. The three known return-ignoring `2d5290`
+> callers were repointed (`387400` movement / `386660` death / `42f460` ability — 1 site each, 3 total).
+> Headline results, all checks in §2's stable-build list met:
+> - **Plumbing works:** `DTA1 buffered=38 == drained=38`, `drains=38`, `overflow=0` — every intercepted
+>   SFX was buffered, suppressed (the live call replaced by a deferred one), and replayed via the intact
+>   `2d5290` body at the tick boundary; balance is exact (no leak), cap never hit.
+> - **Sim path bit-invariant with buffering armed:** the structural oracles ran *concurrently* and held
+>   their a0 invariant form — **DTWA** `idfail=0, ctrfail=0, schemafit=116166/116166` over 116k creates;
+>   **DTDRAIN** `rank_down=0` + `id_down=50117 (100%)` over 50k transitions. SFX deferral did **not**
+>   perturb the create/order sim path ⇒ the Class-3 classification of `2d5290` is **confirmed**, not
+>   falsified.
+> - **Stable:** ran through several battle loops, no crash (`c0000005`-free), clean `pkill` stop.
+> - **⚠ Residual (honest):** `maxfill=1, reorders=0` — these three SFX sites are low-rate and never emit
+>   ≥2 in a single tick, so the canonical-order **sort** inside a drain was never *stress-tested in-game*
+>   (it is host-gate-proven in `shard_scheduler_test`). Exercising it in-game needs a hotter SFX site
+>   (weapon-fire), enumerated from a full-`.text` `2d5290` caller scan — a follow-up, not a blocker.
+>
+> ⇒ The buffer→canonical-drain control-flow plumbing is proven against the live engine, gated and
+> reversible, with the sim left bit-invariant. The first control-flow step holds; `(b)` is unblocked.
+
+## 2′. Milestone a1 — design + build notes 🔨 BUILT 2026-06-05
 
 > **Scope decision (2026-06-05).** The "full 1-shard tick-walk takeover" tempting as a1 (drive the
 > master-list walk ourselves out of `t2be640_hook`, buffer **all** fire-and-forget emits, drain via
@@ -149,7 +172,7 @@ boundary (`a1_maybe_drain`, driven off the `b3a76b0` per-tick reset + the interc
 
 ```
 a0  DT-DRAIN passive key oracle      ← ✅ DONE 2026-06-05 (rank_down=0; id_down=100% — key confirmed in-game)
- └─ a1  gated SFX takeover           ← 🔨 BUILT 2026-06-05 (2d5290 buffer+canonical-drain; ⏳ in-game A/B pending)
+ └─ a1  gated SFX takeover           ← ✅ PASS 2026-06-05 (38 buffered==drained; DTWA/DTDRAIN invariant; stable)
      └─ (b)  lift remaining Phase-A bodies (399450/381dc0, 3ac530, …)   ← the full walk-takeover folds in here
          └─ a2  ≥2-shard with snapshot + deferred creates              ← the real parallel finish line
 ```

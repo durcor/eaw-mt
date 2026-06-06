@@ -7168,38 +7168,51 @@ static BOOL install_b387400_subcallee_hooks(void)
     return (n384850 + n3825b0) > 0;
 }
 
-/* a1 SFX takeover installer (inproc_integration_milestone.md §2): repoint the FUN_1402d5290 call site
- * inside FUN_140387400 (387400:99) to a1_sfx_intercept. The 2d5290 body stays intact and serves as the
- * replay path (g_a1_sfx_real). Inert until EAW_A1=1 — see a1_sfx_intercept. */
+/* a1 SFX takeover installer (inproc_integration_milestone.md §2): repoint every FUN_1402d5290 call site
+ * inside the KNOWN return-ignoring callers to a1_sfx_intercept. The three decompiled callers cover the
+ * combat-hot SFX classes: 387400:99 (movement cue, cold in the menu demo), 386660:71 (death/destruction
+ * cue — fires as ships die, the hot one), 42f460:49 (ability-activation cue). All three discard the
+ * return value, so suppressing the live call while buffering is safe. The 2d5290 body stays intact and
+ * serves as the replay path (g_a1_sfx_real). Inert until EAW_A1=1 — see a1_sfx_intercept. */
 #define A1_SFX_RVA 0x2d5290ULL
+static const struct { uint64_t rva; int size; const char *name; } g_a1_sfx_callers[] = {
+    { B387400_RVA, B387400_BODY_SIZE, "387400" },   /* movement cue */
+    { 0x386660ULL, 1057,              "386660" },   /* death/destruction cue (hot) */
+    { 0x42f460ULL,  410,              "42f460" },   /* ability-activation cue */
+};
 static BOOL install_a1_sfx_hook(void) {
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
     if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
-    BYTE *fn387400 = (BYTE *)exe + B387400_RVA;
     BYTE *fn2d5290 = (BYTE *)exe + A1_SFX_RVA;
     g_a1_sfx_real  = (EngSfxFn)fn2d5290;             /* replay path: untouched 2d5290 body */
 
-    BYTE *stub = alloc_near(fn387400, 14);
+    BYTE *stub = alloc_near((BYTE *)exe + B387400_RVA, 14);
     if (!stub) { log_write("[eaw-mt] WARN: alloc_near failed for a1 SFX stub\n"); return FALSE; }
     write_abs_jmp(stub, (uint64_t)a1_sfx_intercept);
 
-    int n = 0; DWORD old;
-    for (int i = 0; i <= B387400_BODY_SIZE - 5; i++) {
-        if (fn387400[i] != 0xE8) continue;
-        int32_t rel; memcpy(&rel, fn387400 + i + 1, 4);
-        if (fn387400 + i + 5 + rel != fn2d5290) continue;
-        int32_t new_rel = (int32_t)(stub - (fn387400 + i + 5));
-        VirtualProtect(fn387400 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
-        memcpy(fn387400 + i + 1, &new_rel, 4);
-        VirtualProtect(fn387400 + i + 1, 4, old, &old);
-        FlushInstructionCache(GetCurrentProcess(), fn387400 + i, 5);
-        n++;
+    int total = 0; DWORD old; char m[160];
+    for (size_t c = 0; c < sizeof g_a1_sfx_callers / sizeof g_a1_sfx_callers[0]; c++) {
+        BYTE *fn = (BYTE *)exe + g_a1_sfx_callers[c].rva;
+        int n = 0;
+        for (int i = 0; i <= g_a1_sfx_callers[c].size - 5; i++) {
+            if (fn[i] != 0xE8) continue;
+            int32_t rel; memcpy(&rel, fn + i + 1, 4);
+            if (fn + i + 5 + rel != fn2d5290) continue;
+            int32_t new_rel = (int32_t)(stub - (fn + i + 5));
+            VirtualProtect(fn + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+            memcpy(fn + i + 1, &new_rel, 4);
+            VirtualProtect(fn + i + 1, 4, old, &old);
+            FlushInstructionCache(GetCurrentProcess(), fn + i, 5);
+            n++;
+        }
+        sprintf(m, "[eaw-mt] A1-SFX: %s — %d 2d5290 site(s) repointed\n", g_a1_sfx_callers[c].name, n);
+        log_write(m);
+        total += n;
     }
-    char m[128];
-    sprintf(m, "[eaw-mt] A1-SFX: %d call site(s) to 2d5290 repointed in 387400 (EAW_A1=1 to arm)\n", n);
+    sprintf(m, "[eaw-mt] A1-SFX: %d total call site(s) repointed (EAW_A1=1 to arm buffering)\n", total);
     log_write(m);
-    return n > 0;
+    return total > 0;
 }
 
 /* =========================================================================
