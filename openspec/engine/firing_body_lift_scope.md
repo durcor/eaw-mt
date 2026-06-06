@@ -134,7 +134,10 @@ This extends the D-gap struct work (I1) with the *exact* firing read-set — b1'
 | **b5** | **1-shard in-game firing takeover** (the a1 successor): drive the lifted firing body from `sim/` on a snapshot, buffer all emits, drain canonically; DIFFTRACE structural-equivalent to the binary. Then a2 = run b5 on ≥2 shards. | the contract's 3 interfaces, live | structural DIFFTRACE vs serial binary + a1's DTWA/DTDRAIN invariants hold | High (integration) |
 
 Pass-C `3ac530` is an **independent quick win** (self-body, render outputs deferred) — slot it as **b2′**
-alongside b2 (same numeric-oracle method), not on the firing critical path.
+alongside b2 (same numeric-oracle method), not on the firing critical path. **✅ b2′ DONE 2026-06-06
+(host):** `sim/dynamic_transform.{h,cpp}` — the 3×4 transform rebuild from Euler pose + position via the
+three Givens leaves (`480f0`/`cf8d0`/inline) + fixed +90° roll, pure self body, host test PASS. DTDYN
+in-game oracle to follow.
 
 **Dependency:** b1 → b2 → b3 → b4 → b5. b2/b2′/b3 are de-riskable in parallel; b4 is the long pole.
 
