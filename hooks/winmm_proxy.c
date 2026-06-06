@@ -6103,6 +6103,109 @@ static void install_fint_399e20_hook(void)
 }
 
 /* =========================================================================
+ * DTDYN — in-game bit-exact oracle for the lifted DYNAMICTRANSFORM REBUILD
+ * (sim/dynamic_transform.cpp, b2′ Pass-C, from DynamicTransformBehavior FUN_1403ac530 + the Givens leaves
+ * FUN_1400480f0 / FUN_1402cf8d0). 3ac530 rebuilds the object's 3×4 transform (+0x248..+0x274) each tick
+ * from its stored Euler pose (degrees, +0x90/+0x94/+0x98) and world position (+0x78/+0x7c/+0x80). We
+ * entry-detour it, snapshot the Euler + position BEFORE the call, run the binary, then recompute the 12
+ * matrix floats via the lifted formula (identity + 3 Givens by deg2rad·euler_z/_y/_x + a fixed 90° roll;
+ * sin/cos via the engine's OWN 776650/776150 with the small-angle guard) and compare bit-for-bit.
+ *
+ * Prologue (15 bytes, position-independent): 48 8b c4 / 48 89 58 10 / 48 89 68 18 / 48 89 70 20
+ *   = mov rax,rsp; mov [rax+0x10],rbx; mov [rax+0x18],rbp; mov [rax+0x20],rsi.  Entry rcx=obj, dl=flag.
+ * Observe-only; all under dt_on() (EAW_DIFFTRACE=1). */
+#define DYN_3AC530_RVA 0x3ac530ULL
+static const BYTE dyn_3ac530_prologue[15] = {
+    0x48,0x8b,0xc4, 0x48,0x89,0x58,0x10, 0x48,0x89,0x68,0x18, 0x48,0x89,0x70,0x20
+};
+typedef void  (*Dyn3ac530Fn)(int64_t, int8_t);
+typedef float (*DynScFn)(float);
+static Dyn3ac530Fn g_dyn_tramp = NULL;
+static uint32_t g_dyn_calls=0, g_dyn_ok=0, g_dyn_bad=0, g_dyn_lines=0;
+static uint32_t g_dyn_surv_last=0xFFFFFFFFu;
+
+/* the engine's small-angle guard: |angle| above ~2^-69 → sin/cos, else (angle, 1.0). */
+static inline void dyn_guarded_sc(float angle, DynScFn es, DynScFn ec, float *s, float *c) {
+    uint32_t bits; memcpy(&bits, &angle, 4);
+    if (0x1d000000u < (bits & 0x7f800000u)) { *s = es(angle); *c = ec(angle); }
+    else                                    { *s = angle;     *c = 1.0f; }
+}
+static inline void dyn_rot01(float *m, float a, DynScFn es, DynScFn ec) {   /* 480f0: cols 0,1 */
+    float s,c; dyn_guarded_sc(a,es,ec,&s,&c);
+    for (int r=0;r<3;r++){int i=4*r; float x=m[i],y=m[i+1]; m[i+1]=y*c-x*s; m[i]=x*c+y*s;}
+}
+static inline void dyn_rot12(float *m, float a, DynScFn es, DynScFn ec) {   /* cf8d0: cols 1,2 */
+    float s,c; dyn_guarded_sc(a,es,ec,&s,&c);
+    for (int r=0;r<3;r++){int i=4*r; float y=m[i+1],x=m[i+2]; m[i+2]=x*c-y*s; m[i+1]=y*c+x*s;}
+}
+static inline void dyn_rot20(float *m, float a, DynScFn es, DynScFn ec) {   /* inline: cols 0,2 */
+    float s,c; dyn_guarded_sc(a,es,ec,&s,&c);
+    for (int r=0;r<3;r++){int i=4*r; float x=m[i+2],y=m[i]; m[i+2]=x*c+y*s; m[i]=y*c-x*s;}
+}
+
+static void dyn_3ac530_hook(int64_t obj, int8_t flag)
+{
+    if (!g_dt_frame_ctr) {
+        HMODULE exe = GetModuleHandleA(NULL);
+        if (exe) { g_dt_frame_ctr=(volatile uint32_t*)((BYTE*)exe+0xb0a320); g_dt_imgbase=(uintptr_t)exe; }
+    }
+    if (!(obj && g_dt_imgbase && dt_on())) { g_dyn_tramp(obj, flag); return; }
+
+    /* snapshot inputs BEFORE the rebuild. */
+    float ex=*(float*)(obj+0x90), ey=*(float*)(obj+0x94), ez=*(float*)(obj+0x98);
+    float px=*(float*)(obj+0x78), py=*(float*)(obj+0x7c), pz=*(float*)(obj+0x80);
+
+    g_dyn_tramp(obj, flag);
+
+    const float *bm = (const float*)(obj+0x248);   /* the binary's rebuilt 3×4 matrix */
+
+    /* recompute — mirror sim/dynamic_transform.cpp; engine sin/cos (776650/776150). */
+    DynScFn es=(DynScFn)(g_dt_imgbase+0x776650), ec=(DynScFn)(g_dt_imgbase+0x776150);
+    float m[12];
+    m[0]=1.0f;m[1]=0.0f;m[2]=0.0f;m[3]=px;
+    m[4]=0.0f;m[5]=1.0f;m[6]=0.0f;m[7]=py;
+    m[8]=0.0f;m[9]=0.0f;m[10]=1.0f;m[11]=pz;
+    const float PI_F=3.1415927410125732f;
+    const float d2r=(PI_F*2.0f)/360.0f;
+    dyn_rot01(m, d2r*ez, es, ec);
+    dyn_rot20(m, d2r*ey, es, ec);
+    dyn_rot12(m, d2r*ex, es, ec);
+    dyn_rot01(m, d2r*90.0f, es, ec);
+
+    int ok = (memcmp(bm, m, sizeof m) == 0);
+    g_dyn_calls++; if (ok) g_dyn_ok++; else g_dyn_bad++;
+
+    int32_t now=(int32_t)*g_dt_frame_ctr;
+    int want = !ok || (g_dyn_calls<=40) || ((now&0x3ff)==0);
+    if (want && g_dyn_lines<20000u) {
+        g_dyn_lines++;
+        char ln[320];
+        snprintf(ln,sizeof ln,
+          "DTDYN\ttick=%d\teuler=(%a,%a,%a)\tm0_a/p=%a/%a\tm10_a/p=%a/%a\tok=%d\n",
+          now,(double)ex,(double)ey,(double)ez,(double)bm[0],(double)m[0],
+          (double)bm[10],(double)m[10], ok);
+        log_write(ln);
+    }
+    if (now!=(int32_t)g_dyn_surv_last && ((uint32_t)now&0x1ffu)==0) {
+        g_dyn_surv_last=(uint32_t)now;
+        char sv[160];
+        snprintf(sv,sizeof sv,"DTDYNSURVEY\ttick=%d\tcalls=%u\tok/bad=%u/%u\n",
+                 now, g_dyn_calls, g_dyn_ok, g_dyn_bad);
+        log_write(sv);
+    }
+}
+
+static void install_dyn_3ac530_hook(void)
+{
+    void *t=NULL;
+    if (install_targ_tramp(DYN_3AC530_RVA, dyn_3ac530_prologue, sizeof dyn_3ac530_prologue,
+                           (void*)dyn_3ac530_hook, &t, "FUN_1403ac530")) {
+        g_dyn_tramp = (Dyn3ac530Fn)t;
+        log_write("[eaw-mt] DTDYN: DynamicTransform rebuild (FUN_1403ac530) oracle installed\n");
+    }
+}
+
+/* =========================================================================
  * DTTK — in-game oracle for the lifted TELEKINESIS interp-timeline core
  * (sim/telekinesis_target.cpp, from FUN_14063f210). Behavior #8 (part 1).
  *
@@ -9929,6 +10032,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b397640_hook();   /* DTLURE: Lure shared squared-distance bit-exact (EAW_DIFFTRACE=1) */
         install_reveal_5373c0_hook(); /* DTREVEAL: Reveal move-threshold gate bit-exact (EAW_DIFFTRACE=1) */
         install_fint_399e20_hook();   /* DTFINT: projectile-intercept lead solver bit-exact (EAW_DIFFTRACE=1) */
+        install_dyn_3ac530_hook();    /* DTDYN: DynamicTransform rebuild bit-exact (EAW_DIFFTRACE=1) */
         install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
         install_spl625990_hook(); /* DTSPL2: SimpleSpaceLocomotor vfunc_59 cubic-Hermite mover (EAW_DIFFTRACE=1) */
         install_dtwa_spawn_hook();/* DTWA-SPAWN: CreateObject I1 append-order + manager-resolution oracle (EAW_DIFFTRACE=1) */
