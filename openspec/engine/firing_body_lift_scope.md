@@ -280,8 +280,8 @@ This parallelizes the **expensive 35%** too → p → ~0.9+ → **4-core ~3.5×,
 3. **Global mutable scratch** — already inventoried (§8.3): `DAT_140b2c380..394` (399450),
    `DAT_140b2ec18..30` (393b70), `DAT_140a28538/40/44` (35f470 fog). All thread-local-izable.
 4. **RNG** → per-entity substream (the scan's start-index draw; already the I2 design).
-5. **UNVERIFIED: the query vfuncs** (`0x11`, `0x118`) must be READ-ONLY — if any caches into shared state
-   it races. Needs a write-audit (can't assume).
+5. ~~**UNVERIFIED: the query vfuncs** (`0x11`, `0x118`) must be READ-ONLY~~ **✅ VERIFIED read-only
+   2026-06-06 — `vfunc_2` `0x395ac0` + `vfunc_35` `0x566ba0`, full callee audit; see §8.7.**
 6. **Full write-audit** of the fire path (`3a76b0`/`387400`/`3825b0`) to confirm the ONLY live writes are
    own-state + the (deferred) creates/Class-2b/SFX. A single un-audited live cross-write is a latent desync.
 
@@ -349,12 +349,41 @@ The b4-revisit flagged the spatial query as the one hard hazard. Decoded:
   if the short lock ever shows contention, but the 25-cap makes the critical section tiny.)
 - **Residual (a read, lower risk):** confirm the query vfuncs `0x11` (target-query) / `0x118` (score) are
   read-only on the dominant unit/ship impls (if any caches into shared state under the eval, it races).
+  **✅ CLEARED 2026-06-06 — see §8.7.**
 
 **Verdict: MANAGEABLE — GO.** The grid is free (frozen by tick-start rebuild), and the query's intrusive
 list is contained by a short lock + copy-out that preserves parallelism. The b4-revisit's "one hard
 hazard" is downgraded to a small critical section. ⇒ the parallel-fire-pass to **~3.5–6×** stands; the
 build prerequisites are now: **b3 (create + Class-2b + UI-queue deferral)**, the **short-lock+copy** around
 the spatial query, global-scratch localization + RNG substreams, and the query-vfunc read-only spot-check.
+
+### 8.7 QUERY-VFUNC READ-ONLY SPOT-CHECK (2026-06-06) — CLEARED (b3 opening sub-step)
+The last residual READ hazard for a parallel fire pass (§8.6 / §9.3 #5): the two vfuncs the
+opportunity-scan evaluator `385190` (and the spawn body `3825b0:74`) dispatch on live target/firer state
+must not cache into shared state. Both decoded; **both are pure reads.**
+
+- **`0x11`/`9`/`0x16` selector query = `GameObjectClass::vfunc_2` `0x395ac0`** (vtable slot 2, +0x10;
+  the GameObjectClass *base* method — ships/units do not override this generic accessor). Body (43 B):
+  `sel==0 → return self`; else `slot = *(char*)(obj+0x332+sel)` (a per-object selector→behavior-slot byte
+  table fixed at construction); `slot==-1 → return 0`; else `return *(obj+0x278 + slot*8)` (the object's
+  behavior-array). **Pure read + pointer return, no writes.** Used as a gate in `385190:68`/`3825b0:74`
+  (`==0`?) and to fetch the targeting behavior in `385190:83`/`387400:136`/`5c9ca0:23`.
+- **`+0x118` score = `TeamTargetingBehaviorClass::vfunc_35` `0x566ba0`** (slot 35; `TargetingBehaviorClass`
+  and `TeamTargetingBehaviorClass` — the two dominant targeting behaviors — SHARE this exact rva, so the
+  check covers both; the score object is what selector-9 returns, gated `firer+0x33b != -1` at `385190:82`).
+  Body reads the behavior's owner context (`+0x28`) + the candidate category (`param_2+0x1648`), chases
+  read-only ptr chains, and returns the priority float via `FUN_14054dc00`. **Every callee audited pure:**
+  `54dc00` (the score lookup — iterates the behavior's OWN priority tables `+0x20/0x30/0x38/0x48/0x50`,
+  returns a min-float, no stores), `4ec820`/`3751e0` (1-line mask/deref getters), and the 5 priority-set
+  accessors `68dca0`/`68dbb0`/`68dc80`/`68db60`/`68db80` (10-line index getters, no stores). **No writes
+  anywhere on the score path.**
+
+**⇒ Both query vfuncs are READ-ONLY on the dominant impls; the parallel-fire-pass's last read hazard is
+cleared.** Combined with §8.5 (write-audit GO) and §8.6 (spatial query MANAGEABLE), the *analysis*
+prerequisites for the parallel fire pass are complete; the remaining work is the b3 *build* (create +
+Class-2b + UI-queue deferral) + scratch localization + the short-lock+copy. (Caveat per Rule 2: other rare
+targeting-behavior subclasses are not individually audited; the two majority classes share the method, and
+`vfunc_2` is the universal base accessor.)
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
