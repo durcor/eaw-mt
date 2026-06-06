@@ -562,11 +562,34 @@ read-only fire phase needs no snapshot and no predicate lift; every fire reads t
 create/order invariants are preserved.
 
 **NEXT = N-SHARD prerequisites then N-shard** (§8.10 steps 1-3 + the threaded takeover): (1) global-scratch
-localization — entry-detour the binary fire leaves' fixed-address scratch (`399450`→`b2c380..`,
-`393b70`→`b2ec18..`, `35f470` fog→`a28538..`) to per-thread (399e20/393b70 already lifted; 35f470 needs a
-thread-local-scratch detour); (2) RNG → `SimRng::substream`; (3) the b3 SpawnCommand buffer + canonical
-drain replaces inline create so PhaseB workers don't race the GOM; THEN run PhaseB on real worker threads
-(N>1), re-running this same invariant gate + the host determinism property.
+localization (scope refined in §8.12); (2) RNG → `SimRng::substream`; (3) the b3 SpawnCommand buffer +
+canonical drain replaces inline create so PhaseB workers don't race the GOM; THEN run PhaseB on real
+worker threads (N>1), re-running this same invariant gate + the host determinism property.
+
+### 8.12 GLOBAL-SCRATCH LOCALIZATION — call graph confirmed + scope refined (2026-06-06)
+Surveying the deferred-fire path (PhaseB: `a76b0`→…→`3825b0`) for the racy fixed-address scratch §8.3
+listed. The firing body `3825b0` reaches exactly two scratch-using leaves:
+- **`3825b0:97` → `FUN_14035f470` (FOG/detection, 567B):** rebuilds a SINGLE global heap buffer
+  `DAT_140a28538` (ptr) / `DAT_140a28540` (count) / `DAT_140a28544` (flags) PER CALL — frees the prior
+  buffer (35f470:31-41), repopulates via the sensor-grid query `FUN_14035dec0` (which appends through the
+  result vtable `PTR_vftable_140a28530`), then iterates it (44-78). Two PhaseB workers would free/rebuild
+  each other's buffer ⇒ RACE. Localize = per-thread result buffer (lift, or a TLS arena swapped around
+  the 35dec0 query). Surface = 567B + the 35dec0 callee + the result vtable.
+- **`3825b0:231` → `FUN_140399450` (FULL lead solver, 2512B):** its MAIN path writes+reads
+  `DAT_140b2c380..394` as a within-call temp (399450:198-235); it delegates to the thread-safe `399e20`
+  ONLY in fallback branches (209/252/265). ⇒ **REFINEMENT of §8.10 step 1: "399e20/393b70 drop in" does
+  NOT cover 399450** — the main lead-math path uses `b2c380` directly and needs a FULL lift. That lift can
+  REUSE the existing `firing_intercept` leaf lifts for the 399e20/393b70 delegation, which also covers
+  `b2ec18`.
+- **`393b70` (`b2ec18..30` scratch)** is reached ONLY via `399e20` (393b70 callers = 399e20 + itself), not
+  directly by 3825b0 ⇒ localized for free once 399450's lift uses lifted `firing_intercept`. `399e20`
+  itself is already scratch-free.
+
+⇒ Global-scratch localization on the PhaseB path = **TWO per-function lifts** — `399450` (full lead solver,
+reusing `firing_intercept`) + `35f470` (fog, per-thread result buffer) — each a decode → host bit-exact →
+in-game DTFINT-style oracle, per the established per-function workflow. (Alternative per the §8.10 "lift OR
+arena" note: a per-scratch-group lock around each leaf is correct + cheap but serializes them, which can
+bottleneck the ~p≈0.65 parallel fraction (a2.0) — lifting is the speedup-preserving choice.)
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
