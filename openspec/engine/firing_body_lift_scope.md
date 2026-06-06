@@ -326,6 +326,36 @@ result buffers) and (b) the query-vfunc read-only check. The parallel-fire-pass 
 feasible; the next build step is **b3 (create + Class-2b + UI-queue deferral)** + the spatial-query
 thread-safety, then the parallel-fire takeover. No intractable predicate-read lift is needed.
 
+### 8.6 SPATIAL-QUERY THREAD-SAFETY ASSESSMENT (2026-06-06) — MANAGEABLE: short-lock + copy-out
+The b4-revisit flagged the spatial query as the one hard hazard. Decoded:
+- **The grid is read-only during the per-object walk.** `2acb60` returns a per-team index
+  (`manager+0xd0 + team·0x38`). `2be640` (the tick driver) rebuilds every team's grid ONCE at tick-start
+  via the `20ed70` preamble loop, *before* the per-object walk; the locomotor/transform/body
+  (`625990`/`3ac530`/`3a6b80`) never touch it. ⇒ the grid STRUCTURE is effectively **frozen** during the
+  walk (tick-start view — the same semantics the FrozenSnapshot gives, for free). Concurrent **reads** of
+  it are safe; no snapshot needed.
+- **The query's OUTPUT is the thread-hostile part — and worse than a shared buffer.** `20e780` builds an
+  **INTRUSIVE result list threaded through each result object's `+0x18` field** (overwritten per query),
+  head at the shared `index+8`, plus a benign global query counter `DAT_140a7c66c++`. Two concurrent
+  queries that share *any* candidate clobber that candidate's `+0x18` → corruption. A per-thread *index*
+  would NOT fix it (the `+0x18` lives on the shared objects).
+- **Mitigation (clean, low-effort, deterministic): a short lock around `{ query + copy result pointers to
+  a thread-local buffer }`, then evaluate candidates from the local copy in parallel.** The lock covers
+  only the fast tree-walk + a bounded pointer copy (consumption is already capped at **25** by Fix B2), so
+  the EXPENSIVE per-candidate eval (fog/sensor/score) stays parallel — the win is preserved. Determinism
+  holds: each query reads the same frozen grid ⇒ returns the same candidate set regardless of lock order;
+  the shared `+0x18`/`index+8`/counter are written-then-copied under the lock and never read across units.
+  No `20e780` rewrite needed. (A full intrusive-list rewrite to a non-intrusive buffer is the alternative
+  if the short lock ever shows contention, but the 25-cap makes the critical section tiny.)
+- **Residual (a read, lower risk):** confirm the query vfuncs `0x11` (target-query) / `0x118` (score) are
+  read-only on the dominant unit/ship impls (if any caches into shared state under the eval, it races).
+
+**Verdict: MANAGEABLE — GO.** The grid is free (frozen by tick-start rebuild), and the query's intrusive
+list is contained by a short lock + copy-out that preserves parallelism. The b4-revisit's "one hard
+hazard" is downgraded to a small critical section. ⇒ the parallel-fire-pass to **~3.5–6×** stands; the
+build prerequisites are now: **b3 (create + Class-2b + UI-queue deferral)**, the **short-lock+copy** around
+the spatial query, global-scratch localization + RNG substreams, and the query-vfunc read-only spot-check.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
