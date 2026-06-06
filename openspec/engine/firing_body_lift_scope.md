@@ -158,7 +158,67 @@ alongside b2 (same numeric-oracle method), not on the firing critical path.
 - **Pass-D native deferred-create** (`GOM+0x5f0`) is already the binary's own buffer; the lift emits into it
   via `SpawnCommand`, it is not separately reconstructed.
 
-## 7. Cross-refs
+## 7. b1 RESULTS (2026-06-05) — the read-set is a graph, not a slice; the body splits at a geometry/gate seam
+
+Decompiled + classified the remaining target/manager-reading callees (`383f70`,`385c70`,`399e20`,`38ee10`,
+`39b140`,`39a540`,`35f470`,`397e00`,`397780`,`39b1a0`,`383ba0`,`540140`). The per-call read-set is now
+pinned, and it **reshapes the plan**: the firing body cleanly splits into two halves with very different
+liftability.
+
+### 8.1 GEOMETRY half — cleanly snapshot-able (b2 confirmed sound)
+| Fn | Reads off the target | Indirection | Hazard |
+|---|---|---|---|
+| `399450` intercept | pos `+0x78/7c/80`, vel `+0x254/264/274`, rot rows `+0x248..` (flat) | **none (flat offsets)** | ⚠ global scratch `DAT_140b2c380..394` → localize |
+| `38ee10` rel-vel frame | — (operates on caller arrays only) | **none — perfectly pure** | none |
+| `399e20` direct-aim | flat motion via args | none | none |
+| `381dc0` launch spread | flat dir via args | none | RNG `a13e24` → substream |
+| `383f70` aim-point | target motion (flat) | **no vfunc** | RNG `a13e24` → substream |
+| `385c70` hardpoint pos | `param_3+0x2c/0x38/0x10/0x2a0` → bone cache `12d2c0` | one bone lookup | bone cache (Class-3 presentation read) |
+| `385e70` LOS/muzzle | self + bone via `12d2c0`/`3858b0` | one bone lookup | none |
+
+⇒ The aim/intercept geometry reads a **small flat target slice (pos/vel/rot)** plus the bone cache. The
+`FrozenSnapshot` field set of §4 **does** serve it. b2 stands.
+
+### 8.2 GATE half — a deep vfunc/sub-object/sensor graph (the real fan-out, surfaced early)
+| Predicate | What it actually reads | Why a field-copy snapshot can't serve it |
+|---|---|---|
+| `39b140` (target timed-state) | `tgt+0x220→+0x20`, `tgt+0x100→+0x2a4/+0x2bc`, frame ctr | **sub-object pointer chains** (chases live ptrs) |
+| `39a540` (sensor/stealth) | `tgt+0x3b4` + **sensor grid** `b15418` vfunc+0x210 → `56c720(grid,firer)` → vfunc+0x18(entry,tgt) | **global sensor grid + vfunc dispatch** |
+| `35f470` (fog reveal) | `tgt+0x348/34a/34b`, `firer[0x33][team]`, iterate via `35dec0` | **global mutable heap scratch `DAT_140a28538/40/44`** (thread-init-guarded but GLOBAL) + sensor array |
+| `397e00` (assigned-target) | `tgt` identity + `tgt+0x2b0`, firer order state `+0x100→+0x270/278` | identity compare across the live graph |
+| `397780` (target extent) | `(**tgt[0x10])(tgt,0x16/1)`, vfunc+0x230, `396850` | **vfunc dispatch** |
+| `39b1a0` (target behavior) | `tgt+0x2b0→+0x348` | sub-object chain |
+| `540140` (category mask) | `3973b0(tgt)+0x1648` vs `owner+0x408` | sub-object chain |
+| `3825b0` inline | `(**tgt[0x10])(tgt, 0x11/0x16)` | **vfunc dispatch** |
+
+⇒ **Three indirection mechanisms defeat a per-object field-copy snapshot:** (1) **vfunc dispatch**
+`(**(tgt+0x10))(tgt,sel)` reads live state through virtual calls; (2) **sub-object pointer chains**
+(`tgt+0x100→…`, `tgt+0x2b0→…`) chase live pointers into other allocations; (3) the **global sensor
+grid + global mutable scratch**. The contract's `FrozenSnapshot` is a per-object *state* double-buffer —
+it cannot redirect a vfunc or a chased pointer to the buffered copy without recompiling the callee. So the
+gate cannot be made snapshot-safe by *snapshotting* — only by **lifting** each predicate to replace its
+vfunc/chain reads with explicit snapshot lookups (large), or by keeping the decision **serial**.
+
+### 8.3 Two more global-scratch thread hazards (any parallel firing must localize)
+Beyond `399450`'s `DAT_140b2c380..394`: **`35f470` uses `DAT_140a28538/40/44`** (a process-heap scratch
+buffer, `_Init_thread_header`-guarded init but a *single global* allocation reused per call). Concurrent
+firing workers would race it. Inventory of firing-path global mutable scratch to localize: `DAT_140b2c380`,
+`DAT_140b2c384`, `DAT_140b2c388`, `DAT_140b2c38c`, `DAT_140b2c390`, `DAT_140b2c394`, `DAT_140a28538`,
+`DAT_140a28540`, `DAT_140a28544`.
+
+### 8.4 What this does to the plan
+- **b2 (geometry) is GREEN** and the highest-value clean win — lift the flat-slice aim/intercept cluster
+  (localize the 6 `DAT_140b2c3xx` scratch words). Pair with **b2′ Pass-C `3ac530`** (also clean).
+- **b4 (gate) fan-out is CONFIRMED, and surfaced at b1** rather than after b2. The gate is not
+  snapshot-servable; faithfully lifting it = lifting ~8 predicate subtrees (with their own vfunc fan-out)
+  + localizing global scratch. **The reassessment-gate decision is now informed early** (see §5): the
+  evidence leans toward the **fallback** — keep the per-firer fire *decision* effectively serial (it is
+  cheap: a cascade of early-return predicates) and parallelize the **geometry + spawn-payload compute +
+  the cheap mass (movement/sensor/Pass-C)**. That still threads the expensive per-tick math; only the
+  branch-heavy, graph-chasing decision stays on the ordered path. **Recommend taking the §5 gate decision
+  after b2 lands, with this b1 evidence on the table.**
+
+## 8. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
 - Command ops / drain key: `sim_parallel_command_schema.md` §7 (I4 box, the `(gom,rank,seq)` key a0 confirmed).
