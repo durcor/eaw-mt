@@ -7168,6 +7168,7 @@ static BOOL install_b387400_subcallee_hooks(void)
     return (n384850 + n3825b0) > 0;
 }
 
+#if defined(EAW_PROFILE) || defined(EAW_ORACLE)
 /* a1 SFX takeover installer (inproc_integration_milestone.md §2): repoint every FUN_1402d5290 call site
  * inside the KNOWN return-ignoring callers to a1_sfx_intercept. The three decompiled callers cover the
  * combat-hot SFX classes: 387400:99 (movement cue, cold in the menu demo), 386660:71 (death/destruction
@@ -7214,6 +7215,7 @@ static BOOL install_a1_sfx_hook(void) {
     log_write(m);
     return total > 0;
 }
+#endif /* EAW_PROFILE || EAW_ORACLE */
 
 /* =========================================================================
  * FUN_1403825b0 sub-callee hooks — isolating the stall within b3825b0
