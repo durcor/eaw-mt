@@ -498,6 +498,41 @@ precise plan (each piece, and why it's now tractable):
 remains is the gated, sign-off-required live-tick threading integration (steps 1–5), which is its own
 milestone and should roll out 1-shard-first behind `EAW_PFIRE`.**
 
+### 8.11 IN-GAME TAKEOVER — STAGE A (identity scaffold) = PASS (2026-06-06)
+First live-tick step of the step-4 takeover, mirroring milestone a1 ("control-flow takeover with no real
+threads first"). Rule-6 sign-off taken before touching the tick. **Seam confirmed:** the per-object walk
+is `FUN_1402be640`'s `master_update_list` sweep (decomp/2be640.c:64-71) calling `FUN_1403a6b80(obj,
+param_2, cVar4)` once per object — one monolithic update that *interleaves* settle and fire. Inside
+`3a6b80` the split point is: **settle half** = locomotor state-shift + behavior-update loop (`vfunc+0x30`)
++ transform + scene (2be640.c:37-261); **fire half** = `FUN_1403a76b0` (hardpoint fire body, 3a6b80.c:372)
++ the `flags&0x40000` effect-probability gate (`FUN_1403ab890`, 3a6b80.c:384). The future two-phase split
+is: PhaseA = `3a6b80`-minus-fire ∥ → barrier → PhaseB = fire-body-only per firer ∥ → barrier → PhaseC
+drain. NB the recharge block (3a6b80.c:360-370) reads only self → stays in PhaseA; only `a76b0`+`ab890`
+(which read other objects' settled positions) move to PhaseB.
+
+**Build (hooks/winmm_proxy.c, mirroring a1's call-site-repoint idiom):** `EAW_PFIRE` kill-switch
+(default OFF; with it unset `install_pfire_hooks()` is never called and the image is byte-for-byte stock).
+When armed, two E8 call sites inside `FUN_1402be640` are repointed (bodies intact, replay via saved real
+pointers): the per-object `3a6b80` call (the walk; B's PhaseA collect/settle) and the final `2a62d0`
+call (2be640.c:249; B's PhaseB/PhaseC flush point). **STAGE A interceptors are pure passthrough** — the
+identity case, where bit-identity is still a valid oracle (it stops being one once the PhaseA/B split
+introduces the intended retrofit delta, §8.10/CLAIM 2). justfile: `just pfire=1 launch-foc-desktop`.
+
+**Gate result (in-game, EAW_PFIRE=1):**
+- Seam interception assumption CONFIRMED: `a6b80(walk)=1 a62d0(flush)=1` site(s) repointed — exactly one
+  per-object walk call and one flush site, as the restructure requires (not 0, not many).
+- Release build: interceptors fire at full battle scale (walk=2.57M over 8193 flushes, ~397 obj/tick),
+  no crash / c0000005 / VEH / FATAL. (`eaw-mt.log.pfireA-release`)
+- Oracle build (`build-winmm-oracle`, EAW_DIFFTRACE=1 EAW_PFIRE=1): structural sim-ordering oracles stay
+  bit-exact GREEN across multiple battles — `DTWA idfail=0 ctrfail=0` (I1 create-id allocator),
+  `DTDRAIN rank_down=0` (canonical drain order), `DTB3SUM` all `N/0` (firer/tgt/sub/dmg/life — §3
+  firing-body source-map). 0 crashes. (`eaw-mt.log.pfireA-oracle-pass`)
+⇒ The call-site repoint of the `t2be640` seam does NOT perturb the create/order sim path — proven
+in-game, exactly as a passthrough must. The seam STAGE B will own is plumbed + live-validated.
+**NEXT = STAGE B** (task: split `3a6b80` settle/fire; flip the interceptors to two-phase collect/settle
++ deferred fire/drain at 1-shard; re-run this gate — now expecting the retrofit delta, validated by
+determinism+invariants NOT stock-equivalence).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

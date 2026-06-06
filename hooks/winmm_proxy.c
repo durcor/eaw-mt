@@ -1929,6 +1929,116 @@ static BOOL install_2be640_body_hooks(void)
     return n > 0;
 }
 
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+ * MILESTONE pfire — GATED IN-GAME PARALLEL-FIRE TAKEOVER  (firing_body_lift_scope.md §8.10, step 4)
+ *
+ * The riskiest control-flow change in the project: a live-tick takeover of the per-object update walk
+ * inside FUN_1402be640 (the master_update_list sweep, decomp/2be640.c:64-71), to be restructured into
+ * the two-phase tick proven host-side in sim/tests/parallel_fire_test.cpp:
+ *     PhaseA: settle every object (3a6b80 minus its fire half)
+ *       --- barrier ---
+ *     PhaseB: run the binary fire body per firer, reading the now-SETTLED world
+ *       --- barrier ---
+ *     PhaseC: drain buffered spawns/sfx/signals in canonical order
+ *
+ * Rollout (mirroring milestone a1): 1-SHARD FIRST — a control-flow takeover with NO real worker
+ * threads — gated behind EAW_PFIRE (default OFF). With EAW_PFIRE unset, install_pfire_hooks() is never
+ * called and the image is byte-for-byte stock.
+ *
+ * STAGE A (this commit) — IDENTITY SCAFFOLD. We repoint the two E8 call sites inside FUN_1402be640
+ * that own the seam STAGE B will use — the per-object 3a6b80 call (the walk) and the final 2a62d0 call
+ * (B's PhaseB/PhaseC flush point) — to interceptors that for now PURELY PASS THROUGH to the untouched
+ * originals (call sites repointed, bodies intact; replay via the saved real pointers, the a1 idiom).
+ * This proves, in the live tick, that: the seam interception finds + repoints the walk's per-object
+ * call in the release image; the stubs execute per object per tick without faulting; EAW_PFIRE
+ * arms/disarms the install. Behavior MUST be identical to stock — bit-identity is the strongest oracle
+ * and it is available only HERE, before the PhaseA/B split introduces the intended retrofit delta
+ * (§8.10 / CLAIM 2). STAGE B flips these interceptors to the two-phase collect/settle + deferred
+ * fire/drain.
+ * ════════════════════════════════════════════════════════════════════════════════════════════════ */
+typedef void (*PfireA6b80Fn)(int64_t, int32_t, int8_t);
+typedef void (*PfireA62d0Fn)(int64_t);
+static PfireA6b80Fn g_pfire_a6b80_real = NULL;   /* untouched FUN_1403a6b80 (call-site patched) */
+static PfireA62d0Fn g_pfire_a62d0_real = NULL;   /* untouched FUN_1402a62d0 (call-site patched) */
+static int  g_pfire_enabled = -1;
+static LONG g_pfire_a6b80_calls = 0;             /* per-object walk invocations observed */
+static LONG g_pfire_a62d0_calls = 0;             /* flush-point invocations observed */
+
+static int pfire_on(void) {
+    if (g_pfire_enabled < 0) {
+        const char *e = getenv("EAW_PFIRE");
+        g_pfire_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_pfire_enabled
+            ? "[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=1) — STAGE A identity passthrough\n"
+            : "[eaw-mt] PFIRE: off (EAW_PFIRE=1 to arm the t2be640 walk takeover)\n");
+    }
+    return g_pfire_enabled;
+}
+
+/* call-site replacement for the per-object FUN_1403a6b80 (2be640:70). STAGE A = pure passthrough.
+ * STAGE B will collect+settle here (3a6b80 with the fire half suppressed) and defer the fire body. */
+static void pfire_a6b80_intercept(int64_t obj, int32_t p2, int8_t c3) {
+    InterlockedIncrement(&g_pfire_a6b80_calls);
+    if (g_pfire_a6b80_real) g_pfire_a6b80_real(obj, p2, c3);
+}
+
+/* call-site replacement for the final FUN_1402a62d0 (2be640:249) — B's PhaseB/PhaseC flush point.
+ * STAGE A = pure passthrough. STAGE B will run PhaseB (deferred fire) + PhaseC (canonical drain) here,
+ * before delegating to the original. */
+static void pfire_a62d0_intercept(int64_t mgr) {
+    LONG c = InterlockedIncrement(&g_pfire_a62d0_calls);
+    if ((c & 0xfff) == 1) {                       /* periodic live-evidence both interceptors fire */
+        char m[128];
+        sprintf(m, "[eaw-mt] PFIRE-A: live — a6b80(walk)=%ld a62d0(flush)=%ld\n",
+                g_pfire_a6b80_calls, g_pfire_a62d0_calls);
+        log_write(m);
+    }
+    if (g_pfire_a62d0_real) g_pfire_a62d0_real(mgr);
+}
+
+/* Repoint the 3a6b80 + 2a62d0 E8 call sites inside FUN_1402be640's body to our interceptors. Only
+ * called when EAW_PFIRE is armed, so the default image is untouched. (In the EAW_PROFILE build the
+ * measurement installer install_2be640_body_hooks repoints the same sites for timing; PFIRE targets
+ * the release / EAW_ORACLE builds, which do not run that installer, so they do not collide.) */
+static BOOL install_pfire_hooks(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn2be640 = (BYTE *)exe + T2BE640_RVA;
+    BYTE *fna6b80  = (BYTE *)exe + TA6B80_RVA;
+    BYTE *fna62d0  = (BYTE *)exe + TA62D0_RVA;
+    g_pfire_a6b80_real = (PfireA6b80Fn)fna6b80;
+    g_pfire_a62d0_real = (PfireA62d0Fn)fna62d0;
+
+    BYTE *stub_block = alloc_near(fn2be640, 14 * 2);
+    if (!stub_block) { log_write("[eaw-mt] WARN: alloc_near failed for pfire stubs\n"); return FALSE; }
+    BYTE *stub_a6b80 = stub_block + 0 * 14;
+    BYTE *stub_a62d0 = stub_block + 1 * 14;
+    write_abs_jmp(stub_a6b80, (uint64_t)pfire_a6b80_intercept);
+    write_abs_jmp(stub_a62d0, (uint64_t)pfire_a62d0_intercept);
+
+    int n_a6b80 = 0, n_a62d0 = 0;
+    for (int i = 0; i <= B2BE640_BODY_SIZE - 5; i++) {
+        if (fn2be640[i] != 0xE8) continue;
+        int32_t rel; memcpy(&rel, fn2be640 + i + 1, 4);
+        BYTE *target = fn2be640 + i + 5 + rel;
+        BYTE *stub = NULL;
+        if      (target == fna6b80) { stub = stub_a6b80; n_a6b80++; }
+        else if (target == fna62d0) { stub = stub_a62d0; n_a62d0++; }
+        if (!stub) continue;
+        int32_t new_rel = (int32_t)(stub - (fn2be640 + i + 5));
+        DWORD old;
+        VirtualProtect(fn2be640 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+        memcpy(fn2be640 + i + 1, &new_rel, 4);
+        VirtualProtect(fn2be640 + i + 1, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), fn2be640 + i, 5);
+    }
+    char m[160];
+    sprintf(m, "[eaw-mt] PFIRE: t2be640 seam repointed — a6b80(walk)=%d a62d0(flush)=%d site(s)\n",
+            n_a6b80, n_a62d0);
+    log_write(m);
+    return (n_a6b80 > 0);
+}
+
 /* =========================================================================
  * Per-entity Pump_Threads hook inside FUN_1403a6b80 (Phase 5 Step 10)
  *
@@ -10224,6 +10334,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b25ec10_subcallee_hooks(); /* b25ec10 art-model result cache (EAW_NO_B25CACHE) */
         build_meg_index();                 /* MEG archive filename index (for meg_has / nf_cache) */
         install_b141f70_subcallee_hooks(); /* nf_cache: MEG not-found memo (EAW_NO_MEGSKIP) */
+        if (pfire_on()) install_pfire_hooks(); /* §8.10 step 4: gated 1-shard fire takeover (EAW_PFIRE=1; STAGE A identity) */
 
 #ifdef EAW_PROFILE
         /* ---- Measurement-only instrumentation (compiled out of the release build) ---- */
