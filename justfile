@@ -17,6 +17,8 @@ difftrace := ""
 offwatch := ""
 # Milestone a1: arm the gated SFX takeover (oracle build, also needs difftrace=1). Override: just difftrace=1 a1=1 launch-foc-desktop
 a1 := ""
+# a2.0 Amdahl measurement (oracle build): time 3a6b80 body vs 3a76b0 fire-control, DT hooks skipped. Override: just a2measure=1 launch-foc-desktop
+a2measure := ""
 save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
@@ -214,6 +216,7 @@ launch-foc-desktop:
       EAW_DIFFTRACE={{difftrace}} \
       EAW_OFFWATCH={{offwatch}} \
       EAW_A1={{a1}} \
+      EAW_A2MEASURE={{a2measure}} \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \

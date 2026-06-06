@@ -9923,6 +9923,97 @@ static LONG WINAPI veh_crash_handler(EXCEPTION_POINTERS *ep)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+#if defined(EAW_PROFILE) || defined(EAW_ORACLE)
+/* =========================================================================
+ * A2MEASURE — a2.0 Amdahl measurement (a2_integration_scope.md §2).
+ *
+ * The serial-gate fallback keeps the fire-control subtree SERIAL and parallelizes the cheap-mass. To know
+ * if the speedup is worth it we time, per tick, the per-object body FUN_1403a6b80 (which contains the
+ * whole update) vs its fire-control call FUN_1403a76b0 (3a76b0 → 387400 → 3825b0, the part that stays
+ * serial). The parallelizable fraction is p = (body - fire)/body; the Amdahl ceiling is 1/((1-p)+p/N).
+ *
+ * Lean QPC timers ONLY: gated by EAW_A2MEASURE=1, which installs JUST these two entry-detours and SKIPS
+ * every DT hook, so no instrumentation overhead confounds the timing. body times include fire times
+ * (3a6b80 calls 3a76b0), so cheap = body - fire is the cheap-mass time. Cumulative (time-weighted) ratio.
+ * 3a6b80 prologue (15B, position-independent): 48 8b c4 / 56 / 48 81 ec f0 00 00 00 / 0f 29 78 b8
+ *   = mov rax,rsp; push rsi; sub rsp,0xf0; movaps [rax-0x48],xmm7. */
+#define A2M_A6B80_RVA 0x3a6b80ULL
+static const BYTE a2m_a6b80_prologue[15] = {
+    0x48,0x8b,0xc4, 0x56, 0x48,0x81,0xec,0xf0,0x00,0x00,0x00, 0x0f,0x29,0x78,0xb8
+};
+typedef void (*A2mBodyFn)(void*, uint32_t, char);
+typedef void (*A2mFireFn)(int64_t, int32_t);
+static A2mBodyFn g_a2m_body_tramp=NULL;
+static A2mFireFn g_a2m_fire_tramp=NULL;
+static LARGE_INTEGER g_a2m_qpf;
+static long long g_a2m_body_qpc=0, g_a2m_fire_qpc=0;
+static long g_a2m_body_calls=0, g_a2m_fire_calls=0;
+static uint32_t g_a2m_last_log=0xFFFFFFFFu;
+static int g_a2m_enabled=-1;
+
+static int a2measure_on(void) {
+    if (g_a2m_enabled<0) {
+        const char* e=getenv("EAW_A2MEASURE");
+        g_a2m_enabled=(e&&e[0]&&e[0]!='0')?1:0;
+        log_write(g_a2m_enabled
+            ? "[eaw-mt] A2MEASURE: ON — timing 3a6b80 body vs 3a76b0 fire-control (DT hooks skipped)\n"
+            : "[eaw-mt] A2MEASURE: off (EAW_A2MEASURE=1 to measure the parallel fraction)\n");
+    }
+    return g_a2m_enabled;
+}
+
+static void a2m_fire_timer(int64_t ship, int32_t t) {
+    LARGE_INTEGER a,b; QueryPerformanceCounter(&a);
+    g_a2m_fire_tramp(ship,t);
+    QueryPerformanceCounter(&b);
+    g_a2m_fire_qpc += (b.QuadPart-a.QuadPart); g_a2m_fire_calls++;
+}
+
+static void a2m_body_timer(void* obj, uint32_t p2, char p3) {
+    LARGE_INTEGER a,b; QueryPerformanceCounter(&a);
+    g_a2m_body_tramp(obj,p2,p3);
+    QueryPerformanceCounter(&b);
+    g_a2m_body_qpc += (b.QuadPart-a.QuadPart); g_a2m_body_calls++;
+
+    if (!g_dt_frame_ctr) {
+        HMODULE exe=GetModuleHandleA(NULL);
+        if (exe){ g_dt_frame_ctr=(volatile uint32_t*)((BYTE*)exe+0xb0a320); g_dt_imgbase=(uintptr_t)exe; }
+    }
+    if (g_dt_frame_ctr && g_a2m_qpf.QuadPart>0) {
+        uint32_t now=*g_dt_frame_ctr;
+        if (now!=g_a2m_last_log && (now & 0x1ffu)==0) {   /* every 512 ticks */
+            g_a2m_last_log=now;
+            double per_ms=(double)g_a2m_qpf.QuadPart/1000.0;
+            double body=(double)g_a2m_body_qpc/per_ms, fire=(double)g_a2m_fire_qpc/per_ms;
+            double cheap=body-fire;
+            double p = body>0.0 ? cheap/body : 0.0;
+            double a2x=1.0/((1.0-p)+p/2.0), a4x=1.0/((1.0-p)+p/4.0), a8x=1.0/((1.0-p)+p/8.0);
+            double ainf = p<1.0 ? 1.0/(1.0-p) : 999.0;
+            char ln[360];
+            snprintf(ln,sizeof ln,
+              "A2MEASURE\ttick=%u\tbody_ms=%.1f\tfire_ms=%.1f\tcheap_ms=%.1f\tp=%.4f\tbody_n=%ld\tfire_n=%ld\tamdahl_2/4/8/inf=%.2f/%.2f/%.2f/%.2f\n",
+              now, body, fire, cheap, p, g_a2m_body_calls, g_a2m_fire_calls, a2x,a4x,a8x,ainf);
+            log_write(ln);
+        }
+    }
+}
+
+static void install_a2_measure_hooks(void) {
+    QueryPerformanceFrequency(&g_a2m_qpf);
+    void* tb=NULL; void* tf=NULL;
+    if (install_targ_tramp(A2M_A6B80_RVA, a2m_a6b80_prologue, sizeof a2m_a6b80_prologue,
+                           (void*)a2m_body_timer, &tb, "FUN_1403a6b80")) {
+        g_a2m_body_tramp=(A2mBodyFn)tb;
+        log_write("[eaw-mt] A2MEASURE: 3a6b80 per-object body timer installed\n");
+    }
+    if (install_targ_tramp(FIRE_A76B0_RVA, fire_a76b0_prologue, sizeof fire_a76b0_prologue,
+                           (void*)a2m_fire_timer, &tf, "FUN_1403a76b0")) {
+        g_a2m_fire_tramp=(A2mFireFn)tf;
+        log_write("[eaw-mt] A2MEASURE: 3a76b0 fire-control subtree timer installed\n");
+    }
+}
+#endif /* EAW_PROFILE || EAW_ORACLE */
+
 /* =========================================================================
  * DllMain
  * ========================================================================= */
@@ -10017,6 +10108,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
          * hooks) physically rewrite E8 call sites and can fault on battle-load paths the menu demo
          * never exercises (observed: c0000005 inside b375380); the DT hooks below are whole-function
          * inline trampolines that only snapshot+log, so they are safe to run alone for a clean capture. */
+        if (a2measure_on()) {
+            install_a2_measure_hooks();   /* a2.0: ONLY the 2 Amdahl timers — DT hooks skipped to avoid confound */
+            log_write("[eaw-mt] A2MEASURE mode: 2 timers only (all DT oracle hooks skipped)\n");
+        } else {
         install_b5caaf0_hook();   /* DTSTEER: Fighter steering controller I/O (EAW_DIFFTRACE=1) */
         install_b5c95a0_hook();   /* DTYAW: Fighter yaw/roll bank-to-turn integrator I/O (EAW_DIFFTRACE=1) */
         install_b3a76b0_hook();   /* DTFIRE: hardpoint fire-budget distribution I/O (EAW_DIFFTRACE=1) */
@@ -10039,6 +10134,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_dtwa_sig_hook();  /* DTWASIG: signal fan-out Command-schema/traffic oracle (EAW_DIFFTRACE=1) */
         install_a1_sfx_hook();    /* a1: gated SFX takeover — 2d5290 buffer+canonical-drain (EAW_A1=1 to arm) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
+        }
 #endif
 
         log_write("[eaw-mt] Model A: render on main thread (offload dormant)\n");
