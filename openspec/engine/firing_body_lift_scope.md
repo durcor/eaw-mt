@@ -449,7 +449,54 @@ is confirmed against the live binary for every substantive payload field; the re
 would reproduce the binary's `proj+0xe8` record.**
 
 **Remaining for the parallel-fire build:** the global-scratch localization + RNG substreams + the
-short-lock+copy around the spatial query (§8.6).
+short-lock+copy around the spatial query (§8.6) → §8.10.
+
+### 8.10 PARALLEL-FIRE BUILD — host pipeline + concurrency primitive DONE; in-game takeover SCOPED (2026-06-06)
+With b3 (host §8.8 + in-game §8.9) closing the create-deferral, the two HOST-buildable pieces of the
+parallel-fire path are built + determinism-gate-green:
+
+- **The assembled two-parallel-phase tick** (`sim/tests/parallel_fire_test.cpp`) realizes the §8.2 b4-revisit
+  architecture from the built pieces (ShardBuffer + drain_parallel + the b3 `firing_spawn` payload):
+  `PhaseA∥ cheap-mass (settle own-state) → barrier → PhaseB∥ fire pass (read SETTLED state, buffer b3
+  SpawnCommand + Class-2b signal + SFX) → barrier → PhaseC drain`. **Gate PASS:** bit-identical N-shard ≡
+  1-shard for N∈{1,2,4,8} × {round-robin, contiguous} × SHUFFLED processing in BOTH phases — the proof that
+  the read-only fire phase needs no snapshot and no predicate lift (PhaseB reads live-but-stable state,
+  writes only its own shard buffer ⇒ output depends only on (id, settled world), never on shard/order).
+  Also demonstrates the **retrofit delta** (CLAIM 2): the two-phase tick DIFFERS from a stock-interleaved
+  tick by design (every fire reads fully-settled positions vs a pre/post-move mix) — validated by
+  determinism + lockstep, NOT stock-equivalence (a2_integration §3 / a2.0b).
+- **The spatial-query short-lock+copy primitive** (`sim/spatial_query.h` + `sim/tests/spatial_query_test.cpp`):
+  `SpatialQueryGuard::query_copy` makes {run query + copy the intrusive `+0x18` result list into a
+  thread-local snapshot} atomic, then releases — the expensive per-candidate eval runs lock-free. Host gate:
+  the copy is independent of later shared-buffer mutation (contract); 8 threads × 4000 guarded queries →
+  corruption=0; a DETERMINISTIC interleaving negative control shows the unguarded shared `+0x18` walk tears
+  (7/25 ids) — the guard is load-bearing. (Grid-frozen invariant is the caller's, upheld by the sweep barrier.)
+
+**STILL REMAINING = the IN-GAME THREADED TAKEOVER (the next gated milestone, high-risk, Rule-6 sign-off).**
+This is the irreducibly-in-game part — a live-tick control-flow takeover driving real worker threads — that
+cannot be host-validated and per a2_integration §8 is the riskiest control-flow change in the project. The
+precise plan (each piece, and why it's now tractable):
+1. **Global-scratch localization** — the parallel fire pass runs the BINARY fire body per firer on N
+   threads; the binary leaves' fixed-address global scratch (`399450`→`DAT_140b2c380..394`,
+   `393b70`→`DAT_140b2ec18..30`, `35f470` fog→`DAT_140a28538/40/44`, §8.3) would race. Mechanism:
+   entry-detour each scratch-using leaf to a per-thread implementation. `399e20`/`393b70` are ALREADY lifted
+   thread-safe + bit-exact (DTFINT 473k/473k, return-by-value, `sim/firing_intercept`) so they drop in;
+   `35f470` fog needs a thread-local-scratch detour (lift or per-thread arena).
+2. **RNG** — the fire path's LCG draws (`1ffb40`/`1ffbb0`/`1ffdb0`) → per-entity `SimRng::substream` (built,
+   invariant I2 gone). A determinism retrofit, already accepted (sim_rng.h).
+3. **Spatial query** — wrap `2acb60`→`20e780` with `SpatialQueryGuard` (built, §8.10).
+4. **The takeover seam** — at `t2be640` / the per-object walk, drive `PhaseA∥ lifted cheap-mass → barrier →
+   PhaseB∥ binary fire body per firer (emits buffered via the b3 SpawnCommand + Class-2b + SfxCommand +
+   the rare UI-queue channel §8.5) → barrier → PhaseC drain_parallel`. Kill-switch `EAW_PFIRE=1`
+   default-OFF; **1-SHARD FIRST** (control-flow takeover with no real threads) before N-shard, mirroring a1.
+5. **The gate** — replay-determinism + lockstep (NOT stock-equivalence — the retrofit delta §8.10/CLAIM 2);
+   the structural invariants must hold under takeover (DTWA `idfail=0`, DTDRAIN `rank_down=0`, DTWA-B3
+   source-map); the host `parallel_fire_test` determinism property is the in-host proxy the in-game run must
+   reproduce. Expected ceiling ~3.5–6× (§8.2) vs the serial-fallback ~2× (a2.0).
+
+⇒ **The RE + host-build side of the parallel-fire path is COMPLETE and determinism-gate-green; what
+remains is the gated, sign-off-required live-tick threading integration (steps 1–5), which is its own
+milestone and should roll out 1-shard-first behind `EAW_PFIRE`.**
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
