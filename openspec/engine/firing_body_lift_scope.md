@@ -148,6 +148,18 @@ in-game oracle to follow.
 > 3–4× payoff before sinking b3–b5 effort.** If b4 is intractable, the fallback is to keep firing **serial**
 > (a Pass between the parallel sweeps) and parallelize only the cheap mass (movement/sensor/Pass-C) — still
 > a real win, and a1+Pass-C already prove that path.
+>
+> **✅ GATE RESOLVED 2026-06-06 (Rule-6 sign-off): take the SERIAL-GATE FALLBACK.** Evidence: b1 proved the
+> fire-DECISION gate is a deep vfunc/sub-object/sensor graph **not servable by a field-copy snapshot**;
+> DTFINT proved the GEOMETRY lifts **bit-exact** (473,306/473,306) and the curved-lead is **dormant**
+> (`complex=0`); b2′ proved the cheap-mass (Pass-C) parallelizes cleanly. ⇒ **b3/b4/b5 (full gate lift +
+> create-deferral) are NOT pursued.** The a2 architecture: keep the per-firer fire DECISION on the
+> ordered/serial path (the cheap early-return predicate cascade, creates stay immediate there → the §0
+> blocker is sidestepped), and parallelize the **GEOMETRY compute + the cheap per-tick mass**
+> (movement/sensor/Pass-C — all lifted + snapshot-ready). Remaining work is ENGINE INTEGRATION (wire the
+> built `FrozenSnapshot`/`ShardScheduler` into the live tick: cheap-mass sweep ∥ → serial fire pass), plus
+> the DTDYN oracle to close Pass-C bit-exact. `399450`/`385e70` become low-value (the serial pass runs the
+> binary body), so they are dropped from the critical path.
 
 ---
 
