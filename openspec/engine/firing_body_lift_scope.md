@@ -529,9 +529,44 @@ introduces the intended retrofit delta, §8.10/CLAIM 2). justfile: `just pfire=1
   firing-body source-map). 0 crashes. (`eaw-mt.log.pfireA-oracle-pass`)
 ⇒ The call-site repoint of the `t2be640` seam does NOT perturb the create/order sim path — proven
 in-game, exactly as a passthrough must. The seam STAGE B will own is plumbed + live-validated.
-**NEXT = STAGE B** (task: split `3a6b80` settle/fire; flip the interceptors to two-phase collect/settle
-+ deferred fire/drain at 1-shard; re-run this gate — now expecting the retrofit delta, validated by
-determinism+invariants NOT stock-equivalence).
+
+#### STAGE B (two-phase split, 1-shard) = PASS (EAW_PFIRE=2)
+The retrofit. The fire half of the per-object update is `FUN_1403a76b0` (the hardpoint fire body,
+3a6b80.c:372). A THIRD call-site repoint — the `a76b0` E8 **inside `3a6b80`'s body** → `pfire_a76b0_
+intercept` — lets the settle walk run fire-suppressed: at level 2 the interceptor RECORDS `(firer, tick)`
+and returns (no fire) ⇒ `3a6b80` settles only (**PhaseA**). The deferred fires are replayed IN WALK
+ORDER at the `2a62d0` flush (**PhaseB**), after every object in that manager's walk has settled — the
+barrier — so every fire reads the SETTLED world. The walk→flush pairing is guaranteed (2be640 has no
+return between the walk and 2a62d0). PhaseB calls `a76b0` at its ENTRY, so it still passes through the
+DT oracle entry-detours; DTDRAIN's rank is an incrementing per-tick counter stamped at each `a76b0`
+entry, so walk-order replay keeps `rank_down=0`. 1-SHARD ⇒ no command buffer: the binary fire creates
+projectiles inline in canonical (walk) order (= PhaseC for 1-shard); the b3 SpawnCommand buffer is the
+later N-shard step. `g_pfire_a76b0_real` keeps the ENTRY (not a trampoline) so the b3a76b0 / DTWA-B3
+oracles observe the deferred fires. justfile: `just pfire=2 launch-foc-desktop`.
+
+**Gate result (in-game, EAW_DIFFTRACE=1 EAW_PFIRE=2):** the structural invariants HOLD under the
+two-phase delta (validated by invariants, NOT stock-equivalence — fire now reads fully-settled positions
+by design):
+- Seam: `a6b80(walk)=1 a62d0(flush)=1 a76b0(fire)=1` repointed (the fire-body call site at 3a6b80.c:372
+  found, exactly one).
+- Two-phase balance PERFECT: `deferred=16272 fired=16272` (every suppressed fire replayed), `overflow=0`,
+  `maxfill=8` (≤8 firers buffered per manager-walk, far under the 8192 cap), over walk=1.64M / 4097
+  flushes — a full battle.
+- Structural oracles bit-exact GREEN across multiple battles: `DTWA idfail=0 ctrfail=0`,
+  `DTDRAIN rank_down=0`, `DTB3SUM` all `N/0`. 0 crashes (the deferred-fire use-after-free risk did not
+  materialize — death-free is deferred to a later pass, so recorded firer pointers stay valid through the
+  flush). (`eaw-mt.log.pfireB-oracle-pass`)
+⇒ **The two-phase settle→barrier→fire restructure is live + correct at 1-shard** — the in-game analogue
+of the host `parallel_fire_test` determinism property, now reproduced against the real engine. The
+read-only fire phase needs no snapshot and no predicate lift; every fire reads the settled world and the
+create/order invariants are preserved.
+
+**NEXT = N-SHARD prerequisites then N-shard** (§8.10 steps 1-3 + the threaded takeover): (1) global-scratch
+localization — entry-detour the binary fire leaves' fixed-address scratch (`399450`→`b2c380..`,
+`393b70`→`b2ec18..`, `35f470` fog→`a28538..`) to per-thread (399e20/393b70 already lifted; 35f470 needs a
+thread-local-scratch detour); (2) RNG → `SimRng::substream`; (3) the b3 SpawnCommand buffer + canonical
+drain replaces inline create so PhaseB workers don't race the GOM; THEN run PhaseB on real worker threads
+(N>1), re-running this same invariant gate + the host determinism property.
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).

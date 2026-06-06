@@ -1945,98 +1945,169 @@ static BOOL install_2be640_body_hooks(void)
  * threads — gated behind EAW_PFIRE (default OFF). With EAW_PFIRE unset, install_pfire_hooks() is never
  * called and the image is byte-for-byte stock.
  *
- * STAGE A (this commit) — IDENTITY SCAFFOLD. We repoint the two E8 call sites inside FUN_1402be640
- * that own the seam STAGE B will use — the per-object 3a6b80 call (the walk) and the final 2a62d0 call
- * (B's PhaseB/PhaseC flush point) — to interceptors that for now PURELY PASS THROUGH to the untouched
- * originals (call sites repointed, bodies intact; replay via the saved real pointers, the a1 idiom).
- * This proves, in the live tick, that: the seam interception finds + repoints the walk's per-object
- * call in the release image; the stubs execute per object per tick without faulting; EAW_PFIRE
- * arms/disarms the install. Behavior MUST be identical to stock — bit-identity is the strongest oracle
- * and it is available only HERE, before the PhaseA/B split introduces the intended retrofit delta
- * (§8.10 / CLAIM 2). STAGE B flips these interceptors to the two-phase collect/settle + deferred
- * fire/drain.
+ * STAGE A (commit ea0b855) — IDENTITY SCAFFOLD (EAW_PFIRE=1). Repoint the two E8 call sites inside
+ * FUN_1402be640 that own the seam — the per-object 3a6b80 call (the walk) and the final 2a62d0 call
+ * (the PhaseB/PhaseC flush point) — to interceptors that PURELY PASS THROUGH to the untouched originals
+ * (call sites repointed, bodies intact; replay via saved real pointers, the a1 idiom). Proved in the
+ * live tick: the seam interception finds + repoints exactly one walk call + one flush site, the stubs
+ * run per object per tick without faulting, and the structural oracles stay bit-exact green (passthrough
+ * cannot perturb the create/order path). Bit-identity was the strongest oracle and it was valid only at
+ * STAGE A, before the PhaseA/B split introduces the intended retrofit delta (§8.10 / CLAIM 2).
+ *
+ * STAGE B (this commit) — TWO-PHASE SPLIT, 1-SHARD (EAW_PFIRE=2). The retrofit. The fire half of the
+ * per-object update is FUN_1403a76b0 (the hardpoint fire body, 3a6b80.c:372). We repoint the a76b0 call
+ * site INSIDE 3a6b80's body to pfire_a76b0_intercept: at level 2 it does NOT fire — it RECORDS the
+ * (firer, tick) and returns, so 3a6b80 runs settle-only (PhaseA). The deferred fires are then replayed
+ * IN WALK ORDER at the 2a62d0 flush (PhaseB), after every object in this manager's walk has settled —
+ * the barrier. So every fire reads the SETTLED world. PhaseB calls a76b0 at its ENTRY, so it still
+ * passes through the b3a76b0 / DTWA-B3 oracle detours (rank stamped by an incrementing per-tick counter
+ * at each a76b0 entry ⇒ walk-order replay keeps DTDRAIN rank_down=0). 1-SHARD: no command buffer — the
+ * binary fire creates projectiles inline in canonical (walk) order; the b3 SpawnCommand buffer is a
+ * later N-shard step. EXPECTED: a retrofit DELTA vs stock (fire now reads fully-settled positions);
+ * validated by determinism + the structural invariants (DTWA idfail=0, DTDRAIN rank_down=0, DTWA-B3
+ * §3 map all /0), NOT by stock-equivalence. justfile: just pfire=2 launch-foc-desktop.
  * ════════════════════════════════════════════════════════════════════════════════════════════════ */
 typedef void (*PfireA6b80Fn)(int64_t, int32_t, int8_t);
 typedef void (*PfireA62d0Fn)(int64_t);
+typedef void (*PfireA76b0Fn)(int64_t, int32_t);   /* FUN_1403a76b0(ship, tick) — the fire body */
 static PfireA6b80Fn g_pfire_a6b80_real = NULL;   /* untouched FUN_1403a6b80 (call-site patched) */
 static PfireA62d0Fn g_pfire_a62d0_real = NULL;   /* untouched FUN_1402a62d0 (call-site patched) */
-static int  g_pfire_enabled = -1;
+static PfireA76b0Fn g_pfire_a76b0_real = NULL;   /* FUN_1403a76b0 ENTRY (carries DT oracle detours) */
+static int  g_pfire_level   = -1;                /* 0 off / 1 STAGE A identity / 2 STAGE B two-phase */
 static LONG g_pfire_a6b80_calls = 0;             /* per-object walk invocations observed */
 static LONG g_pfire_a62d0_calls = 0;             /* flush-point invocations observed */
 
+/* PhaseA deferred-fire buffer: firers whose a76b0 was suppressed during the settle walk, replayed in
+ * walk order at the flush. Single-threaded (1-shard): filled by the walk, drained by THIS manager's
+ * 2a62d0 (the walk→a62d0 pairing is guaranteed — 2be640 has no return between the walk and 2a62d0). */
+#define PFIRE_FIRE_CAP 8192
+typedef struct { int64_t ship; int32_t tick; } PfireFireRec;
+static PfireFireRec g_pfire_fire_buf[PFIRE_FIRE_CAP];
+static int      g_pfire_fire_count = 0;
+static uint32_t g_pfire_tot_deferred = 0, g_pfire_tot_fired = 0, g_pfire_overflow = 0,
+                g_pfire_flushes = 0, g_pfire_maxfill = 0;
+static uint32_t g_pfire_last_log = 0xFFFFFFFFu;
+
 static int pfire_on(void) {
-    if (g_pfire_enabled < 0) {
+    if (g_pfire_level < 0) {
         const char *e = getenv("EAW_PFIRE");
-        g_pfire_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
-        log_write(g_pfire_enabled
-            ? "[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=1) — STAGE A identity passthrough\n"
-            : "[eaw-mt] PFIRE: off (EAW_PFIRE=1 to arm the t2be640 walk takeover)\n");
+        g_pfire_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
+        if (g_pfire_level < 0) g_pfire_level = 0;
+        if (g_pfire_level >= 2)
+            log_write("[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=2) — STAGE B two-phase split (1-shard)\n");
+        else if (g_pfire_level == 1)
+            log_write("[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=1) — STAGE A identity passthrough\n");
+        else
+            log_write("[eaw-mt] PFIRE: off (EAW_PFIRE=1 identity / =2 two-phase to arm the t2be640 takeover)\n");
     }
-    return g_pfire_enabled;
+    return g_pfire_level;
 }
 
-/* call-site replacement for the per-object FUN_1403a6b80 (2be640:70). STAGE A = pure passthrough.
- * STAGE B will collect+settle here (3a6b80 with the fire half suppressed) and defer the fire body. */
+/* call-site replacement for the per-object FUN_1403a6b80 (2be640:70). Always runs the real settle body;
+ * at level 2 the fire half is suppressed from WITHIN (via the a76b0 call-site redirect below). */
 static void pfire_a6b80_intercept(int64_t obj, int32_t p2, int8_t c3) {
     InterlockedIncrement(&g_pfire_a6b80_calls);
     if (g_pfire_a6b80_real) g_pfire_a6b80_real(obj, p2, c3);
 }
 
-/* call-site replacement for the final FUN_1402a62d0 (2be640:249) — B's PhaseB/PhaseC flush point.
- * STAGE A = pure passthrough. STAGE B will run PhaseB (deferred fire) + PhaseC (canonical drain) here,
- * before delegating to the original. */
+/* call-site replacement for FUN_1403a76b0 (the fire body) INSIDE FUN_1403a6b80 (3a6b80.c:372). Only
+ * reached during the settle walk (3a6b80's sole caller is the walk). Level 1: fire immediately (identity).
+ * Level 2: DEFER — record the firer and return, so 3a6b80 settles without firing; PhaseB replays it. */
+static void pfire_a76b0_intercept(int64_t ship, int32_t tick) {
+    if (g_pfire_level >= 2) {
+        if (g_pfire_fire_count < PFIRE_FIRE_CAP) {
+            g_pfire_fire_buf[g_pfire_fire_count].ship = ship;
+            g_pfire_fire_buf[g_pfire_fire_count].tick = tick;
+            g_pfire_fire_count++;
+            g_pfire_tot_deferred++;
+            return;
+        }
+        g_pfire_overflow++;            /* buffer full — fire inline now, never drop a shot */
+    }
+    if (g_pfire_a76b0_real) g_pfire_a76b0_real(ship, tick);
+}
+
+/* call-site replacement for the final FUN_1402a62d0 (2be640:249) — the PhaseB/PhaseC flush point.
+ * Level 2: replay the deferred fires IN WALK ORDER (PhaseB, post-settle barrier; creates land inline in
+ * canonical order = PhaseC for 1-shard), then delegate to the original. Level 1: pure passthrough. */
 static void pfire_a62d0_intercept(int64_t mgr) {
     LONG c = InterlockedIncrement(&g_pfire_a62d0_calls);
-    if ((c & 0xfff) == 1) {                       /* periodic live-evidence both interceptors fire */
-        char m[128];
-        sprintf(m, "[eaw-mt] PFIRE-A: live — a6b80(walk)=%ld a62d0(flush)=%ld\n",
-                g_pfire_a6b80_calls, g_pfire_a62d0_calls);
+    if (g_pfire_level >= 2 && g_pfire_fire_count > 0) {
+        int n = g_pfire_fire_count;
+        if ((uint32_t)n > g_pfire_maxfill) g_pfire_maxfill = (uint32_t)n;
+        for (int i = 0; i < n; i++) {       /* PhaseB: walk-order replay of the binary fire body */
+            if (g_pfire_a76b0_real)
+                g_pfire_a76b0_real(g_pfire_fire_buf[i].ship, g_pfire_fire_buf[i].tick);
+            g_pfire_tot_fired++;
+        }
+        g_pfire_fire_count = 0;
+        g_pfire_flushes++;
+    }
+    if ((c & 0xfff) == 1) {                  /* periodic live-evidence */
+        char m[192];
+        sprintf(m, "[eaw-mt] PFIRE-%s: live — walk=%ld flush=%ld deferred=%u fired=%u maxfill=%u overflow=%u\n",
+                g_pfire_level >= 2 ? "B" : "A", g_pfire_a6b80_calls, g_pfire_a62d0_calls,
+                g_pfire_tot_deferred, g_pfire_tot_fired, g_pfire_maxfill, g_pfire_overflow);
         log_write(m);
     }
     if (g_pfire_a62d0_real) g_pfire_a62d0_real(mgr);
 }
 
-/* Repoint the 3a6b80 + 2a62d0 E8 call sites inside FUN_1402be640's body to our interceptors. Only
- * called when EAW_PFIRE is armed, so the default image is untouched. (In the EAW_PROFILE build the
- * measurement installer install_2be640_body_hooks repoints the same sites for timing; PFIRE targets
- * the release / EAW_ORACLE builds, which do not run that installer, so they do not collide.) */
+/* Helper: repoint every E8 call to `target` within [fn, fn+size) to `stub`. Returns the count. */
+static int pfire_repoint_calls(BYTE *fn, int size, BYTE *target, BYTE *stub) {
+    int n = 0;
+    for (int i = 0; i <= size - 5; i++) {
+        if (fn[i] != 0xE8) continue;
+        int32_t rel; memcpy(&rel, fn + i + 1, 4);
+        if (fn + i + 5 + rel != target) continue;
+        int32_t new_rel = (int32_t)(stub - (fn + i + 5));
+        DWORD old;
+        VirtualProtect(fn + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+        memcpy(fn + i + 1, &new_rel, 4);
+        VirtualProtect(fn + i + 1, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), fn + i, 5);
+        n++;
+    }
+    return n;
+}
+
+/* Repoint the seam call sites. Only called when EAW_PFIRE is armed, so the default image is untouched.
+ *   - 3a6b80 (walk) + 2a62d0 (flush) call sites INSIDE FUN_1402be640 → the per-object seam + flush point.
+ *   - a76b0  (fire body) call site INSIDE FUN_1403a6b80 (3a6b80.c:372) → so the settle walk can suppress
+ *     the fire (STAGE B); g_pfire_a76b0_real keeps the a76b0 ENTRY so PhaseB replay still passes through
+ *     the DT oracle entry-detours (b3a76b0 rank stamp / DTWA-B3). (In the EAW_PROFILE build the timing
+ *     installer install_2be640_body_hooks repoints the same 2be640 sites; PFIRE targets the release /
+ *     EAW_ORACLE builds, which do not run it, so they do not collide.) */
 static BOOL install_pfire_hooks(void) {
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
     BYTE *fn2be640 = (BYTE *)exe + T2BE640_RVA;
-    BYTE *fna6b80  = (BYTE *)exe + TA6B80_RVA;
-    BYTE *fna62d0  = (BYTE *)exe + TA62D0_RVA;
+    BYTE *fn3a6b80 = (BYTE *)exe + TA6B80_RVA;
+    BYTE *fna6b80  = (BYTE *)exe + TA6B80_RVA;   /* 3a6b80, the per-object update */
+    BYTE *fna62d0  = (BYTE *)exe + TA62D0_RVA;   /* 2a62d0, the final call */
+    BYTE *fna76b0  = (BYTE *)exe + A76B0_RVA;    /* 3a76b0, the fire body */
     g_pfire_a6b80_real = (PfireA6b80Fn)fna6b80;
     g_pfire_a62d0_real = (PfireA62d0Fn)fna62d0;
+    g_pfire_a76b0_real = (PfireA76b0Fn)fna76b0;
 
-    BYTE *stub_block = alloc_near(fn2be640, 14 * 2);
+    BYTE *stub_block = alloc_near(fn2be640, 14 * 3);
     if (!stub_block) { log_write("[eaw-mt] WARN: alloc_near failed for pfire stubs\n"); return FALSE; }
     BYTE *stub_a6b80 = stub_block + 0 * 14;
     BYTE *stub_a62d0 = stub_block + 1 * 14;
+    BYTE *stub_a76b0 = stub_block + 2 * 14;
     write_abs_jmp(stub_a6b80, (uint64_t)pfire_a6b80_intercept);
     write_abs_jmp(stub_a62d0, (uint64_t)pfire_a62d0_intercept);
+    write_abs_jmp(stub_a76b0, (uint64_t)pfire_a76b0_intercept);
 
-    int n_a6b80 = 0, n_a62d0 = 0;
-    for (int i = 0; i <= B2BE640_BODY_SIZE - 5; i++) {
-        if (fn2be640[i] != 0xE8) continue;
-        int32_t rel; memcpy(&rel, fn2be640 + i + 1, 4);
-        BYTE *target = fn2be640 + i + 5 + rel;
-        BYTE *stub = NULL;
-        if      (target == fna6b80) { stub = stub_a6b80; n_a6b80++; }
-        else if (target == fna62d0) { stub = stub_a62d0; n_a62d0++; }
-        if (!stub) continue;
-        int32_t new_rel = (int32_t)(stub - (fn2be640 + i + 5));
-        DWORD old;
-        VirtualProtect(fn2be640 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
-        memcpy(fn2be640 + i + 1, &new_rel, 4);
-        VirtualProtect(fn2be640 + i + 1, 4, old, &old);
-        FlushInstructionCache(GetCurrentProcess(), fn2be640 + i, 5);
-    }
-    char m[160];
-    sprintf(m, "[eaw-mt] PFIRE: t2be640 seam repointed — a6b80(walk)=%d a62d0(flush)=%d site(s)\n",
-            n_a6b80, n_a62d0);
+    int n_a6b80 = pfire_repoint_calls(fn2be640, B2BE640_BODY_SIZE, fna6b80, stub_a6b80);
+    int n_a62d0 = pfire_repoint_calls(fn2be640, B2BE640_BODY_SIZE, fna62d0, stub_a62d0);
+    int n_a76b0 = pfire_repoint_calls(fn3a6b80, A6B80_BODY_SIZE, fna76b0, stub_a76b0);
+
+    char m[192];
+    sprintf(m, "[eaw-mt] PFIRE: seam repointed — a6b80(walk)=%d a62d0(flush)=%d a76b0(fire)=%d site(s)\n",
+            n_a6b80, n_a62d0, n_a76b0);
     log_write(m);
-    return (n_a6b80 > 0);
+    return (n_a6b80 > 0 && n_a76b0 > 0);
 }
 
 /* =========================================================================
