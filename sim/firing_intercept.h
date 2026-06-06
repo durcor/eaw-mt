@@ -37,6 +37,7 @@
 // DAT_140800860 = sign-bit mask (≡ IEEE unary minus), DAT_140b0a340 = the game-speed scalar (`gamespeed`).
 #pragma once
 #include "eaw_types.h"
+#include "sim_rng.h"
 
 namespace sim {
 
@@ -59,5 +60,23 @@ eaw::vec3 firing_intercept_lead(const eaw::vec3& tgt_pos, const eaw::vec3& tgt_v
                                 const eaw::vec3& frame_vel, const eaw::vec3& muzzle,
                                 const eaw::vec3& shooter_ref, eaw::f32 gamespeed,
                                 eaw::f32 proj_speed, bool* out_has_solution = nullptr);
+
+// FUN_140381dc0: apply weapon DISPERSION (spread) to the already-aimed direction `dir`, returning the
+// perturbed direction. The spread magnitudes are resolved from weapon stats by the caller (ENV: the
+// binary's FUN_140374890 base, FUN_14053ff30 secondary, FUN_1403857d0 normalizer); this lift takes them
+// as inputs so the body is pure + snapshot-ready. Draw policy, faithful to the binary's branch ladder:
+//   • no_spread (the global accuracy-off flag DAT_140b3934d == 1)  → dir unchanged, NO draws.
+//   • base_spread > 0                                              → dir + range_f(-base, base) per axis.
+//   • base_spread <= 0 and sec_spread > 0 and dist > 0:
+//         norm <= 0   → dir unchanged, NO draws.
+//         norm  > 0   → m = (sec_spread * dist) / norm;  dir + range_f(-m, m) per axis.
+//   • otherwise                                                    → dir unchanged, NO draws.
+// When it perturbs, it draws EXACTLY 3 times in x,y,z order from `rng` (mirrors the binary's three
+// FUN_1401ffbb0 calls). RNG NOTE: `rng` is a per-entity substream under the I2 retrofit, so the emitted
+// numbers DIFFER from the global-LCG binary BY DESIGN — what matches is the branch taken, the draw COUNT
+// (0 or 3), and the per-draw formula (SimRng::range_f == FUN_1401ffbb0). This is a determinism retrofit,
+// not a bit-exact lift (sim_rng.h, sim_parallel_command_schema.md §4).
+eaw::vec3 firing_apply_spread(const eaw::vec3& dir, bool no_spread, eaw::f32 base_spread,
+                              eaw::f32 sec_spread, eaw::f32 dist, eaw::f32 norm, eaw::SimRng& rng);
 
 } // namespace sim

@@ -96,7 +96,7 @@ sim-test:
     sim/tests/reveal_gate_test.cpp sim/reveal_gate.cpp -o /tmp/eaw_reveal_gate_test
   /tmp/eaw_reveal_gate_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
-    sim/tests/firing_intercept_test.cpp sim/firing_intercept.cpp -o /tmp/eaw_firing_intercept_test
+    sim/tests/firing_intercept_test.cpp sim/firing_intercept.cpp sim/sim_rng.cpp -o /tmp/eaw_firing_intercept_test
   /tmp/eaw_firing_intercept_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/sim_parallel_test.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_sim_parallel_test

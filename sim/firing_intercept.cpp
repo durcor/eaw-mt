@@ -88,4 +88,32 @@ vec3 firing_intercept_lead(const vec3& tgt_pos, const vec3& tgt_vel, const vec3&
     return vec3{rel_x + pred.x, rel_y + pred.y, rel_z + pred.z};
 }
 
+// FUN_140381dc0 — apply weapon dispersion. Draws (when it perturbs) go x,y,z, each range_f(-m, m); the
+// binary draws all three then assigns z,y,x, but draw order is x,y,z either way (draw 1 → x …).
+vec3 firing_apply_spread(const vec3& dir, bool no_spread, f32 base_spread,
+                         f32 sec_spread, f32 dist, f32 norm, eaw::SimRng& rng) {
+    if (no_spread) return dir;                                  // DAT_140b3934d == 1
+
+    if (base_spread > 0.0f) {                                   // primary spread path (3 draws)
+        const f32 m = base_spread;
+        vec3 o;
+        o.x = dir.x + rng.range_f(-m, m);
+        o.y = dir.y + rng.range_f(-m, m);
+        o.z = dir.z + rng.range_f(-m, m);
+        return o;
+    }
+
+    // base_spread <= 0: secondary (distance-scaled) spread path.
+    if (sec_spread > 0.0f && dist > 0.0f) {
+        if (norm <= 0.0f) return dir;                          // FUN_1403857d0 <= 0 → no spread
+        const f32 m = (sec_spread * dist) / norm;
+        vec3 o;
+        o.x = dir.x + rng.range_f(-m, m);
+        o.y = dir.y + rng.range_f(-m, m);
+        o.z = dir.z + rng.range_f(-m, m);
+        return o;
+    }
+    return dir;                                                 // no applicable spread
+}
+
 } // namespace sim

@@ -80,6 +80,64 @@ static void test_intercept_smallest_positive_root() {
     CHECK(std::isfinite(aim.x) && std::isfinite(aim.y) && std::isfinite(aim.z));
 }
 
+// ── weapon dispersion (381dc0) ────────────────────────────────────────────────────────────────────────
+using eaw::SimRng;
+
+// expected RNG state after N range_f draws from `seed` (range_f = one LCG step each).
+static eaw::u32 state_after(eaw::u32 seed, int n) {
+    SimRng r(seed);
+    for (int i = 0; i < n; ++i) r.step();
+    return r.state;
+}
+
+static void test_spread_no_draws() {
+    std::printf("test_spread_no_draws\n");
+    const vec3 d{1, 2, 3};
+    // accuracy-off flag → dir unchanged, state untouched.
+    { SimRng r(12345); const vec3 o = firing_apply_spread(d, true, 5.0f, 5.0f, 100.0f, 1.0f, r);
+      CHECK((o == d)); CHECK(r.state == 12345u); }
+    // base<=0, secondary normalizer <= 0 → no spread, no draws.
+    { SimRng r(777); const vec3 o = firing_apply_spread(d, false, 0.0f, 2.0f, 50.0f, 0.0f, r);
+      CHECK((o == d)); CHECK(r.state == 777u); }
+    // base<=0 and (sec<=0 or dist<=0) → no spread, no draws.
+    { SimRng r(777); const vec3 o = firing_apply_spread(d, false, -1.0f, 0.0f, 50.0f, 1.0f, r);
+      CHECK((o == d)); CHECK(r.state == 777u); }
+    { SimRng r(777); const vec3 o = firing_apply_spread(d, false, -1.0f, 2.0f, 0.0f, 1.0f, r);
+      CHECK((o == d)); CHECK(r.state == 777u); }
+}
+
+static void test_spread_primary() {
+    std::printf("test_spread_primary\n");
+    const vec3 d{10, 20, 30};
+    const f32 base = 4.0f;
+    SimRng r(0xC0FFEE);
+    const vec3 o = firing_apply_spread(d, false, base, 0.0f, 0.0f, 0.0f, r);
+    // exactly 3 draws consumed.
+    CHECK(r.state == state_after(0xC0FFEE, 3));
+    // each axis perturbed within [-base, base].
+    CHECK(near(o.x, d.x, base) && near(o.y, d.y, base) && near(o.z, d.z, base));
+}
+
+static void test_spread_secondary_scaled() {
+    std::printf("test_spread_secondary_scaled\n");
+    const vec3 d{0, 0, 0};
+    const f32 sec = 0.1f, dist = 200.0f, norm = 4.0f;   // m = sec*dist/norm = 5.0
+    const f32 m = (sec * dist) / norm;
+    SimRng r(42);
+    const vec3 o = firing_apply_spread(d, false, 0.0f, sec, dist, norm, r);
+    CHECK(r.state == state_after(42, 3));               // 3 draws
+    CHECK(near(o.x, 0.0f, m) && near(o.y, 0.0f, m) && near(o.z, 0.0f, m));
+}
+
+static void test_spread_reproducible() {
+    std::printf("test_spread_reproducible\n");
+    const vec3 d{1, 1, 1};
+    SimRng a(99), b(99);
+    const vec3 oa = firing_apply_spread(d, false, 3.0f, 0.0f, 0.0f, 0.0f, a);
+    const vec3 ob = firing_apply_spread(d, false, 3.0f, 0.0f, 0.0f, 0.0f, b);
+    CHECK((oa == ob));   // identical seed ⇒ identical perturbation (reproducibility, the I2 contract)
+}
+
 int main() {
     std::printf("=== firing_intercept_test ===\n");
     test_predict_linear();
@@ -87,6 +145,10 @@ int main() {
     test_intercept_moving_lead();
     test_intercept_no_solution();
     test_intercept_smallest_positive_root();
+    test_spread_no_draws();
+    test_spread_primary();
+    test_spread_secondary_scaled();
+    test_spread_reproducible();
     if (g_fail == 0) std::printf("ALL PASS\n");
     else std::printf("%d FAIL\n", g_fail);
     return g_fail ? 1 : 0;
