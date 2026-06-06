@@ -3894,6 +3894,122 @@ static inline void dt_drain_on_spawn(void) {
     g_drain_prev_rank = g_drain_cur_rank; g_drain_prev_objid = g_drain_cur_objid;
 }
 
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+ * MILESTONE a1 — SAFE GATED SFX TAKEOVER (inproc_integration_milestone.md §2)
+ *
+ * a0 confirmed (observe-only) that the §7 canonical drain key reproduces live serial emission order. a1
+ * is the first CONTROL-FLOW step: prove the buffer→canonical-drain plumbing works against the LIVE
+ * engine, using the one write-class genuinely safe to defer — Class-3 SFX (off-lockstep; the
+ * SFXEventManager re-sorts its queue by wall-clock `timeGetTime()` in FUN_1402d72c0, so a
+ * fraction-of-a-tick deferral is inaudible AND cannot perturb the deterministic sim). We intercept the
+ * SFX emit FUN_1402d5290 at its 387400 call site, BUFFER the args during the tick, and REPLAY them in
+ * canonical (rank,seq) order at the tick boundary.
+ *
+ * VALIDATION CLAIM: deferring SFX must leave the deterministic sim untouched. The IDEAL check is the
+ * per-tick DIFFTRACE position fingerprint bit-identical to baseline — but that stream is emitted only in
+ * the PROFILE build (a76b0_hook/dt_emit, #ifdef EAW_PROFILE), which crashes on battle load, so it is NOT
+ * available in this stable oracle build. The in-build proxy a1 actually checks (all run-independent
+ * INVARIANTS, so valid before/after even without identical inputs):
+ *   (1) stability across battles with EAW_A1=1;
+ *   (2) DTA1 balance — buffered==drained (±one tick residual), overflow=0, drains>0;
+ *   (3) the structural sim-ordering oracles already in this build stay PASS with buffering armed —
+ *       DTWA-SPAWN id-allocator (idfail=0, ctrfail=0) + DTDRAIN rank key (rank_down=0) — i.e. SFX
+ *       deferral does not perturb the create/order sim path;
+ *   (4) audio still plays (the queue keeps getting fed).
+ * If any of those breaks, FUN_1402d5290 had a hidden sim side effect and a1 has FALSIFIED the Class-3
+ * classification. The full position-fingerprint A/B is the profile-build follow-up (blocked on its battle
+ * crash). No creates are deferred (the §0 inline-consume blocker is untouched); no threads.
+ *
+ * GATING — two independent switches, BOTH required to buffer:
+ *   EAW_DIFFTRACE=1  oracle mode (gives g_dt_frame_ctr + the fingerprint to validate against).
+ *   EAW_A1=1         arm the takeover. DEFAULT OFF: with EAW_A1 unset the intercept is a pure
+ *                    passthrough to the untouched FUN_1402d5290, so the call-site patch is inert.
+ * Kill-switch = absence of EAW_A1. Single-threaded (sim/main thread) — no locking.
+ * REPLAY PATH: the call site is REPOINTED (not entry-detoured), so FUN_1402d5290's body is intact and we
+ * replay by calling it directly via g_a1_sfx_real — sidestepping 2d5290's non-detourable prologue. */
+#define A1_SFX_CAP 4096
+typedef struct { uint32_t tick, rank, seq;
+                 int64_t p1, p2; int32_t p3; int8_t p4; uint32_t p5; } A1SfxRec;
+static A1SfxRec  g_a1_buf[A1_SFX_CAP];
+static int       g_a1_count    = 0;
+static uint32_t  g_a1_tick     = 0xFFFFFFFFu;
+static uint32_t  g_a1_seq      = 0;
+static EngSfxFn  g_a1_sfx_real = NULL;     /* untouched FUN_1402d5290 (call-site patched, body intact) */
+static int       g_a1_enabled  = -1;
+static uint32_t  g_a1_tot_buffered=0, g_a1_tot_drained=0, g_a1_overflow=0,
+                 g_a1_drains=0, g_a1_maxfill=0, g_a1_reorders=0;
+static uint32_t  g_a1_last_log = 0xFFFFFFFFu;
+
+static int a1_on(void) {
+    if (g_a1_enabled < 0) {
+        const char *e = getenv("EAW_A1");
+        g_a1_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_a1_enabled
+            ? "[eaw-mt] A1: SFX takeover ARMED (EAW_A1=1) — 2d5290 buffered + canonical-order drained\n"
+            : "[eaw-mt] A1: SFX takeover off (EAW_A1=1 to arm; also needs EAW_DIFFTRACE=1)\n");
+    }
+    return g_a1_enabled;
+}
+
+/* replay the buffered SFX for the just-finished tick in canonical (rank,seq) order, then clear. seq is
+ * already monotonic, so the stable sort only regroups by emitter rank; g_a1_reorders counts the moves it
+ * makes (evidence the canonical key is live, not a no-op). */
+static void a1_drain_now(void) {
+    if (g_a1_count <= 0) { g_a1_count = 0; return; }
+    for (int i = 1; i < g_a1_count; i++) {
+        A1SfxRec key = g_a1_buf[i];
+        int j = i - 1;
+        while (j >= 0 && (g_a1_buf[j].rank > key.rank ||
+               (g_a1_buf[j].rank == key.rank && g_a1_buf[j].seq > key.seq))) {
+            g_a1_buf[j+1] = g_a1_buf[j]; j--; g_a1_reorders++;
+        }
+        g_a1_buf[j+1] = key;
+    }
+    if ((uint32_t)g_a1_count > g_a1_maxfill) g_a1_maxfill = (uint32_t)g_a1_count;
+    for (int i = 0; i < g_a1_count; i++) {
+        A1SfxRec *r = &g_a1_buf[i];
+        if (g_a1_sfx_real) g_a1_sfx_real(r->p1, r->p2, r->p3, r->p4, r->p5);
+        g_a1_tot_drained++;
+    }
+    g_a1_drains++;
+    g_a1_count = 0;
+}
+
+/* drain the previous tick's buffer when the sim advances; periodic DTA1 summary every 1024 ticks. */
+static void a1_maybe_drain(uint32_t tick) {
+    if (tick == g_a1_tick) return;
+    a1_drain_now();
+    g_a1_tick = tick;
+    g_a1_seq  = 0;
+    if (dt_on() && a1_on() && tick != g_a1_last_log && (tick & 0x3ffu) == 0) {
+        g_a1_last_log = tick;
+        char s[224];
+        snprintf(s, sizeof s,
+            "DTA1\ttick=%u\tbuffered=%u\tdrained=%u\tdrains=%u\tmaxfill=%u\treorders=%u\toverflow=%u\n",
+            tick, g_a1_tot_buffered, g_a1_tot_drained, g_a1_drains,
+            g_a1_maxfill, g_a1_reorders, g_a1_overflow);
+        log_write(s);
+    }
+}
+
+/* call-site replacement for FUN_1402d5290 (387400:99). Tail-reached via the repointed E8, so it sees the
+ * exact 5 args the caller pushed and its return flows back to the (return-ignoring) caller. */
+static int32_t a1_sfx_intercept(int64_t p1, int64_t p2, int32_t p3, int8_t p4, uint32_t p5) {
+    if (!(dt_on() && a1_on()))                       /* default / non-oracle: inert passthrough */
+        return g_a1_sfx_real ? g_a1_sfx_real(p1, p2, p3, p4, p5) : 0;
+    uint32_t tick = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+    a1_maybe_drain(tick);
+    if (g_a1_count >= A1_SFX_CAP) {                  /* buffer full — pass through now, never drop */
+        g_a1_overflow++;
+        return g_a1_sfx_real ? g_a1_sfx_real(p1, p2, p3, p4, p5) : 0;
+    }
+    A1SfxRec *r = &g_a1_buf[g_a1_count++];
+    r->tick = tick; r->rank = g_drain_cur_rank; r->seq = g_a1_seq++;
+    r->p1 = p1; r->p2 = p2; r->p3 = p3; r->p4 = p4; r->p5 = p5;
+    g_a1_tot_buffered++;
+    return 0;                                        /* 387400:99 ignores the SFX return value */
+}
+
 static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
                                 const float *pos, int64_t p5, int8_t p6, int8_t p7) {
     /* snapshot BOTH id counters + the path-select flag BEFORE the append. */
@@ -4097,6 +4213,7 @@ static void b3a76b0_hook(int64_t ship, int32_t tick_param)
      * Runs for EVERY serviced ship before any early return, so the attribution covers all firers. */
     if (ship && g_dt_frame_ctr && dt_on()) {
         uint32_t dtk = *g_dt_frame_ctr;
+        a1_maybe_drain(dtk);   /* a1: flush the previous tick's deferred SFX in canonical order */
         if (dtk != g_drain_tick) { g_drain_tick = dtk; g_drain_rank = 0; g_drain_have_prev = 0; }
         g_drain_cur_rank  = g_drain_rank++;
         g_drain_cur_objid = *(int32_t *)(ship + 0x50);
@@ -7051,6 +7168,40 @@ static BOOL install_b387400_subcallee_hooks(void)
     return (n384850 + n3825b0) > 0;
 }
 
+/* a1 SFX takeover installer (inproc_integration_milestone.md §2): repoint the FUN_1402d5290 call site
+ * inside FUN_140387400 (387400:99) to a1_sfx_intercept. The 2d5290 body stays intact and serves as the
+ * replay path (g_a1_sfx_real). Inert until EAW_A1=1 — see a1_sfx_intercept. */
+#define A1_SFX_RVA 0x2d5290ULL
+static BOOL install_a1_sfx_hook(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
+    BYTE *fn387400 = (BYTE *)exe + B387400_RVA;
+    BYTE *fn2d5290 = (BYTE *)exe + A1_SFX_RVA;
+    g_a1_sfx_real  = (EngSfxFn)fn2d5290;             /* replay path: untouched 2d5290 body */
+
+    BYTE *stub = alloc_near(fn387400, 14);
+    if (!stub) { log_write("[eaw-mt] WARN: alloc_near failed for a1 SFX stub\n"); return FALSE; }
+    write_abs_jmp(stub, (uint64_t)a1_sfx_intercept);
+
+    int n = 0; DWORD old;
+    for (int i = 0; i <= B387400_BODY_SIZE - 5; i++) {
+        if (fn387400[i] != 0xE8) continue;
+        int32_t rel; memcpy(&rel, fn387400 + i + 1, 4);
+        if (fn387400 + i + 5 + rel != fn2d5290) continue;
+        int32_t new_rel = (int32_t)(stub - (fn387400 + i + 5));
+        VirtualProtect(fn387400 + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+        memcpy(fn387400 + i + 1, &new_rel, 4);
+        VirtualProtect(fn387400 + i + 1, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), fn387400 + i, 5);
+        n++;
+    }
+    char m[128];
+    sprintf(m, "[eaw-mt] A1-SFX: %d call site(s) to 2d5290 repointed in 387400 (EAW_A1=1 to arm)\n", n);
+    log_write(m);
+    return n > 0;
+}
+
 /* =========================================================================
  * FUN_1403825b0 sub-callee hooks — isolating the stall within b3825b0
  *
@@ -9649,6 +9800,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_spl625990_hook(); /* DTSPL2: SimpleSpaceLocomotor vfunc_59 cubic-Hermite mover (EAW_DIFFTRACE=1) */
         install_dtwa_spawn_hook();/* DTWA-SPAWN: CreateObject I1 append-order + manager-resolution oracle (EAW_DIFFTRACE=1) */
         install_dtwa_sig_hook();  /* DTWASIG: signal fan-out Command-schema/traffic oracle (EAW_DIFFTRACE=1) */
+        install_a1_sfx_hook();    /* a1: gated SFX takeover — 2d5290 buffer+canonical-drain (EAW_A1=1 to arm) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
 #endif
 

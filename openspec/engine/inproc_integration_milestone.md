@@ -100,22 +100,48 @@ For every Class-2 spawn (`29f810`) and Class-2b signal (`240940`) emitted during
 
 ---
 
-## 2. Milestone a1 — 1-shard control-flow restructure (LATER, gated behind a0)
+## 2. Milestone a1 — safe gated SFX takeover (first control-flow step) 🔨 BUILT 2026-06-05
 
-Once a0 confirms the key, the next step takes over the tick loop **serially** (1 shard) to prove the
-restructure's *control flow* is sound in-game, then becomes the substrate for real sharding.
+> **Scope decision (2026-06-05).** The "full 1-shard tick-walk takeover" tempting as a1 (drive the
+> master-list walk ourselves out of `t2be640_hook`, buffer **all** fire-and-forget emits, drain via
+> `drain_parallel`) is NOT bit-identical for **signals**: the retrofit reads them back same-tick, so
+> deferring a Class-2b signal changes what a later same-tick reader sees — that is the determinism
+> *retrofit*, not a bit-exact lift, and it cannot be validated by "DIFFTRACE unchanged". Only **Class-3
+> SFX** is genuinely deferrable with a *bit-identical-sim* expectation. So a1 is narrowed to the **SFX
+> takeover alone** — the smallest control-flow change whose correctness claim DIFFTRACE *can* adjudicate.
+> The full walk-takeover folds into `(b)`/`a2` once the Phase-A bodies are lifted.
 
-- **Interception point:** `t2be640_hook` (already wrapping the GOM iterator for timing). Replace its
-  body with: `snapshot.acquire()` → drive the master-list walk ourselves calling the binary `3a6b80` per
-  entity in list order → buffer the **fire-and-forget** emits (signals/SFX) and replay them via
-  `drain_parallel` → `snapshot.release()`. DIFFTRACE must stay bit-identical to the un-restructured tick.
-- **The create-deferral decision (a1's gate):** at 1 shard, creates can stay **immediate** (serial order
-  is preserved by construction), so a1 does *not* need to defer creates and does *not* hit the §0 blocker.
-  a1 therefore validates: tick takeover, iteration-order reproduction, snapshot lifecycle, and the
-  signal/SFX buffer+drain against the live engine — everything except create-deferral and threading.
-- **What a1 still does NOT prove** (and must not be claimed to): multi-thread RAW-safety and
-  create-deferral. Those require the lifted Phase-A bodies (Strategy 2) — the firing intercept core
-  `399450`/`381dc0`, Pass-C `3ac530`, etc. That batch is the natural payoff of `(b)` *after* a1 holds.
+**What was built** (`hooks/winmm_proxy.c`, oracle build): the SFX emit `FUN_1402d5290`
+(`SFXEventManager::Start`, Class 3) is intercepted at its `387400:99` call site — the call is
+**repointed** (not entry-detoured, so the `2d5290` body stays intact as the replay path, sidestepping its
+non-detourable prologue) to `a1_sfx_intercept`. When armed it **buffers** each SFX call's 5 args with
+`(rank = g_drain_cur_rank, seq)` and **replays** them in canonical `(rank,seq)` order at the tick
+boundary (`a1_maybe_drain`, driven off the `b3a76b0` per-tick reset + the intercept's own tick check).
+
+- **Why SFX is the safe class:** off-lockstep. `2d5290 → 2d72c0` re-sorts the `b27e60` event queue by
+  wall-clock `timeGetTime()` on a *separate* LCG (`a13e20`), so a fraction-of-a-tick deferral is inaudible
+  and — if the Class-3 classification holds — invisible to the sim fingerprint.
+- **Gating (both required to buffer):** `EAW_DIFFTRACE=1` (oracle mode + `g_dt_frame_ctr` + the fingerprint
+  to compare) **and** `EAW_A1=1` (arm). **Default OFF**: with `EAW_A1` unset the intercept is a pure
+  passthrough to the untouched `2d5290`, so the call-site patch is inert. Kill-switch = absence of `EAW_A1`.
+- **The validation claim a1 adjudicates** — deferring SFX must leave the deterministic sim untouched.
+  ⚠️ The *ideal* check (per-tick DIFFTRACE position fingerprint bit-identical to baseline) is emitted only
+  in the **profile** build (`a76b0_hook`/`dt_emit`, `#ifdef EAW_PROFILE`), which **crashes on battle
+  load** → **not available in the stable oracle build**. So a1's in-build check uses run-independent
+  INVARIANTS (valid before/after without identical inputs):
+  1. **stability** across battles with `EAW_A1=1`;
+  2. **`DTA1` balance** — `buffered==drained` (±one tick residual), `overflow=0`, `drains>0`;
+  3. the **structural sim-ordering oracles** already in this build stay PASS with buffering armed —
+     **DTWA-SPAWN** id-allocator (`idfail=0,ctrfail=0`) + **DTDRAIN** rank key (`rank_down=0`) — i.e. SFX
+     deferral does not perturb the create/order sim path;
+  4. **audio** still plays (the queue keeps getting fed).
+  If any breaks, `2d5290` had a hidden sim side effect and a1 has *falsified* the Class-3 classification.
+  The full position-fingerprint A/B is the **profile-build follow-up** (blocked on its battle crash).
+- **What a1 still does NOT prove** (must not be claimed): tick-walk takeover, snapshot lifecycle,
+  signal-deferral, multi-thread RAW-safety, create-deferral. Those need the lifted Phase-A bodies
+  (`399450`/`381dc0`, Pass-C `3ac530`, …) — the `(b)` batch, the natural payoff *after* a1 holds.
+- **Instrumentation:** periodic `DTA1` log line (`buffered/drained/drains/maxfill/reorders/overflow`).
+  ⏳ in-game run pending.
 
 ---
 
@@ -123,13 +149,14 @@ restructure's *control flow* is sound in-game, then becomes the substrate for re
 
 ```
 a0  DT-DRAIN passive key oracle      ← ✅ DONE 2026-06-05 (rank_down=0; id_down=100% — key confirmed in-game)
- └─ a1  1-shard tick restructure     ← NEXT (control-flow takeover, immediate creates, signal/sfx drain)
-     └─ (b)  lift remaining Phase-A bodies (399450/381dc0, 3ac530, …)   ← only once a1 holds
+ └─ a1  gated SFX takeover           ← 🔨 BUILT 2026-06-05 (2d5290 buffer+canonical-drain; ⏳ in-game A/B pending)
+     └─ (b)  lift remaining Phase-A bodies (399450/381dc0, 3ac530, …)   ← the full walk-takeover folds in here
          └─ a2  ≥2-shard with snapshot + deferred creates              ← the real parallel finish line
 ```
 
-a0 is the increment to build next. It is cheap, reversible, and answers the highest-information question
-(does the §7 key reproduce live serial order?) before any control-flow or lifting effort is spent.
+a1 is the first control-flow change. It is gated (default OFF), reversible (call-site repoint), and its
+correctness claim — SFX deferral leaves the sim fingerprint bit-identical — is the one DIFFTRACE can
+adjudicate, before any tick-walk takeover or body-lift effort is spent.
 
 ---
 
