@@ -415,10 +415,41 @@ charge scale, vis frame, guided lead = rot·delta vs ballistic launch_dir).
 
 **Caps honored (§6):** payload values are computed from RESOLVED ENV inputs (the firer-stat getters
 `3857d0`/`397780`/`5400f0`/`3952a0`/… stay ENV, same pattern as `firing_intercept`); per-field bit-exactness
-vs the binary is deferred to the in-game DTWA-structural oracle (the host gate proves the RESTRUCTURE
-preserves order + the id→init mapping, not the binary's exact arithmetic). **Remaining for the parallel-fire
-build:** the in-game DTWA-structural capture (projectile carries identical init fields under the restructure)
-+ the global-scratch localization + RNG substreams + the short-lock+copy around the spatial query (§8.6).
+vs the binary is the in-game DTWA-structural oracle below (the host gate proves the RESTRUCTURE preserves
+order + the id→init mapping, not the binary's exact arithmetic).
+
+### 8.9 DTWA-B3 in-game STRUCTURAL oracle = PASS (2026-06-06) — §3 source-map confirmed bit-exact
+Built the in-game twin (`winmm_proxy.c`, EAW_DIFFTRACE=1, observe-only): entry-detour the firing body
+`0x3825b0` (18-byte position-independent prologue `mov rax,rsp`+6 pushes+`lea`), capture the created
+projectile via a piggyback on the existing DTWA-SPAWN `29f810` detour (the FIRST create inside the firing
+window is the projectile), and at exit compare the binary's `proj+0xe8` motion/combat record against a
+recompute of each §3 field from **PURE memory reads** (no engine calls — `5400f0`'s lifetime is read from
+its memoized cache field `owner_type+0x4a0` that the binary just filled, and the charge-damage path is
+counted not asserted, avoiding the stateful `3952a0`). Two rounds, menu-demo space battle; **evidence
+`eaw-mt.log.dtb3-pass`.**
+
+**RESULT @tick=2048 over 362 firing-path projectile spawns — every measurable §3 field BIT-EXACT, zero
+mismatches:** `firer_id` (rec+0x58 == owner+0x50) **362/0**; `target` (rec+0x08 == param_2) **362/0**;
+`damage` (rec+0x64 = owner+0x478 override else template+0x474) **362/0**; `lifetime` (rec+0x68 = the
+`5400f0` result else template+0x440) **362/0**; `target_sub_id` (rec+0x10) **136/0** on the measurable
+cases. No regression to the co-installed oracles (DTWA `idfail=0/ctrfail=0` over 39,667 creates, DTDRAIN
+`rank_down=0`) — the new entry-detour does not perturb the create/order path.
+
+**One §3 REFINEMENT the oracle forced (measure-don't-assert paid off again):** `target_sub_id`'s source is
+the **RESOLVED** `param_3`, not the caller's raw arg. When the caller passes a non-null `param_3` it is used
+unchanged (gated at `3825b0:68`) and rec+0x10 == `*(param_3+0x18)` bit-exact (the 136/0). When the caller
+passes **NULL**, `3825b0:107-110` REASSIGNS `param_3` via `398440`/`394a80` to the resolved target-hardpoint
+context — an internal local invisible to an entry/exit detour, so those 226 spawns are counted `sub_reasn`
+(not mis-asserted against the stale entry NULL). ⇒ the lift's `target_sub_id` input must be the resolved
+context (the host `firing_spawn.h` comment now says so); this is the recurring **mutated-mid-body-arg**
+provenance lesson (DTSPL2/DTWA `obj+0x58`), caught a third time by an oracle that MEASURES rather than
+asserts. **Not exercised in the menu demo (documented, unconfirmed in-game):** `vis_frame` (no projectile
+had `owner_type+0x4a4 > 0`) and the charged-damage scale (no charged shots). **⇒ b3's §3 field→source map
+is confirmed against the live binary for every substantive payload field; the restructure's Phase-A payload
+would reproduce the binary's `proj+0xe8` record.**
+
+**Remaining for the parallel-fire build:** the global-scratch localization + RNG substreams + the
+short-lock+copy around the spatial query (§8.6).
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).

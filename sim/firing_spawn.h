@@ -41,7 +41,10 @@ struct ProjectileFiringInputs {
     // ── identity / linkage ───────────────────────────────────────────────────────────────────────
     uint32_t  firer_id        = 0;        // owner+0x50           → rec+0x58 (3825b0:290)
     void*     target          = nullptr;  // param_2              → rec+0x08 (3825b0:326)
-    int32_t   target_sub_id   = -1;       // param_3+0x18 or -1   → rec+0x10 (3825b0:352-358)
+    int32_t   target_sub_id   = -1;       // resolved-param_3+0x18 or -1 → rec+0x10 (3825b0:352-358).
+                                          // NB: param_3 is the RESOLVED firing context — when the caller
+                                          // passes NULL, 3825b0:107-110 reassigns it via 398440/394a80
+                                          // (DTWA-B3 §8.9). The caller must pass the resolved sub-id here.
 
     // ── damage (3825b0:292-303) ──────────────────────────────────────────────────────────────────
     eaw::f32  owner_damage    = 0.0f;     // owner_type+0x478 (<=0 ⇒ use template)

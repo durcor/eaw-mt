@@ -3864,6 +3864,22 @@ static uint32_t g_drain_attr=0, g_drain_unattr=0, g_drain_trans=0,
                 g_drain_id_up=0, g_drain_id_down=0, g_drain_id_eq=0;
 static uint32_t g_drain_last=0xFFFFFFFFu, g_drain_detail=0;
 
+/* ── DTWA-B3 (firing_body_lift_scope.md §3/§8.8): in-game STRUCTURAL oracle for the b3 projectile
+ * create+init restructure. b3 (host) split 3825b0:261-401 into a Phase-A ProjectileInit payload + a
+ * Phase-B applier; this oracle proves the §3 FIELD→SOURCE MAP against the live binary — i.e. the
+ * proj+0xe8 record the binary writes inline really comes from the sources the lift reads, so the lift's
+ * payload would reproduce it. dtwa_b3_3825b0_hook entry-detours the firing body; the projectile is
+ * captured via the 29f810 piggyback above; at exit the binary's record is compared to a recompute from
+ * PURE memory reads (no engine calls — 5400f0's lifetime is read from its cache field owner_type+0x4a0
+ * that the binary just filled, sidestepping its memoizing write). Observe-only; EAW_DIFFTRACE=1. */
+static int     g_b3_in_fire   = 0;       /* inside a 3825b0 call → next 29f810 create is the projectile */
+static int64_t g_b3_last_proj = 0;       /* the projectile captured by the 29f810 piggyback */
+static uint32_t g_b3_n=0, g_b3_skip=0, g_b3_charge=0;
+static uint32_t g_b3_firer_ok=0,g_b3_firer_bad=0, g_b3_tgt_ok=0,g_b3_tgt_bad=0,
+                g_b3_sub_ok=0,g_b3_sub_bad=0,g_b3_sub_reasn=0, g_b3_dmg_ok=0,g_b3_dmg_bad=0,
+                g_b3_life_ok=0,g_b3_life_bad=0, g_b3_vis_ok=0,g_b3_vis_bad=0;
+static uint32_t g_b3_detail=0, g_b3_missshown=0, g_b3_last=0xFFFFFFFFu;
+
 /* run the real FUN_1403a76b0 with the spawn-attribution window open. */
 static inline void dt_drain_tramp(int64_t ship, int32_t t) {
     g_drain_in_window = 1; g_a76b0_trampoline(ship, t); g_drain_in_window = 0;
@@ -4022,6 +4038,8 @@ static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
         have_before = 1;
     }
     int64_t ret = g_dtwa_29f810_trampoline(mgr, template_id, flags, pos, p5, p6, p7);
+    /* DTWA-B3 piggyback: when inside a 3825b0 firing window, the FIRST create is the projectile. */
+    if (g_b3_in_fire && ret && !g_b3_last_proj) g_b3_last_proj = ret;
     if (!dt_on() || !have_before) goto dtwa_diag;
     if (ret == 0) { g_dtwa_null++; goto dtwa_diag; }
     dt_drain_on_spawn();   /* DT-DRAIN a0: attribute this create to the current 3a76b0 emitter */
@@ -4127,6 +4145,140 @@ static BOOL install_dtwa_spawn_hook(void) {
     VirtualProtect(fn, n, old, &old);
     FlushInstructionCache(GetCurrentProcess(), fn, n);
     log_write("[eaw-mt] DTWA-SPAWN: CreateObject (0x29f810) I1 append-order + manager-resolution oracle installed\n");
+    return TRUE;
+}
+
+/* ── DTWA-B3: structural oracle for the b3 projectile create+init restructure (see globals above). ────
+ * Entry-detour FUN_1403825b0. Prologue (objdump 0x3825b0): mov rax,rsp; push rbp/rbx/rsi/rdi/r13/r15;
+ * lea -0x218(rax),rbp = 18 bytes, all position-independent (clean cut before `sub rsp`). */
+#define B3_3825B0_RVA 0x3825b0ULL
+#define GAME_MODE_DAT_RVA 0xb15418ULL   /* DAT_140b15418 (holds the shroud/mode object ptr) */
+static const BYTE b3_3825b0_prologue[18] = {
+    0x48,0x8b,0xc4, 0x55, 0x53, 0x56, 0x57, 0x41,0x55, 0x41,0x57,
+    0x48,0x8d,0xa8, 0xe8,0xfd,0xff,0xff
+};
+typedef int64_t (*B3_3825b0Fn)(int64_t,int64_t,int64_t);
+static B3_3825b0Fn g_b3_3825b0_trampoline = NULL;
+
+static inline int bits_eq_f(float a, float b) {
+    uint32_t ua, ub; memcpy(&ua,&a,4); memcpy(&ub,&b,4); return ua==ub;
+}
+
+static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
+                          int64_t p2, int64_t p3, int64_t local238, int32_t order_pre) {
+    int64_t rec  = *(int64_t *)(proj + 0xe8);     /* plVar12[0x1d] motion/combat record */
+    if (!rec) { g_b3_skip++; return; }
+    int64_t tmpl = *(int64_t *)(proj + 0x298);    /* proj type_def == the create template lVar7 */
+    g_b3_n++;
+
+    /* 1. firer_id (rec+0x58 = owner+0x50) */
+    if (*(int32_t *)(rec + 0x58) == *(int32_t *)(owner + 0x50)) g_b3_firer_ok++; else g_b3_firer_bad++;
+    /* 2. target (rec+0x08 = param_2) */
+    if (*(int64_t *)(rec + 0x08) == p2) g_b3_tgt_ok++; else g_b3_tgt_bad++;
+    /* 3. target sub-id (rec+0x10 = resolved-param_3 ? *(param_3+0x18) : -1). When the CALLER passes a
+     *    non-null param_3 it is used unchanged (gated at 3825b0:68), so the entry value is authoritative
+     *    and we assert. When the caller passes NULL, 3825b0:107-110 REASSIGNS param_3 via 398440/394a80 —
+     *    that resolved value is an internal local invisible from an entry/exit detour, so we COUNT those
+     *    separately (sub_reasn) rather than mis-assert against the stale entry NULL. */
+    if (p3) { if (*(int32_t *)(rec + 0x10) == *(int32_t *)(p3 + 0x18)) g_b3_sub_ok++; else g_b3_sub_bad++; }
+    else      g_b3_sub_reasn++;
+    /* 4. damage (rec+0x64): owner override else template; charge path (order_pre<0) is recompute-only via
+     *    3952a0 → counted separately, not asserted (avoids calling a stateful engine fn). */
+    int is_charge = (local238 && order_pre < 0);
+    if (is_charge) { g_b3_charge++; }
+    else {
+        float od = *(float *)(owner_type + 0x478);
+        float exp_dmg = (od <= 0.0f) ? *(float *)(tmpl + 0x474) : od;
+        if (bits_eq_f(exp_dmg, *(float *)(rec + 0x64))) g_b3_dmg_ok++; else g_b3_dmg_bad++;
+    }
+    /* 5. lifetime (rec+0x68): 5400f0(owner_type) result lives cached at owner_type+0x4a0 (the binary just
+     *    filled it); 0 ⇒ template+0x440. Pure read of the cache — no engine call. */
+    { int32_t ol = *(int32_t *)(owner_type + 0x4a0);
+      uint32_t exp_life = (ol == 0) ? *(uint32_t *)(tmpl + 0x440) : (uint32_t)ol;
+      if (*(uint32_t *)(rec + 0x68) == exp_life) g_b3_life_ok++; else g_b3_life_bad++; }
+    /* 6. vis_frame (rec+0x60): only written when owner_type+0x4a4 > 0; = mode+0x10 + that offset. */
+    { int32_t vo = *(int32_t *)(owner_type + 0x4a4);
+      if (vo > 0) {
+        int64_t mode = g_dt_imgbase ? *(int64_t *)(g_dt_imgbase + GAME_MODE_DAT_RVA) : 0;
+        int32_t exp_vis = (mode ? *(int32_t *)(mode + 0x10) : 0) + vo;
+        if (*(int32_t *)(rec + 0x60) == exp_vis) g_b3_vis_ok++; else g_b3_vis_bad++;
+      } }
+
+    if (g_b3_detail < 48) {
+        char rb[320];
+        snprintf(rb, sizeof rb,
+            "DTB3\tev=%u\ttick=%u\tfirer=%d/%d\ttgt=%d\tsub=%d/%d\tdmg=%.3f\tlife=%u\tvis=%d\tcharge=%d\n",
+            g_b3_detail, g_dt_frame_ctr?*g_dt_frame_ctr:0,
+            *(int32_t *)(rec + 0x58), *(int32_t *)(owner + 0x50),
+            (*(int64_t *)(rec + 0x08) == p2),
+            *(int32_t *)(rec + 0x10), (p3 ? *(int32_t *)(p3 + 0x18) : -1),
+            *(float *)(rec + 0x64), *(uint32_t *)(rec + 0x68), *(int32_t *)(rec + 0x60), is_charge);
+        log_write(rb); g_b3_detail++;
+    }
+    if ((g_b3_firer_bad|g_b3_tgt_bad|g_b3_sub_bad|g_b3_dmg_bad|g_b3_life_bad|g_b3_vis_bad)
+        && !g_b3_missshown) {
+        g_b3_missshown = 1; char xb[320];
+        snprintf(xb, sizeof xb,
+            "DTB3MISS\ttick=%u\tfirer=%d/%d\ttgt=%d\tsub=%d/%d\tdmg_got=%.4f\tlife_got=%u\tvis_got=%d\n",
+            g_dt_frame_ctr?*g_dt_frame_ctr:0,
+            *(int32_t *)(rec + 0x58), *(int32_t *)(owner + 0x50),
+            (*(int64_t *)(rec + 0x08) == p2),
+            *(int32_t *)(rec + 0x10), (p3 ? *(int32_t *)(p3 + 0x18) : -1),
+            *(float *)(rec + 0x64), *(uint32_t *)(rec + 0x68), *(int32_t *)(rec + 0x60));
+        log_write(xb);
+    }
+}
+
+static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
+    int armed = dt_on();
+    int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0;
+    if (armed && p1) {
+        owner      = *(int64_t *)(p1 + 0x10);
+        owner_type = *(int64_t *)(p1 + 0x20);
+        local238   = owner ? *(int64_t *)(owner + 0x100) : 0;
+        order_pre  = local238 ? *(int32_t *)(local238 + 0x394) : 0;
+        g_b3_in_fire = 1; g_b3_last_proj = 0;
+    }
+    int64_t r = g_b3_3825b0_trampoline(p1, p2, p3);
+    if (armed && p1) {
+        g_b3_in_fire = 0;
+        if (r == 1 && g_b3_last_proj && owner && owner_type)
+            dtwa_b3_check(g_b3_last_proj, owner, owner_type, p2, p3, local238, order_pre);
+        uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+        if (tk != g_b3_last && (tk & 0x3ffu) == 0) {     /* every 1024 ticks */
+            g_b3_last = tk; char db[384];
+            snprintf(db, sizeof db,
+                "DTB3SUM\ttick=%u\tn=%u\tfirer=%u/%u\ttgt=%u/%u\tsub=%u/%u\tsub_reasn=%u\tdmg=%u/%u\tlife=%u/%u\tvis=%u/%u\tcharge=%u\tskip=%u\n",
+                tk, g_b3_n, g_b3_firer_ok,g_b3_firer_bad, g_b3_tgt_ok,g_b3_tgt_bad,
+                g_b3_sub_ok,g_b3_sub_bad, g_b3_sub_reasn, g_b3_dmg_ok,g_b3_dmg_bad, g_b3_life_ok,g_b3_life_bad,
+                g_b3_vis_ok,g_b3_vis_bad, g_b3_charge, g_b3_skip);
+            log_write(db);
+        }
+    }
+    return r;
+}
+
+static BOOL install_dtwa_b3_hook(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
+    BYTE *fn = (BYTE *)exe + B3_3825B0_RVA;
+    size_t n = sizeof b3_3825b0_prologue;            /* 18 */
+    if (memcmp(fn, b3_3825b0_prologue, n) != 0) {
+        log_write("[eaw-mt] WARN: firing body (0x3825b0) prologue mismatch — DTWA-B3 not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_write("[eaw-mt] WARN: VirtualAlloc for DTWA-B3 trampoline failed\n"); return FALSE; }
+    memcpy(tramp, b3_3825b0_prologue, n);
+    write_abs_jmp(tramp + n, (uint64_t)(fn + n));
+    g_b3_3825b0_trampoline = (B3_3825b0Fn)tramp;
+    DWORD old;
+    VirtualProtect(fn, n, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)dtwa_b3_3825b0_hook);
+    VirtualProtect(fn, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, n);
+    log_write("[eaw-mt] DTWA-B3: firing body (0x3825b0) projectile init §3 source-map oracle installed\n");
     return TRUE;
 }
 
@@ -10131,6 +10283,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b63f210_hook();   /* DTTK: Telekinesis interp-timeline biconditional + lerp (EAW_DIFFTRACE=1) */
         install_spl625990_hook(); /* DTSPL2: SimpleSpaceLocomotor vfunc_59 cubic-Hermite mover (EAW_DIFFTRACE=1) */
         install_dtwa_spawn_hook();/* DTWA-SPAWN: CreateObject I1 append-order + manager-resolution oracle (EAW_DIFFTRACE=1) */
+        install_dtwa_b3_hook();   /* DTWA-B3: firing-body projectile init §3 source-map oracle (EAW_DIFFTRACE=1) */
         install_dtwa_sig_hook();  /* DTWASIG: signal fan-out Command-schema/traffic oracle (EAW_DIFFTRACE=1) */
         install_a1_sfx_hook();    /* a1: gated SFX takeover — 2d5290 buffer+canonical-drain (EAW_A1=1 to arm) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
