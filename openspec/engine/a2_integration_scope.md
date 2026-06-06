@@ -86,6 +86,27 @@ dominates), STOP and reconsider** — either (i) accept a modest win, (ii) revis
 the opportunity-scan (the expensive read-only part of fire-control — note it has the b1 fan-out), or (iii)
 shelve a2. This measurement is cheap, decisive, and must precede the takeover.
 
+> **✅ a2.0 MEASURED 2026-06-06 (commit f58da7c, `EAW_A2MEASURE=1`, evidence `eaw-mt.log.a2measure`).**
+> Lean QPC entry-detour timers on `3a6b80` (per-object body) vs `3a76b0` (serial fire-control subtree),
+> DT hooks skipped so nothing confounds the timing. **Result (multi-loop menu-demo battle):**
+> - **`p ≈ 0.65`** cumulative (cheap-mass = ~65 % of per-object body time; recent-interval ~0.64), swinging
+>   **~0.52 in peak-combat bursts** to ~0.70 in lulls. Only ~8 of ~520 objects/tick run fire-control, but
+>   each fire-call is **~28× an average cheap body**, so the few firing units carry the ~35 % serial cost
+>   (matches the `387400` opportunity-scan stall history).
+> - **Amdahl ceiling at p=0.65:** 2-core **1.48×**, 4-core **1.95×**, 8-core **2.32×**, ∞ **2.86×**. At
+>   p=0.52 (peak combat): 4-core 1.6×, 8-core 1.8×, ∞ 2.1×. (Body-only; total-tick adds serial
+>   iteration/drain → real-world lower.)
+> - **The win is WEAKEST in the biggest battles** (serial fire-control grows with combat) — exactly where
+>   speedup is most wanted. Getting past ~2× would need the deferred **b4 gate lift** (the opportunity-scan
+>   is the expensive read-only part, but it has the b1 fan-out).
+>
+> **GATE VERDICT: the parallel fraction is REAL (~65 %) but the ceiling is MODEST (~2× at 4 cores), not the
+> 3–4× the program hoped.** Whether ~1.6–2× justifies the a2 build (engine integration + the retrofit
+> gameplay-delta §3 + the takeover risk) is a judgment call — **surfaced to the user.** A ~2× sim-tick
+> speedup is a genuine win for a CPU-bound game (TR big-battle fast-forward is CPU-bound), but it is not
+> dramatic and degrades under load. Options if NOT worth it: revisit b4 (parallelize the opportunity-scan
+> despite the fan-out) for a higher ceiling, or shelve a2 and bank the lifts.
+
 ---
 
 ## 3. THE SECOND QUESTION — is the determinism retrofit's gameplay delta acceptable?
