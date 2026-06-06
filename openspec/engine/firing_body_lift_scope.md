@@ -294,6 +294,38 @@ write-audit (#5/#6). It is NOT the "shelve / cheap-2×" option; it reopens b3 (n
 if a higher ceiling is wanted, do the **write-audit + spatial-query thread-safety assessment FIRST** (cheap,
 decisive — same spirit as a2.0) to confirm #2/#5/#6 are tractable before committing to b3 + the takeover.
 
+### 8.5 WRITE-AUDIT RESULT (2026-06-06) — GO: every cross-entity write is deferrable
+Audited every write in the fire path (`3a76b0`→`387f50`/`387010`→`387400`→`3825b0`/`385190`/`386660`, and
+the target-record updaters `3846c0`/`382510`). Disposition:
+
+| Write target | where | class | disposition |
+|---|---|---|---|
+| own weapon/hardpoint (budget `+0x28`, target records, cooldown, bone-idx, `last_serviced_tick`) | all | OWN | **safe** (object-granular: 1 object = 1 work item, its hardpoints serial within it) |
+| new projectile init (`plVar12[0x1d]…`) | 3825b0 | create payload | **SpawnCommand** (§3) |
+| `CreateObject` projectile/debris (`29f810`) | 3825b0, 386660 | Class-2 | **SpawnCommand** → serial drain |
+| target `+0x38` listener set/clear self (`220e90`/`220eb0`) | 382510, 3846c0, 3825b0:350 | Class-2b | **Command** (deferred) |
+| shot-register → firer rec + shroud-mgr `b15418` vf+0x260 + order emit `38a350` | 3a06a0 | Class-2b | **Command** (deferred — incl. the sensor-mgr write) |
+| SFX (`2d5240`/`2d5290`/`2d5320`→`b27e60`) | 3825b0, 386660 | Class-3 | **SfxCommand** (a1) |
+| render bone cache (`12d430`/`12d480`, turret-aim `381ff0`) | 387010 | Class-3 render | **safe** — own-object, off-lockstep, no cross-object race under object-granular |
+| ⚠ UI message queue (`b27f60` via `2dd630`, "STATION_LEVEL_LOST") | 387f50 | Class-3 presentation (shared queue) | **NEW low-volume channel** — defer or serialize (rare: hardpoint/station-level destroyed) |
+
+**Verdict: NO un-deferrable live cross-entity write exists in the fire path.** Every cross-object write is
+already in (or trivially extends) the deferrable Class-2/2b/3 channels the command system handles; render
+writes are own-object (safe). The audit surfaced exactly one new channel — a rare UI-queue presentation
+write (`b27f60`) — which is low-volume and handled like SFX. ⇒ **the read-only-phase assumption holds on
+the WRITE side.**
+
+The remaining blockers are therefore **concurrency-scratch, not writes**: (1) the spatial-query shared
+result buffer `index+8` (§9.3#2 — the one hard engineering problem; per-thread query buffers or a lock);
+(2) the localizable global scratch (`b2c380..`/`b2ec18..`/`a28538..`); (3) RNG→substream. **Residual open**
+(not a write, a read): confirm the query vfuncs `0x11`/`0x118` are read-only (lower risk; if any caches into
+shared state it races).
+
+**GO/NO-GO: GO**, conditional on (a) making the spatial query thread-safe (a bounded refactor — per-thread
+result buffers) and (b) the query-vfunc read-only check. The parallel-fire-pass path to **~3.5–6×** is
+feasible; the next build step is **b3 (create + Class-2b + UI-queue deferral)** + the spatial-query
+thread-safety, then the parallel-fire takeover. No intractable predicate-read lift is needed.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
