@@ -4187,6 +4187,58 @@ static int pfire_r1_gate2a(int64_t p1, int64_t *p2, int64_t p3) {
     return 0;                                                          /* compound false ⇒ binary returns 0 */
 }
 
+/* R1 gate-2b (3825b0:164-209): aim-point + LOS + range — the dominant per-tick fire/no-fire filter.
+ * Assumes gate1+gate2a passed (reached :164). Returns 1 = reaches the spread/fire point (:210), 0 = bails
+ * (no LOS or out of range), -1 = SKIP (the param_3==0 aim path uses 383f70 + the 405870 redirect, both of
+ * which DRAW THE GLOBAL LCG — re-invoking them observe-only would perturb the sim's RNG stream; that path
+ * is validated at the A3.3 takeover where the reimpl's draw replaces the binary's). The param_3!=0 path
+ * (385c70 aim + 385e70 LOS + 3857d0/397780 range) is RNG-free + shared-write-free (verified) ⇒ safe to
+ * re-invoke pre-trampoline. 385e70 writes param_2[0..2] (vec3) + param_3[0..0xb] (3x4) — buffers over-sized
+ * to 64B; matrices init from DAT_140800820 (48B) mirroring :188-200. FP grouping matches :203-204
+ * (dy² first, then +dx²). */
+typedef void*   (*R1_385c70Fn)(int64_t, void*);                       /* FUN_140385c70(param_3, &vec) aim */
+typedef char    (*R1_385e70Fn)(int64_t, float*, void*, void*);        /* FUN_140385e70(p1,&pos,&m1,&m2) LOS */
+typedef float   (*R1_3857d0Fn)(int64_t);                              /* FUN_1403857d0(p1) max-range delta */
+typedef float   (*R1_397780Fn)(int64_t*);                             /* FUN_140397780(p2) target extent */
+typedef float   (*R1_SqrtFn)(float);                                  /* FUN_140776d48 engine sqrt */
+static uint32_t g_r1_g3_ok=0, g_r1_g3_bug=0, g_r1_g3_nofire=0, g_r1_g3_skip=0;
+
+static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
+    int64_t owner      = *(int64_t *)(p1 + 0x10);
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+
+    if (p3 == 0) {                                                     /* re-resolve param_3 (:107-109) */
+        uint32_t buf12[4] = {0,0,0,0};
+        R1_398440Fn f398440 = (R1_398440Fn)(g_dt_imgbase + 0x398440);
+        R1_394a80Fn f394a80 = (R1_394a80Fn)(g_dt_imgbase + 0x394a80);
+        p3 = f394a80(p2, f398440(owner, buf12), 0, 0);
+    }
+    if (p3 == 0) return -1;       /* :164 binary takes the RNG 383f70/405870 aim path → SKIP */
+
+    float fpos[16]; float aim[4] = {0,0,0,0};
+    R1_385c70Fn f385c70 = (R1_385c70Fn)(g_dt_imgbase + 0x385c70);      /* :183 aim (param_3!=0 path) */
+    float *pa = (float *)f385c70(p3, fpos);
+    aim[0]=pa[0]; aim[1]=pa[1]; aim[2]=pa[2];
+
+    float mat1[16], mat2[16];                                          /* :188-200 matrix init */
+    memcpy(mat1, (void *)(g_dt_imgbase + 0x800820), 48);
+    memcpy(mat2, (void *)(g_dt_imgbase + 0x800820), 48);
+    memset(fpos, 0, sizeof fpos);                                      /* :192 local_2c8 = 0 */
+    R1_385e70Fn f385e70 = (R1_385e70Fn)(g_dt_imgbase + 0x385e70);      /* :201 LOS + firing pos */
+    if (f385e70(p1, fpos, mat1, mat2) == 0) return 0;                  /* :202 no LOS → no fire */
+
+    R1_SqrtFn esqrt = (R1_SqrtFn)(g_dt_imgbase + 0x776d48);
+    R1_3857d0Fn f3857d0 = (R1_3857d0Fn)(g_dt_imgbase + 0x3857d0);
+    R1_397780Fn f397780 = (R1_397780Fn)(g_dt_imgbase + 0x397780);
+    float dy = fpos[1] - aim[1];                                       /* :203 local_2c8.y - aim.y */
+    float dx = fpos[0] - aim[0];                                       /* :204 local_2c8.x - aim.x */
+    float dist = esqrt(dy*dy + dx*dx);
+    float maxr = f3857d0(p1) + f397780(p2);                            /* :206-208 */
+    float minr = *(float *)(owner_type + 0x23c);                       /* :209 */
+    if (dist <= maxr && minr <= dist) return 1;                        /* in range → reaches :210 spread */
+    return 0;
+}
+
 /* run the real FUN_1403a76b0 with the spawn-attribution window open. */
 static inline void dt_drain_tramp(int64_t ship, int32_t t) {
     g_drain_in_window = 1; g_a76b0_trampoline(ship, t); g_drain_in_window = 0;
@@ -4565,15 +4617,17 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
 
 static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
     int armed = dt_on();
-    int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0, r1_full=0;
+    int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0, r1_g2a=0, r1_full=0;
     if (armed && p1) {
         owner      = *(int64_t *)(p1 + 0x10);
         owner_type = *(int64_t *)(p1 + 0x20);
         local238   = owner ? *(int64_t *)(owner + 0x100) : 0;
         order_pre  = local238 ? *(int32_t *)(local238 + 0x394) : 0;
-        /* R1 observe: evaluate the gate verdict on the PRE-call state (gate1 early, +gate2a targeting). */
+        /* R1 observe: evaluate the gate verdict on the PRE-call state (gate1 early, +gate2a targeting,
+         * +gate2b aim/LOS/range). gate2b returns -1 when the binary takes the RNG aim path (skip). */
         r1_g1 = pfire_r1_gate1(p1, (int64_t *)p2, p3);
-        r1_full = r1_g1 ? pfire_r1_gate2a(p1, (int64_t *)p2, p3) : 0;
+        r1_g2a = r1_g1 ? pfire_r1_gate2a(p1, (int64_t *)p2, p3) : 0;
+        r1_full = r1_g2a ? pfire_r1_gate2b(p1, (int64_t *)p2, p3) : 0;
         g_b3_in_fire = 1; g_b3_last_proj = 0;
     }
     int64_t r = g_b3_3825b0_trampoline(p1, p2, p3);
@@ -4583,9 +4637,13 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
         g_r1_g1_n++;
         if (r == 1) { if (r1_g1) g_r1_g1_ok++; else g_r1_g1_bug++; }
         else if (r1_g1) g_r1_g1_nofire++;
-        /* combined gate1+gate2a verdict (r==1 ⇒ must pass; g2_bug must be 0). */
-        if (r == 1) { if (r1_full) g_r1_g2_ok++; else g_r1_g2_bug++; }
-        else if (r1_full) g_r1_g2_nofire++;
+        /* gate1+gate2a verdict (r==1 ⇒ must pass; g2_bug must be 0). */
+        if (r == 1) { if (r1_g2a) g_r1_g2_ok++; else g_r1_g2_bug++; }
+        else if (r1_g2a) g_r1_g2_nofire++;
+        /* gate1+gate2a+gate2b verdict; r1_full==-1 = skipped RNG aim path (param_3==0). */
+        if (r1_full == -1) g_r1_g3_skip++;
+        else if (r == 1) { if (r1_full == 1) g_r1_g3_ok++; else g_r1_g3_bug++; }
+        else if (r1_full == 1) g_r1_g3_nofire++;
         if (r == 1 && g_b3_last_proj && owner && owner_type)
             dtwa_b3_check(g_b3_last_proj, owner, owner_type, p2, p3, local238, order_pre);
         uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
@@ -4599,9 +4657,10 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 g_b3_arg_n, g_b3_arg_mgr_ok,g_b3_arg_mgr_bad, g_b3_arg_tmpl_ok,g_b3_arg_tmpl_bad);
             log_write(db);
             snprintf(db, sizeof db,
-                "DTR1SUM\ttick=%u\tg1_n=%u\tg1_ok=%u\tg1_bug=%u\tg1_nofire=%u\tg2_ok=%u\tg2_bug=%u\tg2_nofire=%u\n",
+                "DTR1SUM\ttick=%u\tg1_n=%u\tg1_ok=%u\tg1_bug=%u\tg1_nofire=%u\tg2_ok=%u\tg2_bug=%u\tg2_nofire=%u\tg3_ok=%u\tg3_bug=%u\tg3_nofire=%u\tg3_skip=%u\n",
                 tk, g_r1_g1_n, g_r1_g1_ok, g_r1_g1_bug, g_r1_g1_nofire,
-                g_r1_g2_ok, g_r1_g2_bug, g_r1_g2_nofire);
+                g_r1_g2_ok, g_r1_g2_bug, g_r1_g2_nofire,
+                g_r1_g3_ok, g_r1_g3_bug, g_r1_g3_nofire, g_r1_g3_skip);
             log_write(db);
         }
     }
