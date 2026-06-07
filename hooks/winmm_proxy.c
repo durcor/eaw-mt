@@ -4253,6 +4253,7 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
     float lx = pf[0], ly = pf[1], lz = pf[2];                    /* :233-235 */
     if (!(ly*ly + lx*lx + lz*lz != 0.0f)) return 0;             /* :236 no lead solution → no fire */
     S[0] = lx; S[1] = ly; S[2] = lz;                            /* :237 local_2d8/2d4/2d0 = lead */
+    S[16] = lx; S[17] = ly; S[18] = lz;  /* preserve the ORIGINAL lead (fVar14/17/18) for R2b guided delta */
     R1_383ba0Fn f383ba0 = (R1_383ba0Fn)(g_dt_imgbase + 0x383ba0);
     if (f383ba0(p1, &S[0]) == 0) return 0;                      /* :238 fire-gate predicate fail */
 
@@ -4347,6 +4348,66 @@ static int64_t pfire_r2a_create_init(int64_t p1, int64_t *p2, int64_t lVar7, int
         *(int64_t *)(rec + 0xb0) = 0;                                 /* local_res20 (SFX deferred) */
     }
     return proj;
+}
+
+/* R2b applier — Class-2b emits + guided/ballistic transform (3825b0:342-402). After R2a created+scalar-
+ * init'd the projectile: (1) 220e90 = register the projectile as a listener on the target's +0x38 list
+ * (Class-2b); (2) target sub-id; (3) guided (lVar7+0x1fe8==1): velocity = target-frame matrix (22d410 of
+ * the target's orientation) × (dispersed_dir − original_lead) [needs R1c's lead at S[16..18]]; ballistic:
+ * read back the just-created projectile's transform fields (plVar12+0x7c/0x84/0x8c/[0xf]/[0x10]/[0x11]) —
+ * which is WHY create-then-init is mandatory — + store the dispersed dir; (4) 3a06a0 = shot-register
+ * (firer record + shroud mgr, Class-2b). Transcription-only (A3.3-validated). rec = proj+0xe8. */
+typedef int64_t (*R2_058570Fn)(void);                 /* listener-key source */
+typedef void    (*R2_220e90Fn)(int64_t, int64_t, int64_t, int32_t);  /* Class-2b listener register */
+typedef void    (*R2_22d410Fn)(float*, float*);       /* target-frame matrix transform */
+typedef void    (*R2_3a06a0Fn)(int64_t, int64_t*, int64_t);          /* Class-2b shot-register */
+
+static void pfire_r2b_emit(int64_t p1, int64_t proj, int64_t *p2, int64_t p3, int64_t lVar7, float *S) {
+    int64_t owner = *(int64_t *)(p1 + 0x10);
+    int64_t rec   = *(int64_t *)(proj + 0xe8);
+
+    R1_VfuncFn vf = *(R1_VfuncFn *)(*(int64_t *)proj + 0x10);         /* :342 vfunc_2(proj, 8) */
+    int64_t lv13 = vf((int64_t *)proj, 8);
+    int64_t lkey = (lv13 == 0) ? 0 : lv13 + 0x18;                     /* :343-348 local_res8 */
+    R2_058570Fn f058570 = (R2_058570Fn)(g_dt_imgbase + 0x058570);
+    R2_220e90Fn f220e90 = (R2_220e90Fn)(g_dt_imgbase + 0x220e90);
+    f220e90(f058570(), (int64_t)p2 + 0x38, lkey, 0x28);              /* :349-350 Class-2b listener */
+    *(int32_t *)(rec + 0x5c) = 0;                                     /* :351 */
+    int32_t sub = (p3 == 0) ? (int32_t)0xffffffff : *(int32_t *)(p3 + 0x18);  /* :352-358 */
+    *(int32_t *)(rec + 0x10) = sub;
+
+    if (*(int32_t *)(lVar7 + 0x1fe8) == 1) {                          /* :359 guided */
+        int64_t tgt = *(int64_t *)(rec + 8);                          /* :360 */
+        *(int64_t *)(rec + 0x18) = tgt;                              /* :361 */
+        *(int32_t *)(rec + 0x20) = sub;                             /* :362 */
+        float fv14 = S[0] - S[16], fv17 = S[1] - S[17], fv18 = S[2] - S[18];  /* :363-365 disp − lead */
+        if (tgt != 0) {
+            float in_mat[12], out_mat[12];                            /* :367-372 target frame */
+            memcpy(in_mat, (void *)(tgt + 0x248), 48);
+            R2_22d410Fn f22d410 = (R2_22d410Fn)(g_dt_imgbase + 0x22d410);
+            f22d410(in_mat, out_mat);                                 /* :373 */
+            *(float *)(rec + 0x24) = out_mat[0]*fv14 + out_mat[1]*fv17 + out_mat[2]*fv18;   /* :374 */
+            *(float *)(rec + 0x28) = out_mat[4]*fv14 + out_mat[5]*fv17 + out_mat[6]*fv18;   /* :377 */
+            *(float *)(rec + 0x2c) = out_mat[8]*fv14 + out_mat[9]*fv17 + out_mat[10]*fv18;  /* :380 */
+        }
+    } else {                                                          /* :385 ballistic (read-back create) */
+        *(int32_t *)(rec + 0x74) = *(int32_t *)(proj + 0x84);
+        *(int32_t *)(rec + 0x78) = (int32_t)*(int64_t *)(proj + 0x11 * 8);
+        *(int32_t *)(rec + 0x7c) = *(int32_t *)(proj + 0x8c);
+        *(int32_t *)(rec + 0x80) = (int32_t)*(int64_t *)(proj + 0xf * 8);
+        *(int32_t *)(rec + 0x84) = *(int32_t *)(proj + 0x7c);
+        *(int32_t *)(rec + 0x88) = (int32_t)*(int64_t *)(proj + 0x10 * 8);
+        *(int32_t *)(rec + 0x8c) = *(int32_t *)(*(int64_t *)(*(int64_t *)(proj + 0x57*8) + 0x20) + 0x10);
+        R1_370f00Fn f370f00 = (R1_370f00Fn)(g_dt_imgbase + 0x370f00);
+        *(int32_t *)(rec + 0x90) = f370f00(lVar7, 0);                /* :394-395 */
+        *(int64_t *)(rec + 0x18) = 0;                                /* :396 */
+        *(int32_t *)(rec + 0x20) = (int32_t)0xffffffff;             /* :397 */
+        *(float *)(rec + 0x3c) = S[0];                              /* :398-400 dispersed dir */
+        *(float *)(rec + 0x40) = S[1];
+        *(float *)(rec + 0x44) = S[2];
+    }
+    R2_3a06a0Fn f3a06a0 = (R2_3a06a0Fn)(g_dt_imgbase + 0x3a06a0);
+    f3a06a0(owner, p2, proj);                                        /* :402 Class-2b shot-register */
 }
 
 static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
