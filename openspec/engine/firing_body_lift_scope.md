@@ -763,6 +763,40 @@ Region 2 (the applier); DTWA-B3 validated it bit-exact in-game.
   applier) + the full A3 gate. Each chunk compiles green before the next; launch cycles validate (user drives
   a space battle — fire-path data needs combat, per §8.12 launch note).
 
+### 8.15 PATH A — R2 create-args + R1 gate-1/gate-2a OBSERVE oracle = IN-GAME PASS (2026-06-06)
+Built the first three A3 chunks in `winmm_proxy.c` (observe-only, EAW_ORACLE, wired into the existing
+DTWA-B3 `3825b0` entry-detour) and launch-validated them in two live space battles. **The verify-first
+checkpoint before the buffer-passing gate-2b.**
+- **R2 create-args capture** (the §8.14 applier's create inputs): `PfireSpawnArgs` filled from the existing
+  `29f810` detour params on the firing-window piggyback; validated `mgr == *(owner+0x2b8)` (re-confirms the
+  I2/Int-#1 manager-resolution) + `template == proj+0x298`.
+- **R1 gate-1** (`pfire_r1_gate1`, `3825b0:60-105`) + **gate-2a** (`pfire_r1_gate2a`, `:107-163`): the
+  RNG-free decision-gate prefix, transcribed by CALLING the binary gate leaves (`39b140`/`540140`/`35f470`/
+  `39a540`/`vfunc_2`; `398440`/`394a80`/`397e00`/`39b950`) on the PRE-call state; types mirror the
+  decompile (`p2`=`longlong*`→`+N` is ×8). One-directional oracle: a fired shot (binary `r==1`) MUST pass
+  every gate ⇒ `bug` counts the impossible `r==1 & verdict==0`.
+- **RESULT (multi-battle, `eaw-mt.log` DTR1SUM/DTB3SUM, ~1199 fires / 413k fire-body calls):**
+  `g1_bug=0`, `g2_bug=0`, `arg_mgr=1199/0`, `arg_tmpl=1199/0`; all prior DTWA-B3 fields still `N/0`
+  (firer/tgt/sub/dmg/life); **0 crashes**, game stable across two battles. ⇒ the transcription FIDELITY —
+  pointer types, byte offsets, leaf arities (incl. the resolved `398440` 2-arg, the omitted side-effect-only
+  `:165` call), and the pre-call re-invocation of the binary leaves (incl. `35f470`'s idempotent global fog
+  rebuild) — is **correct on live data and does not perturb the sim**.
+- **Honest coverage limitation:** the gate REJECT paths were barely exercised — `gate1` returned 0 only ~2×
+  (the caller `387400` pre-selects a valid target, so `3825b0` rarely sees an invalid one), and `gate2a`'s
+  reject (the targeting compound) fired 0× (`397e00` resolved for every gate-1 passer). So the oracle proves
+  "no false-rejection of a fired shot" but only lightly exercises the rejection logic. The dominant per-tick
+  "don't fire" filter is the range/LOS gate in the UNtranscribed gate-2b (`164-209`) — `g1_nofire≈g2_nofire`
+  ≈412k confirms nearly every call passes the early gates and is blocked downstream. Reject-path coverage
+  improves once gate-2b (range/LOS) lands and with target-death/fog scenarios. Methodology banked (24): a
+  one-directional `r==1 ⇒ verdict==1` observe oracle cleanly proves transcription FIDELITY + crash-safety on
+  the fire path, but does NOT exercise the reject branches when an upstream caller pre-filters — count the
+  `(r==0 & verdict==0)` rejections to see whether the reject logic was actually tested (here ≈2, i.e. barely).
+
+**NEXT = gate-2b (`3825b0:164-209`: aim-point `383f70`/`385c70` + matrix/vec buffer init + LOS `385e70` +
+range `3857d0`/`397780`/sqrt — passes scratch BUFFERS to binary fns, size carefully / objdump-verify; adds
+the dominant range/LOS reject filter so it also exercises the reject paths) → R1c geometry (`211-260`) →
+R2 applier `pfire_apply_spawn` (`261-402`) → R3 cooldown (`403-490`) → A3.3 takeover flip (`EAW_PFIRE=3`).**
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
