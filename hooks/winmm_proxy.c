@@ -2013,6 +2013,9 @@ static long g_pf_a76b0_n = 0, g_pf_fire_n = 0;
 static void pfire_drain_spawns(void);
 #endif
 static uint32_t g_pfire_spawn_drained = 0, g_pfire_spawn_overflow = 0, g_pfire_spawn_maxfill = 0;
+/* A4.1 DEBUG (root-causing the drained=0 paradox): which R2 branch the reimpl takes + drain entry. */
+static uint32_t g_pfdbg_buf = 0, g_pfdbg_inline = 0, g_pfdbg_drainenter = 0, g_pfdbg_drain_maxn = 0, g_pfdbg_reimpl_lvl = 0;
+static uint32_t g_pfdbg_entry = 0, g_pfdbg_fb_arc = 0, g_pfdbg_fb_p3 = 0, g_pfdbg_r1cfail = 0;
 
 static int pfire_on(void) {
     if (g_pfire_level < 0) {
@@ -2089,10 +2092,12 @@ static void pfire_a62d0_intercept(int64_t mgr) {
                 g_pfire_level >= 4 ? "C" : (g_pfire_level >= 2 ? "B" : "A"), g_pfire_a6b80_calls, g_pfire_a62d0_calls,
                 g_pfire_tot_deferred, g_pfire_tot_fired, g_pfire_maxfill, g_pfire_overflow);
         log_write(m);
-        if (g_pfire_level >= 4) {        /* A4.1 create-deferral buffer/drain balance */
-            char sm[160];
-            sprintf(sm, "[eaw-mt] PFIRE-C: spawn-defer — drained=%u maxfill=%u overflow=%u\n",
-                    g_pfire_spawn_drained, g_pfire_spawn_maxfill, g_pfire_spawn_overflow);
+        if (g_pfire_level >= 3) {        /* A4.1 reimpl-fire diagnostics (now visible at level 3 too) */
+            char sm[256];
+            sprintf(sm, "[eaw-mt] PFIRE-C: spawn-defer — drained=%u | DBG entry=%u fb_arc=%u fb_p3=%u r1cfail=%u reachedR2(buf+inline)=%u+%u drainenter=%u reimpl_lvl=%u\n",
+                    g_pfire_spawn_drained,
+                    g_pfdbg_entry, g_pfdbg_fb_arc, g_pfdbg_fb_p3, g_pfdbg_r1cfail,
+                    g_pfdbg_buf, g_pfdbg_inline, g_pfdbg_drainenter, g_pfdbg_reimpl_lvl);
             log_write(sm);
         }
         /* A4.1 scan-vs-fire split (the A4.0 fork measurement) */
@@ -4647,6 +4652,7 @@ static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
 #define PFIRE_FALLBACK 2
 static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     if (!g_dt_imgbase) return PFIRE_FALLBACK;
+    g_pfdbg_entry++;
     int64_t p2 = (int64_t)p2arg;
     int64_t owner      = *(int64_t *)(p1 + 0x10);
     int64_t owner_type = *(int64_t *)(p1 + 0x20);
@@ -4676,7 +4682,7 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
         p3 = ((R1_394a80Fn)(g_dt_imgbase + 0x394a80))((int64_t *)p2,
                  ((R1_398440Fn)(g_dt_imgbase + 0x398440))(owner, buf12), 0, 0);
     }
-    if (*(int8_t *)(owner_type + 0x4e) == 1) return PFIRE_FALLBACK;   /* :112 arc gate (dead) → binary */
+    if (*(int8_t *)(owner_type + 0x4e) == 1) { g_pfdbg_fb_arc++; return PFIRE_FALLBACK; }  /* :112 arc gate → binary */
     int64_t lVar9_220 = *(int64_t *)(owner_type + 0x220);
     int64_t lVar13    = *(int64_t *)(owner_type + 0x210);
     if (lVar9_220 != 0 && local_238 != 0 && *(int32_t *)(local_238 + 0x394) < 0) lVar13 = lVar9_220;
@@ -4692,7 +4698,7 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     }
 
     /* ---- gate2b (164-209): param_3==0 RNG aim path → fallback; else 385c70 aim + 385e70 LOS + range ---- */
-    if (p3 == 0) return PFIRE_FALLBACK;                               /* RNG aim path → binary (rare) */
+    if (p3 == 0) { g_pfdbg_fb_p3++; return PFIRE_FALLBACK; }          /* RNG aim path → binary (rare) */
     float S[48]; memset(S, 0, sizeof S);
     float mat1[16], mat2[16];
     float *pa = (float *)((R1_385c70Fn)(g_dt_imgbase + 0x385c70))(p3, &S[4]);  /* :183 aim */
@@ -4709,16 +4715,18 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     if (!(dist <= maxr && *(float *)(owner_type + 0x23c) <= dist)) return 0;  /* :208-209 range */
 
     /* ---- R1c geometry (210-260): spread/lead/fire-gate/dispersion/Euler ---- */
-    if (pfire_r1c_geom(p1, (int64_t *)p2, lVar7, S, dist, mat1, mat2) == 0) return 0;  /* fire gate */
+    if (pfire_r1c_geom(p1, (int64_t *)p2, lVar7, S, dist, mat1, mat2) == 0) { g_pfdbg_r1cfail++; return 0; }  /* fire gate */
 
     /* ---- R2 applier (261-402): create+init + Class-2b ----
      * A4.1: at level>=4 BUFFER the payload (deferred create — drained in canonical order at the flush) so N
      * threads never call 29f810 concurrently; at level<4 (A3.3) create inline. Buffer-full falls back to
      * inline (never drop a shot). The geometry S[] + lVar7 + p1/p2/p3 fully determine R2a/R2b. */
-    if (g_pfire_level < 4 || !pfire_spawn_buf_append(p1, p2, p3, lVar7, S)) {
-        int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2, lVar7, local_238, S);
-        pfire_r2b_emit(p1, proj, (int64_t *)p2, p3, lVar7, S);
-    }
+    g_pfdbg_reimpl_lvl = (uint32_t)g_pfire_level;     /* DEBUG: the level the reimpl actually sees */
+    g_pfdbg_inline++;                                  /* DEBUG: reached R2 (= reimpl actually fires) */
+    /* A4.1 create-deferral REVERTED (it was dormant — the real bug is upstream, reimpl never reaches here
+     * in the broken scenario). Back to A3.3 inline create; diagnostics kept to confirm the reimpl fires. */
+    int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2, lVar7, local_238, S);
+    pfire_r2b_emit(p1, proj, (int64_t *)p2, p3, lVar7, S);
 
     /* ---- R3 cooldown + listener rebind (403-497) ---- self-write (object-granular) + Class-2b rebind;
      * stays inline in Phase-A at 1-shard (A4.3 buffers the rebind for N-shard). */
@@ -5111,6 +5119,8 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
  * dtwa_b3_check validates each drained projectile's §3 fields (the A3.3 free-validation, relocated here). */
 static void pfire_drain_spawns(void) {
     int n = g_pfire_spawn_count;
+    g_pfdbg_drainenter++;                                  /* DEBUG: drain was called */
+    if ((uint32_t)n > g_pfdbg_drain_maxn) g_pfdbg_drain_maxn = (uint32_t)n;
     if (n <= 0) return;
     if ((uint32_t)n > g_pfire_spawn_maxfill) g_pfire_spawn_maxfill = (uint32_t)n;
     g_drain_have_prev = 0;

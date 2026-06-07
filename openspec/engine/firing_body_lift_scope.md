@@ -844,6 +844,10 @@ binary) + DTWA `idfail=0/ctrfail=0` + DTDRAIN `rank_down=0` + sane fire cadence 
 0 crashes ⇒ A4 is mechanical; if a field diverges, fix/reassess. Needs a live space battle (fire-path data
 needs combat) — `just pfire=3 difftrace=1 launch-foc-desktop` (or the oracle-launch recipe).
 
+**⚠️ SUPERSEDED — this "PASS" was a FALSE PASS; see §8.19. The field oracle could not tell a reimpl-create
+from a binary-fallback-create, so it passed while the reimpl was silently no-op'ing/falling back and player
+ships under-fired. Treat the claim below as NOT validated.**
+
 **✅ A3.3 TAKEOVER = IN-GAME PASS (2026-06-07, `EAW_PFIRE=3` oracle build, multi-battle).** The reimpl drove
 the firing body live and produced projectiles field-identical to the binary's §3 source-map — the A3
 reassessment gate is MET. Evidence over the full run (`walk=2,465,749 / flush=45,057` across multiple
@@ -937,6 +941,41 @@ buffering reimpl needs the oracle-only DTWA-B3 hook):
 projectiles field-identical) + DTWA `idfail=0/ctrfail=0` + DTDRAIN `rank_down=0` (canonical drain order
 preserved through the buffer) + spawn-defer balance (drained≈deferred-fires, overflow=0) + 0 crashes; plus the
 `PFIRESPLIT` numbers to decide the A-vs-B fork. Recipe `just pfire=4 difftrace=1 launch-foc-desktop`.
+
+### 8.19 ⛔ A4.1 IN-GAME = FAIL → exposed a PRE-EXISTING reimpl firing bug; A3.3 PASS was a FALSE PASS (2026-06-07)
+**User-reported regression at `pfire=4`: capital ships/frigates dealt/took no damage; on inspection
+player-controlled (New Republic) ships barely fire while AI (Imperial) ships fire fine.** Root-caused with
+added diagnostic counters (`g_pfdbg_*`: reimpl entry / fallback-arc / fallback-p3 / r1c-fail / reachedR2,
++ the spawn-defer balance):
+- **The PFIRESPLIT fork measurement DID land (valid):** `fire/fc ≈ 0.17–0.25`, `scan/fc ≈ 0.74–0.84` over a
+  full battle ⇒ the per-fire body `3825b0` is only ~20% of the fire-control subtree; the throttled opp-scan +
+  dispatch dominate (~80%). **Fork implication: Path B (thread only the fire body) ⇒ low ceiling; Path A
+  (lift the opp-scan too) is required for the real speedup.** (Recorded for when the firing bug is fixed.)
+- **The create-deferral was DORMANT** — `buf=0`, `drain_maxn=0`, `drainenter>0` (drain always empty): the
+  reimpl **never reached R2 (the create step)** in the broken scenario, so the buffer was never filled. ⇒ the
+  create-deferral CODE is not the bug; it is a red herring (reverted to A3.3 inline create, diagnostics kept).
+- **The real bug: the reimpl REJECTS ~all fires upstream of R2.** Exit distribution @pfire=4 (725,341 reimpl
+  calls): `r1cfail=475,661 (66%)` + gate-0 `≈249,680 (34%)`, `fb_arc=0`, `fb_p3=0`, **`reachedR2=0`**. Nothing
+  fired via the reimpl; the validated `n` came entirely from the binary fallback path or (when fallback was 0)
+  nothing fired at all. The asymmetry (AI fires, player barely fires) points at a **state the reimpl reads at
+  the deferred-flush replay that differs for player-controlled firers** — most likely the STAGE-B two-phase
+  delta (the reimpl reads SETTLED order/target state at the flush, not the mid-walk state the binary read),
+  hitting an order/aim gate or the unvalidated R1c geometry (lead solver `399450` / fire-gate `383ba0`).
+- **⚠️ A3.3 (§8.16) was a FALSE PASS.** Its gate was field-correctness (DTB3SUM `N/0`) + invariants, which
+  CANNOT distinguish a reimpl-create from a binary-fallback-create — exactly the "no reimpl-vs-fallback
+  counter exists" gap §8.16 itself flagged. The reimpl likely **never fired its own projectile**; A3.3's `n`
+  was the binary fallback all along, and the reduced player-ship fire rate was invisible to a field oracle.
+  **Methodology #26 (the hard lesson): a takeover oracle MUST count "did the LIFTED path actually drive the
+  effect" (reimpl-reachedR2 vs fallback) AND compare the takeover's FIRE RATE / decision distribution against
+  the binary baseline — field-correctness of whatever DID fire is necessary but NOT sufficient; a lifted body
+  that silently no-ops (falls back / rejects) passes a field oracle while breaking the game.**
+
+**Status: reverted to A3.3 inline create (create-deferral disabled), diagnostic counters retained, builds
+green (oracle+release). The reimpl takeover (pfire>=3) is KNOWN-BROKEN for player firers — do NOT treat A3.3
+as validated. Stock play (pfire unset) is unaffected.** NEXT (the real fix, next focused effort): localize
+the rejecting gate/R1c via the ungated `PFIRE-C` counters at pfire=3 (now visible at level>=3) + an AI-vs-player
+firer split; the prime suspect is the STAGE-B settled-state read or the never-observe-validated R1c geometry.
+Re-validate with a PROPER oracle: reimpl fire-rate ≈ binary fire-rate per firer-faction, not just field N/0.
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
