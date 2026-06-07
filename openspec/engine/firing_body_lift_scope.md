@@ -844,6 +844,34 @@ binary) + DTWA `idfail=0/ctrfail=0` + DTDRAIN `rank_down=0` + sane fire cadence 
 0 crashes ⇒ A4 is mechanical; if a field diverges, fix/reassess. Needs a live space battle (fire-path data
 needs combat) — `just pfire=3 difftrace=1 launch-foc-desktop` (or the oracle-launch recipe).
 
+**✅ A3.3 TAKEOVER = IN-GAME PASS (2026-06-07, `EAW_PFIRE=3` oracle build, multi-battle).** The reimpl drove
+the firing body live and produced projectiles field-identical to the binary's §3 source-map — the A3
+reassessment gate is MET. Evidence over the full run (`walk=2,465,749 / flush=45,057` across multiple
+battle loads):
+- **DTB3SUM every window all `N/0`, zero `DTB3MISS`:** `firer`, `tgt`, `dmg`, `life`, `arg_mgr`, `arg_tmpl`
+  all bit-exact (e.g. per-battle `n=3225 → 3225/0` on each); `sub=11/0` on the measurable sub-id cases,
+  `sub_reasn`=majority (the null→resolved param_3 path, counted not asserted — same as the §8.9 baseline).
+- **Sim-ordering invariants intact under takeover:** DTWA `idfail=0 ctrfail=0` over 48,164 creates (I1
+  id-allocator), DTDRAIN `rank_down=0` over 24,790 transitions (canonical drain order). The reimpl's inline
+  R2a create (via binary `29f810`) lands in walk order = PhaseC for 1-shard, so the create/order path is
+  unperturbed.
+- **Two-phase balance perfect:** `deferred=854,184 fired=854,184`, `overflow=0`, `maxfill=79` — every
+  deferred fire replayed at the flush, far under the 8192 cap. **0 crashes/faults** in the whole log.
+- **Fallback effectively zero:** `skip=0` (the `param_3==0` RNG-aim fallback never triggered tactically,
+  confirming §8.15's `g3_skip=0`); the only other fallback (`owner_type+0x4e==1` arc gate) is I3-dead. ⇒ the
+  reimpl handled the tactical path ITSELF for all ~854K fire calls, not via binary fallback.
+- **Coverage gap (documented, same as §8.9 DTWA-B3):** `vis=0/0` and `charge=0` — no vis-frame
+  (`owner_type+0x4a4 > 0`) or charged shots occurred in these battles, so those two §3 branches stay
+  in-game-unconfirmed (validated in host `firing_spawn_test` only). No direct reimpl-vs-fallback counter
+  exists (a DTB3 projectile passes the check whether reimpl or binary created it) — `skip=0` + the I3-dead
+  arc gate are the evidence fallback≈0; a future build could add an explicit fallback tally for rigor.
+
+⇒ **The full firing body now runs from the lifted C reimpl in-game (1-shard, two-phase), bit-exact on every
+measurable §3 field with all structural invariants preserved.** A4 = thread PhaseB: run `pfire_fire_reimpl`
+on N workers with per-thread `ShardBuffer` (b3 `SpawnCommand` replacing the inline create), §8.12 scratch
+LOCKS on `399450`/`35f470`, RNG→`SimRng::substream`, `SpatialQueryGuard` on the opp-scan, canonical drain;
+gate = replay-determinism + lockstep + these same invariants + measured speedup (target ~3.5–6×).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
