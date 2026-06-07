@@ -10284,6 +10284,25 @@ static long g_a2m_body_calls=0, g_a2m_fire_calls=0;
 static uint32_t g_a2m_last_log=0xFFFFFFFFu;
 static int g_a2m_enabled=-1;
 
+/* §8.12 lift-vs-lock gate: time the two racy global-scratch leaves on the fire path (399450 lead solver,
+ * 35f470 fog) as a fraction of the fire-control subtree (a76b0) — i.e. how much of the parallelizable
+ * fire work locking them would serialize. Both are sub-calls of a76b0, so their time is inside fire_ms.
+ * 15-byte position-independent prologues (objdump): boundary before the first RIP-relative access. */
+#define A2M_399450_RVA 0x399450ULL
+#define A2M_35F470_RVA 0x35f470ULL
+static const BYTE a2m_399450_prologue[15] = {
+    0x48,0x8b,0xc4, 0x48,0x89,0x58,0x10, 0x48,0x89,0x70,0x20, 0x55, 0x57, 0x41,0x57
+};
+static const BYTE a2m_35f470_prologue[15] = {
+    0x48,0x89,0x5c,0x24,0x08, 0x48,0x89,0x6c,0x24,0x10, 0x48,0x89,0x74,0x24,0x18
+};
+typedef float*  (*A2mSolverFn)(int64_t, float*, int64_t, float*, float*, float);
+typedef int64_t (*A2mFogFn)(int64_t, int32_t, int64_t, int8_t);
+static A2mSolverFn g_a2m_solver_tramp=NULL;
+static A2mFogFn    g_a2m_fog_tramp=NULL;
+static long long g_a2m_solver_qpc=0, g_a2m_fog_qpc=0;
+static long g_a2m_solver_calls=0, g_a2m_fog_calls=0;
+
 static int a2measure_on(void) {
     if (g_a2m_enabled<0) {
         const char* e=getenv("EAW_A2MEASURE");
@@ -10300,6 +10319,22 @@ static void a2m_fire_timer(int64_t ship, int32_t t) {
     g_a2m_fire_tramp(ship,t);
     QueryPerformanceCounter(&b);
     g_a2m_fire_qpc += (b.QuadPart-a.QuadPart); g_a2m_fire_calls++;
+}
+
+static float* a2m_solver_timer(int64_t p1, float* p2, int64_t p3, float* p4, float* p5, float p6) {
+    LARGE_INTEGER a,b; QueryPerformanceCounter(&a);
+    float* r = g_a2m_solver_tramp(p1,p2,p3,p4,p5,p6);
+    QueryPerformanceCounter(&b);
+    g_a2m_solver_qpc += (b.QuadPart-a.QuadPart); g_a2m_solver_calls++;
+    return r;
+}
+
+static int64_t a2m_fog_timer(int64_t p1, int32_t p2, int64_t p3, int8_t p4) {
+    LARGE_INTEGER a,b; QueryPerformanceCounter(&a);
+    int64_t r = g_a2m_fog_tramp(p1,p2,p3,p4);
+    QueryPerformanceCounter(&b);
+    g_a2m_fog_qpc += (b.QuadPart-a.QuadPart); g_a2m_fog_calls++;
+    return r;
 }
 
 static void a2m_body_timer(void* obj, uint32_t p2, char p3) {
@@ -10327,6 +10362,15 @@ static void a2m_body_timer(void* obj, uint32_t p2, char p3) {
               "A2MEASURE\ttick=%u\tbody_ms=%.1f\tfire_ms=%.1f\tcheap_ms=%.1f\tp=%.4f\tbody_n=%ld\tfire_n=%ld\tamdahl_2/4/8/inf=%.2f/%.2f/%.2f/%.2f\n",
               now, body, fire, cheap, p, g_a2m_body_calls, g_a2m_fire_calls, a2x,a4x,a8x,ainf);
             log_write(ln);
+            /* §8.12 lift-vs-lock gate: the racy scratch leaves as a fraction of the fire subtree. */
+            double solver=(double)g_a2m_solver_qpc/per_ms, fog=(double)g_a2m_fog_qpc/per_ms;
+            double scratch=solver+fog;
+            double scratch_of_fire = fire>0.0 ? scratch/fire : 0.0;   /* how much of PhaseB locking serializes */
+            char sn[320];
+            snprintf(sn,sizeof sn,
+              "A2SCRATCH\ttick=%u\tsolver399450_ms=%.1f\tfog35f470_ms=%.1f\tscratch_ms=%.1f\tfire_ms=%.1f\tscratch/fire=%.4f\tsolver_n=%ld\tfog_n=%ld\n",
+              now, solver, fog, scratch, fire, scratch_of_fire, g_a2m_solver_calls, g_a2m_fog_calls);
+            log_write(sn);
         }
     }
 }
@@ -10343,6 +10387,17 @@ static void install_a2_measure_hooks(void) {
                            (void*)a2m_fire_timer, &tf, "FUN_1403a76b0")) {
         g_a2m_fire_tramp=(A2mFireFn)tf;
         log_write("[eaw-mt] A2MEASURE: 3a76b0 fire-control subtree timer installed\n");
+    }
+    void* ts=NULL; void* tg=NULL;
+    if (install_targ_tramp(A2M_399450_RVA, a2m_399450_prologue, sizeof a2m_399450_prologue,
+                           (void*)a2m_solver_timer, &ts, "FUN_140399450")) {
+        g_a2m_solver_tramp=(A2mSolverFn)ts;
+        log_write("[eaw-mt] A2MEASURE: 399450 lead-solver scratch timer installed (§8.12)\n");
+    }
+    if (install_targ_tramp(A2M_35F470_RVA, a2m_35f470_prologue, sizeof a2m_35f470_prologue,
+                           (void*)a2m_fog_timer, &tg, "FUN_14035f470")) {
+        g_a2m_fog_tramp=(A2mFogFn)tg;
+        log_write("[eaw-mt] A2MEASURE: 35f470 fog scratch timer installed (§8.12)\n");
     }
 }
 #endif /* EAW_PROFILE || EAW_ORACLE */

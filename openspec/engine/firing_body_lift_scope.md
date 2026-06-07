@@ -602,6 +602,21 @@ depends on how much of the fire body's cost lives in 399450+35f470: if small, (b
 large, (a) is needed to keep the ~p≈0.65 parallel fraction (a2.0). ⇒ **An a2.0-style per-leaf timing
 measurement should gate the lift-vs-lock decision before either is built.**
 
+**MEASUREMENT DONE → DECISION = LOCK (2026-06-06, `eaw-mt.log.a2scratch-pass`).** Extended the A2MEASURE
+harness (EAW_A2MEASURE=1) with entry-detour QPC timers on `399450` + `35f470`, reported as a fraction of
+the fire-control subtree `a76b0` (both are sub-calls of it, so locking them serializes that fraction of
+PhaseB). Stable over 5×512-tick windows of a real space battle:
+`scratch/fire = 0.069, 0.067, 0.064, 0.063, 0.062` (→ **~6.2%**), split `399450 ≈ 1.4%` + `35f470 ≈ 5.0%`.
+⇒ The racy scratch is only ~6.2% of the parallelizable fire-control. **LOCK wins decisively:** two mutexes
+(one per scratch group) serialize ≤6.2% of PhaseB ⇒ PhaseB stays at p≈0.94 → ~3.3× (N=4) / ~5.4× (N=8),
+within the 3.5–6× target. Lifting would recover only that ~6.2%, and the most expensive piece — `399450`'s
+solver+callback reimplementation (~2 sessions) — buys back a mere **1.4%**. (Had the leaves been a large
+fraction the lifts would be mandatory; measuring first turned a ~2-session lift into a ~30-min lock with no
+speedup loss.) The two timer entry-detours ran 5 battles with 0 crashes, confirming the 15-byte prologue
+steals for 399450/35f470 are clean — a free pre-validation of where the lock detours will attach.
+⇒ **Localization mechanism = per-scratch-group mutex; implementation folds into the N-shard build (a lock
+is a no-op at 1-shard, only exercised/gated once PhaseB runs on N>1 threads).**
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
