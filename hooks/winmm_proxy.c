@@ -4410,6 +4410,110 @@ static void pfire_r2b_emit(int64_t p1, int64_t proj, int64_t *p2, int64_t p3, in
     f3a06a0(owner, p2, proj);                                        /* :402 Class-2b shot-register */
 }
 
+/* R3 cooldown (3825b0:403-497): recharge-timer/burst-counter recompute (param_1+0x58/0x5c/0x68, own-object
+ * → Phase-A-safe) + R3b listener rebind (param_1+0xa8, Class-2b). Two branches: burst-EXHAUSTED (iVar3==0,
+ * draws the LCG :410) recompute; intra-burst (else) simpler. Both end with a damage-table scaling
+ * (374b50/39b950/398010) + a container-reduce: 535cb0 builds a multi-bucket container in cont[] (header on
+ * stack + heap nodes), 395c70 populates from the shroud mgr, 33fb70 = sum-of-per-bucket-maxima (Plus across,
+ * GreaterThan within — vtables 0x85ae90/0x85ef60 via objdump), 535fb0 destroys. local_148 = local_208+0xc0
+ * (confirmed rbp+0x10 vs +0xd0). RNG-RETROFIT (draws LCG) ⇒ transcription-only, A3.3-validated (behavior).
+ * The :418 deregister's 294bc0 takes the firer's registry slot param_1+0xc8 (Ghidra dropped that 2nd arg).
+ * Quirks transcribed: uVar16 shroud default (b15418==0, rare) → 0; branch2 :488 stale-iVar6 edge (fVar15<=0)
+ * → last 374b50 idx. */
+typedef int32_t (*R3_ffb40Fn)(uint32_t*, int32_t, int32_t);  /* FUN_1401ffb40(&LCG, lo, hi) */
+typedef void    (*R3_285d70Fn)(int64_t, int64_t);            /* registry deregister */
+typedef int32_t (*R3_374b50Fn)(int64_t, int32_t);           /* damage-table index */
+typedef float   (*R3_398010Fn)(int64_t, int32_t);           /* difficulty/heat multiplier */
+typedef void    (*R3_535cb0Fn)(void*);                       /* container ctor */
+typedef void    (*R3_395c70Fn)(int64_t, void*);             /* container populate */
+typedef float   (*R3_33fb70Fn)(void*, void*, void*);        /* reduce: Σ per-bucket max */
+typedef void    (*R3_535fb0Fn)(void*);                       /* container dtor */
+typedef void    (*R3_3846c0Fn)(int64_t, int64_t*);          /* listener deregister */
+typedef void    (*R3_382510Fn)(int64_t, int64_t, int64_t*); /* listener register */
+
+/* shared damage-table scaling (3825b0:423-437 == 461-472); returns fVar15, *last_idx = 2nd 374b50 result. */
+static float pfire_r3_dmgscale(int64_t owner, int64_t owner_type, float fVar1, int32_t *last_idx) {
+    R3_374b50Fn f374b50 = (R3_374b50Fn)(g_dt_imgbase + 0x374b50);
+    R1_39b950Fn f39b950 = (R1_39b950Fn)(g_dt_imgbase + 0x39b950);
+    R3_398010Fn f398010 = (R3_398010Fn)(g_dt_imgbase + 0x398010);
+    int64_t tdef = *(int64_t *)(owner + 0x298);
+    int32_t i0 = f374b50(tdef, 0);
+    float fVar15 = fVar1;
+    if (f39b950(owner, i0, 1) != 0) fVar15 = *(float *)(owner_type + 0x250 + (int64_t)i0 * 4);
+    fVar15 = fVar15 * f398010(owner, 1);
+    int32_t i1 = f374b50(tdef, 1);
+    if (f39b950(owner, i1, 1) != 0) fVar15 = fVar15 * *(float *)(owner_type + 0x250 + (int64_t)i1 * 4);
+    *last_idx = i1;
+    return fVar15;
+}
+
+static void pfire_r3_cooldown(int64_t p1, int64_t *p2) {
+    int64_t owner      = *(int64_t *)(p1 + 0x10);
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+    float fVar1 = *(float *)(g_dt_imgbase + 0x7ffaf8);          /* DAT_1407ffaf8 */
+    float c7c0  = *(float *)(g_dt_imgbase + 0x8007c0);          /* DAT_1408007c0 */
+    float b0a   = (float)*(int32_t *)(g_dt_imgbase + 0xb0a340); /* DAT_140b0a340 (int32 hz) */
+    int64_t gt_v = g_dt_imgbase + 0x85ef60, pl_v = g_dt_imgbase + 0x85ae90;  /* GreaterThan / Plus vtables */
+    R3_535cb0Fn f535cb0 = (R3_535cb0Fn)(g_dt_imgbase + 0x535cb0);
+    R3_395c70Fn f395c70 = (R3_395c70Fn)(g_dt_imgbase + 0x395c70);
+    R3_33fb70Fn f33fb70 = (R3_33fb70Fn)(g_dt_imgbase + 0x33fb70);
+    char cont[512];
+    int32_t last_idx = 0;
+
+    int32_t iVar3 = *(int32_t *)(p1 + 0x5c);                    /* :403 burst counter */
+    if (iVar3 != 0) { iVar3 -= 1; *(int32_t *)(p1 + 0x5c) = iVar3; }
+
+    if (iVar3 == 0) {                                            /* :409 burst-exhausted recompute */
+        R3_ffb40Fn fffb40 = (R3_ffb40Fn)(g_dt_imgbase + 0x1ffb40);
+        float m = *(float *)(g_dt_imgbase + 0x8007f0);          /* DAT_1408007f0 */
+        int32_t r = fffb40((uint32_t *)(g_dt_imgbase + 0xa13e24),               /* :410 LCG */
+                           (int32_t)(*(float *)(owner_type + 0x228) * m),
+                           (int32_t)(*(float *)(owner_type + 0x22c) * m));
+        { float f = (float)r * b0a; int64_t ll = (int64_t)f; ll &= 0xffffffffLL;
+          *(int32_t *)(p1 + 0x58) = (int32_t)(ll / 100); }                      /* :412 */
+        int64_t b15418 = *(int64_t *)(g_dt_imgbase + 0xb15418ULL);
+        *(int32_t *)(p1 + 0x68) = (b15418 != 0) ? *(int32_t *)(b15418 + 0x10) : 0; /* :414-417 (def 0) */
+        if (*(int32_t *)(p1 + 0xc8) != -1) {                                    /* :418 deregister */
+            R2_294bc0Fn f294bc0 = (R2_294bc0Fn)(g_dt_imgbase + 0x294bc0);
+            int64_t e = f294bc0((int64_t)(g_dt_imgbase + 0xa16fd0), *(int32_t *)(p1 + 0xc8));
+            if (e != 0) { R3_285d70Fn f285d70 = (R3_285d70Fn)(g_dt_imgbase + 0x285d70);
+                          f285d70(e, p1); *(int32_t *)(p1 + 0xc8) = -1; }
+        }
+        float fVar15 = pfire_r3_dmgscale(owner, owner_type, fVar1, &last_idx);  /* :423-437 */
+        if (fVar15 < fVar1)                                                     /* :438-440 */
+            *(int32_t *)(p1 + 0x58) = (int32_t)((float)*(uint32_t *)(p1 + 0x58) * fVar15 + c7c0);
+        fVar15 = ((R3_398010Fn)(g_dt_imgbase + 0x398010))(owner, 9);           /* :442 */
+        f535cb0(cont); f395c70(owner, cont);                                   /* :443-444 */
+        int64_t gth = gt_v, plh = pl_v;
+        float fVar17 = f33fb70(cont + 0xc0, &plh, &gth);                       /* :447 */
+        fVar15 = fVar15 * (fVar17 + fVar1);                                    /* :448 */
+        if (0.0f < fVar15 && fVar15 < fVar1)                                   /* :449-451 */
+            *(int32_t *)(p1 + 0x58) = (int32_t)((float)*(uint32_t *)(p1 + 0x58) / fVar15 + c7c0);
+        if (fVar15 <= 0.0f) fVar15 = 0.0f;                                     /* :452-454 */
+        *(int32_t *)(p1 + 0x5c) = (int32_t)((float)*(uint32_t *)(owner_type + 0x230) * fVar15 + c7c0);
+    } else {                                                     /* :458 intra-burst */
+        { float f = b0a * *(float *)(owner_type + 0x234); *(int32_t *)(p1 + 0x58) = (int32_t)(int64_t)f; } /* :459 */
+        float fVar15 = pfire_r3_dmgscale(owner, owner_type, fVar1, &last_idx); /* :461-472 */
+        int32_t iVar6 = last_idx;                                              /* :488 stale-iVar6 edge */
+        *(int32_t *)(p1 + 0x58) = (int32_t)((float)*(uint32_t *)(p1 + 0x58) * fVar15 + c7c0); /* :475 */
+        fVar15 = ((R3_398010Fn)(g_dt_imgbase + 0x398010))(owner, 9);          /* :477 */
+        f535cb0(cont); f395c70(owner, cont);
+        int64_t gth = gt_v, plh = pl_v;
+        float fVar17 = f33fb70(cont + 0xc0, &plh, &gth);
+        fVar15 = fVar15 * (fVar17 + fVar1);
+        if (fVar15 <= 0.0f) *(int32_t *)(p1 + 0x5c) = 0;                       /* :484-488 */
+        else iVar6 = (int32_t)((float)*(uint32_t *)(p1 + 0x58) / fVar15 + c7c0);
+        *(int32_t *)(p1 + 0x58) = iVar6;
+    }
+    ((R3_535fb0Fn)(g_dt_imgbase + 0x535fb0))(cont);            /* :491 container dtor */
+
+    if (*(int64_t *)(p1 + 0xa8) != (int64_t)p2) {              /* :492-496 R3b listener rebind (Class-2b) */
+        if (*(int64_t *)(p1 + 0xa8) != 0)
+            ((R3_3846c0Fn)(g_dt_imgbase + 0x3846c0))(p1, (int64_t *)(p1 + 0xa8));
+        ((R3_382510Fn)(g_dt_imgbase + 0x382510))(p1, (int64_t)p2, (int64_t *)(p1 + 0xa8));
+    }
+}
+
 static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
     int64_t owner      = *(int64_t *)(p1 + 0x10);
     int64_t owner_type = *(int64_t *)(p1 + 0x20);
