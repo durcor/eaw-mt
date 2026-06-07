@@ -2016,6 +2016,9 @@ static uint32_t g_pfire_spawn_drained = 0, g_pfire_spawn_overflow = 0, g_pfire_s
 /* A4.1 DEBUG (root-causing the drained=0 paradox): which R2 branch the reimpl takes + drain entry. */
 static uint32_t g_pfdbg_buf = 0, g_pfdbg_inline = 0, g_pfdbg_drainenter = 0, g_pfdbg_drain_maxn = 0, g_pfdbg_reimpl_lvl = 0;
 static uint32_t g_pfdbg_entry = 0, g_pfdbg_fb_arc = 0, g_pfdbg_fb_p3 = 0, g_pfdbg_r1cfail = 0;
+/* stage-pass counters (how far each call gets) + R1c internal rejects, to localize the under-fire bug. */
+static uint32_t g_pfdbg_pass_g1 = 0, g_pfdbg_pass_g2a = 0, g_pfdbg_pass_g2b = 0;
+static uint32_t g_pfdbg_r1c_lead0 = 0, g_pfdbg_r1c_aimgate = 0;
 
 static int pfire_on(void) {
     if (g_pfire_level < 0) {
@@ -2093,11 +2096,15 @@ static void pfire_a62d0_intercept(int64_t mgr) {
                 g_pfire_tot_deferred, g_pfire_tot_fired, g_pfire_maxfill, g_pfire_overflow);
         log_write(m);
         if (g_pfire_level >= 3) {        /* A4.1 reimpl-fire diagnostics (now visible at level 3 too) */
-            char sm[256];
-            sprintf(sm, "[eaw-mt] PFIRE-C: spawn-defer — drained=%u | DBG entry=%u fb_arc=%u fb_p3=%u r1cfail=%u reachedR2(buf+inline)=%u+%u drainenter=%u reimpl_lvl=%u\n",
-                    g_pfire_spawn_drained,
-                    g_pfdbg_entry, g_pfdbg_fb_arc, g_pfdbg_fb_p3, g_pfdbg_r1cfail,
-                    g_pfdbg_buf, g_pfdbg_inline, g_pfdbg_drainenter, g_pfdbg_reimpl_lvl);
+            char sm[384];
+            sprintf(sm, "[eaw-mt] PFIREDBG entry=%u | passG1=%u passG2a=%u passG2b=%u reachedR2=%u | rej: g1=%u g2a=%u g2b=%u fb_arc=%u fb_p3=%u r1c(lead0=%u aim383ba0=%u) | lvl=%u\n",
+                    g_pfdbg_entry,
+                    g_pfdbg_pass_g1, g_pfdbg_pass_g2a, g_pfdbg_pass_g2b, g_pfdbg_inline,
+                    g_pfdbg_entry - g_pfdbg_pass_g1,                          /* gate1 rejects */
+                    g_pfdbg_pass_g1 - g_pfdbg_fb_arc - g_pfdbg_pass_g2a,      /* gate2a rejects (excl fb_arc) */
+                    g_pfdbg_pass_g2a - g_pfdbg_fb_p3 - g_pfdbg_pass_g2b,      /* gate2b rejects (excl fb_p3) */
+                    g_pfdbg_fb_arc, g_pfdbg_fb_p3, g_pfdbg_r1c_lead0, g_pfdbg_r1c_aimgate,
+                    g_pfdbg_reimpl_lvl);
             log_write(sm);
         }
         /* A4.1 scan-vs-fire split (the A4.0 fork measurement) */
@@ -4284,8 +4291,12 @@ static uint32_t g_r1_g3_ok=0, g_r1_g3_bug=0, g_r1_g3_nofire=0, g_r1_g3_skip=0;
  * 1 (fire → create with pos=&S[8], orient=&S[42]) / 0 (no fire). */
 typedef float   (*R1_ffbb0Fn)(uint32_t*);                 /* FUN_1401ffbb0(&LCG) random float */
 typedef char    (*R1_ffdb0Fn)(uint32_t*, int32_t);        /* FUN_1401ffdb0(&LCG, pct) prob roll */
-typedef int32_t (*R1_370f00Fn)(int64_t, int64_t);         /* FUN_140370f00(lVar7, 0) */
-typedef float*  (*R1_399450Fn)(int64_t, float*, int64_t, float*, float*, int32_t); /* lead solver */
+/* ⚠️ 370f00 is Ghidra-typed `void`/undefined4 but actually RETURNS A FLOAT (the projectile speed) in XMM0 —
+ * 3825b0:230 `uVar16 = 370f00(...)` then feeds 399450's param_6, which 399450 uses as a FLOAT multiplier
+ * (`local_104 * param_6`, 399450:214). Transcribing it as int passes garbage (leftover RAX) into a float arg
+ * ⇒ lead = x*garbage_as_0 = 0 ⇒ the reimpl never fires. Must capture+pass it as float. */
+typedef float   (*R1_370f00Fn)(int64_t, int64_t);         /* FUN_140370f00(lVar7,0) → projectile speed (float) */
+typedef float*  (*R1_399450Fn)(int64_t, float*, int64_t, float*, float*, float); /* lead solver; param_6=speed (float) */
 typedef char    (*R1_383ba0Fn)(int64_t, float*);          /* FUN_140383ba0 fire-gate predicate */
 typedef int64_t (*R1_3973b0Fn)(int64_t*);                 /* FUN_1403973b0 type-record (error path) */
 typedef float*  (*R1_381dc0Fn)(int64_t, float*, float, float*, int64_t, int32_t); /* dispersion (float arg3) */
@@ -4334,15 +4345,19 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
 
     float buf220[4] = {0,0,0,0};                                 /* local_220 scratch for 399450/381dc0 */
     R1_370f00Fn f370f00 = (R1_370f00Fn)(g_dt_imgbase + 0x370f00);
-    int32_t uVar16 = f370f00(lVar7, 0);                          /* :230 */
+    float fSpeed = f370f00(lVar7, 0);                            /* :230 projectile speed (float, XMM0) */
     R1_399450Fn f399450 = (R1_399450Fn)(g_dt_imgbase + 0x399450);
-    float *pf = f399450(owner, buf220, (int64_t)p2, &S[12], &S[4], uVar16);  /* :231 lead solver */
+    float *pf = f399450(owner, buf220, (int64_t)p2, &S[12], &S[4], fSpeed);  /* :231 lead solver (param_6=speed) */
     float lx = pf[0], ly = pf[1], lz = pf[2];                    /* :233-235 */
-    if (!(ly*ly + lx*lx + lz*lz != 0.0f)) return 0;             /* :236 no lead solution → no fire */
+    { static int dbg = 0; if (dbg < 8) { dbg++; char b[256];
+        snprintf(b, sizeof b, "[eaw-mt] PFLEAD spd=%.3f aim=%.2f,%.2f,%.2f dir=%.2f,%.2f,%.2f lead=%.4f,%.4f,%.4f\n",
+                 fSpeed, S[12],S[13],S[14], S[4],S[5],S[6], lx,ly,lz);
+        log_write(b); } }
+    if (!(ly*ly + lx*lx + lz*lz != 0.0f)) { g_pfdbg_r1c_lead0++; return 0; }   /* :236 no lead solution */
     S[0] = lx; S[1] = ly; S[2] = lz;                            /* :237 local_2d8/2d4/2d0 = lead */
     S[16] = lx; S[17] = ly; S[18] = lz;  /* preserve the ORIGINAL lead (fVar14/17/18) for R2b guided delta */
     R1_383ba0Fn f383ba0 = (R1_383ba0Fn)(g_dt_imgbase + 0x383ba0);
-    if (f383ba0(p1, &S[0]) == 0) return 0;                      /* :238 fire-gate predicate fail */
+    if (f383ba0(p1, &S[0]) == 0) { g_pfdbg_r1c_aimgate++; return 0; }   /* :238 fire-gate predicate fail */
 
     int64_t lVar9 = *(int64_t *)((int64_t)p2 + 0x53 * 8);      /* :239 p2[0x53] type-def */
     if (*(int64_t *)(lVar9 + 0x1648) == 0) {                    /* :240 missing XML category mask */
@@ -4354,7 +4369,7 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
 
     S[4] = S[0]; S[5] = S[1];        /* :250 local_2c8 = (lead.x, lead.y) */
     S[6] = S[2];                     /* :251 local_2c0 = lead.z */
-    uVar16 = *(int32_t *)(lVar7 + 0x1fe8);                       /* :252 */
+    int32_t uVar16 = *(int32_t *)(lVar7 + 0x1fe8);              /* :252 guided flag (genuine int32) */
     R1_381dc0Fn f381dc0 = (R1_381dc0Fn)(g_dt_imgbase + 0x381dc0);
     pf = f381dc0(p1, buf220, dist, &S[4], mask, uVar16);        /* :253 dispersion (dist = float arg3) */
     S[0] = pf[0]; S[1] = pf[1]; S[2] = pf[2];                   /* :255-257 local_2d8.. = dispersed dir */
@@ -4486,7 +4501,7 @@ static void pfire_r2b_emit(int64_t p1, int64_t proj, int64_t *p2, int64_t p3, in
         *(int32_t *)(rec + 0x88) = (int32_t)*(int64_t *)(proj + 0x10 * 8);
         *(int32_t *)(rec + 0x8c) = *(int32_t *)(*(int64_t *)(*(int64_t *)(proj + 0x57*8) + 0x20) + 0x10);
         R1_370f00Fn f370f00 = (R1_370f00Fn)(g_dt_imgbase + 0x370f00);
-        *(int32_t *)(rec + 0x90) = f370f00(lVar7, 0);                /* :394-395 */
+        *(float *)(rec + 0x90) = f370f00(lVar7, 0);                 /* :394-395 speed (float, not int) */
         *(int64_t *)(rec + 0x18) = 0;                                /* :396 */
         *(int32_t *)(rec + 0x20) = (int32_t)0xffffffff;             /* :397 */
         *(float *)(rec + 0x3c) = S[0];                              /* :398-400 dispersed dir */
@@ -4676,6 +4691,7 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     if ((*(int8_t *)(owner + 0x3b4) == 1 || *(int8_t *)(p2 + 0x3b4) == 1) &&
         ((R1_39a540Fn)(g_dt_imgbase + 0x39a540))(owner, (int64_t *)p2) == 0) return 0;
 
+    g_pfdbg_pass_g1++;                                                /* DEBUG: passed gate1 */
     /* ---- gate2a (107-163): resolve param_3, arc-gate fallback, compound → lVar7 ---- */
     if (p3 == 0) {
         uint32_t buf12[4] = {0,0,0,0};
@@ -4697,6 +4713,7 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
         if (fb && lVar13 != 0) lVar7 = lVar13; else return 0;
     }
 
+    g_pfdbg_pass_g2a++;                                              /* DEBUG: passed gate2a */
     /* ---- gate2b (164-209): param_3==0 RNG aim path → fallback; else 385c70 aim + 385e70 LOS + range ---- */
     if (p3 == 0) { g_pfdbg_fb_p3++; return PFIRE_FALLBACK; }          /* RNG aim path → binary (rare) */
     float S[48]; memset(S, 0, sizeof S);
@@ -4714,6 +4731,7 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
                + ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)p2);
     if (!(dist <= maxr && *(float *)(owner_type + 0x23c) <= dist)) return 0;  /* :208-209 range */
 
+    g_pfdbg_pass_g2b++;                                              /* DEBUG: passed gate2b (aim/LOS/range) */
     /* ---- R1c geometry (210-260): spread/lead/fire-gate/dispersion/Euler ---- */
     if (pfire_r1c_geom(p1, (int64_t *)p2, lVar7, S, dist, mat1, mat2) == 0) { g_pfdbg_r1cfail++; return 0; }  /* fire gate */
 
