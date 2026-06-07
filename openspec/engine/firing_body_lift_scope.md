@@ -617,6 +617,62 @@ steals for 399450/35f470 are clean — a free pre-validation of where the lock d
 ⇒ **Localization mechanism = per-scratch-group mutex; implementation folds into the N-shard build (a lock
 is a no-op at 1-shard, only exercised/gated once PhaseB runs on N>1 threads).**
 
+### 8.13 ⚠️ N-SHARD PRE-BUILD AUDIT — running the BINARY bodies on threads is BLOCKED on BOTH halves (2026-06-06)
+**Rule-6 / Rule-4 FLAG (does NOT rewrite §8.10's step-4 plan — surfaces a verified blocker against it; the
+N-shard branch HALTS here pending the architectural sign-off below).** Before sinking the N-shard build
+(§8.10 steps 1-3 + the threaded takeover, the prior-session plan = "locks on 399450/35f470 → RNG substream →
+swap inline create→SpawnCommand buffer → run PhaseB binary fire body on N>1 threads"), I audited whether the
+STOCK binary per-object bodies can be executed concurrently at all. **They cannot — each half has an
+independent showstopper, both confirmed in the current decompiles (provenance discipline, not memory):**
+
+- **PhaseB (fire) `3a76b0`→`3825b0` — the create is INLINE-CONSUMED + the LCG is drawn INLINE.** The
+  projectile is created at `3825b0:266` (`plVar12 = FUN_14029f810(*(mgr+0x2b8), …)`) and **immediately
+  consumed in the SAME stack frame** using locals computed earlier this invocation: `3825b0:339`
+  `lVar9 = plVar12[0x1d]` then `:340-455` write firer-id (`lVar9+0x58` ← `param_1.10+0x50`), damage
+  (`+0x64`), lifetime (`+0x68`), velocity (`+0x6c`), target (`+0x08`←param_2), shroud (`+0x60`) etc. into the
+  new object; plus `3825b0:285` SFX (`2d5240(…,plVar12+0xf,…)`), `:402` shot-register `3a06a0(…,plVar12)`,
+  `39d6a0(plVar12)`. ⇒ the §8.10-step-3 "swap inline create → b3 SpawnCommand buffer + canonical drain"
+  is **NOT applicable to the binary body** — you can't defer a create whose result the very next binary
+  instructions write into (this is exactly the `inproc_integration_milestone.md` §0 inline-consume blocker;
+  b3's resolution — "the whole consumed block becomes the SpawnCommand APPLIER", methodology #18 — lives in
+  the LIFTED `sim/firing_spawn`, where WE own the structure; it does not retrofit onto the opaque binary
+  frame). Additionally the spread RNG is drawn from the **shared global LCG** inline at `3825b0:211-216`
+  (`FUN_1401ffbb0(&DAT_140a13e24)` ×3 + `1ffdb0`) and `:410` (`1ffb40`) — N concurrent fire bodies race the
+  LCG, and even serialized-by-lock the draw ORDER is thread-nondeterministic (the §8.10-step-2 substream fix
+  is a property of the LIFTED path; it can't be injected into binary draw sites). The §8.12 scratch locks
+  (399450/35f470) are necessary but **address only ~6.2%** of the hazard surface — they do NOT touch the
+  create-consume, the LCG, or the inline Class-2b writes (`220e90` `:350` / `3a06a0` `:402` → target `+0x38`
+  listener), all of which also race/disorder under concurrency.
+- **PhaseA (settle) `3a6b80` — runs the Lua AI coroutine pump.** `3a6b80:315` `FUN_140247a90(param_1->
+  lua_ctx)` = `Pump_Threads` (the per-entity Lua resume). Threading the binary settle body therefore pumps
+  Lua on multiple threads, which is the **already-proven-fatal Model B path** (`threading_model.md` Model B
+  verdict: EaW's Lua C closures touch shared sim state during `lua_resume` → main-thread vtable corruption).
+
+⇒ **Neither stock binary half is concurrently executable.** Real in-game N-shard therefore requires LIFTED
+per-object bodies for whichever phase is parallelized — exactly the "needs lifted Phase-A bodies (Strategy 2,
+large later effort)" the project named at `inproc_integration_milestone.md` §0 and `a2_integration_scope.md`.
+The §8.12 measure-first→LOCK decision is correct AND sufficient for the scratch leaves but is **not the whole
+N-shard cost**; the prior-session one-liner under-counted the create-consume / LCG / Lua blockers. **This is
+an architectural fork for the user (Rule 6); the candidate paths:**
+- **(A) Lift the fire-emit path** so PhaseB runs LIFTED on threads (drive a lifted fire DECISION feeding the
+  already-host-built b3 `firing_spawn` applier + `firing_intercept` geometry; emit SpawnCommand/Command/Sfx
+  to per-thread buffers; canonical `(gom,rank,seq)` drain). The genuine ~3.5-6× path — but it is the large
+  lift the §5 gate's "serial-fire fallback" specifically deferred (the fire DECISION is the b1 vfunc/sensor
+  graph; under the read-only-phase reframe §8 it needs no snapshot, but the inline writes still must be
+  extracted to the lifted applier).
+- **(B) Lift the cheap-mass settle bodies** so PhaseA runs LIFTED on threads (locomotor/Pass-C/sensor are
+  already lifted), keep fire serial (the a2.0 fallback ~2×). Requires splitting `3a6b80` into {lifted-parallel
+  cheap-mass} + {serial Lua pump + any un-lifted behavior} — the never-run a2.1 "enumerate `3a6b80` sub-calls"
+  step, gated by the Lua-must-stay-serial constraint.
+- **(C) Treat STAGE B (1-shard two-phase, §8.11) as the shipping integration result** — it is live, correct,
+  invariant-validated, and the host `parallel_fire_test`/`shard_scheduler_test` pipeline proves the full
+  parallel design; declare in-game multi-thread blocked-by-design on binary-body non-threadability and pivot.
+
+Methodology banked (23): before a "wire up the threads" build, audit whether the code you intend to run
+concurrently can run concurrently AT ALL — here a 10-minute decompile read of the two bodies (`3825b0`
+inline-consume + LCG, `3a6b80` Lua pump) showed both stock halves are non-threadable, converting a planned
+multi-session threaded-takeover build into a one-decision architectural fork BEFORE any risky live-tick code.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
