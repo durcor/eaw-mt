@@ -872,6 +872,45 @@ on N workers with per-thread `ShardBuffer` (b3 `SpawnCommand` replacing the inli
 LOCKS on `399450`/`35f470`, RNG→`SimRng::substream`, `SpatialQueryGuard` on the opp-scan, canonical drain;
 gate = replay-determinism + lockstep + these same invariants + measured speedup (target ~3.5–6×).
 
+### 8.17 A4.0 — THREADED-PATH PRE-BUILD AUDIT (2026-06-07): the "thread the reimpl" plan UNDER-COUNTS — the binary opp-scan `387400` runs on the threads too
+**Methodology #23 applied again (the §8.13 discipline): before writing any thread code, audit whether
+everything that runs in PhaseB can run concurrently.** At A3.3 the reimpl replaced ONLY `3825b0`, but the
+PhaseB unit deferred at STAGE B is the whole per-ship fire body `a76b0` → `387010` → `387400` → {opp-scan;
+`3825b0`}. So threading PhaseB runs the **binary `387400` opportunity-scan** on N threads — and it carries
+hazards the §8.14 A4 one-liner did not list (all confirmed against `decomp/387400.c`, not memory):
+
+| Hazard | site | class | why it bites on N threads |
+|---|---|---|---|
+| global-LCG random-start draw `1ffb40(&a13e24,0,iVar4-1)` | `387400:250` | RNG | races the shared LCG AND is draw-order-nondeterministic across threads → breaks DETERMINISM (a lock serializes but does NOT make it reproducible). Inside **binary** `387400` ⇒ a substream cannot be injected without LIFTING the scan. |
+| spatial query / per-candidate eval `385190` | `387400:273` | shared scratch | the §8.6 intrusive `+0x18` result-list hazard → needs `SpatialQueryGuard` (built). |
+| target-listener set `382510`/`3846c0` on `param_1->opp_target_slot` | `387400:285-294` | Class-2b | cross-entity listener edit on the target → must buffer. |
+| post-fire signal `220ed0(…,0x21,…)` OpportunityTargetAcquired | `387400:314` | Class-2b | depends on the fire RESULT `cVar6` (`387400:292-293`) ⇒ entangles the scan's post-logic with the fire's return. |
+
+**The opp-scan is THROTTLED** (`387400:239` — re-acquire only every `b0a340·8007c0` ticks, or when no
+current target), so it is a periodic re-acquisition, not per-fire; the per-fire body `3825b0` runs far more
+often. **This reshapes A4 into a fork (Rule-6, mirroring §8.13):**
+- **(A) Lift the opp-scan too** (`387400` scan + `385190`) into the reimpl alongside `3825b0`: substream the
+  start draw, `SpatialQueryGuard` the query, buffer the Class-2b target-set. Full ceiling (~3.5–6× on the
+  whole fire-control), but `385190` is the §8.9 "expensive part" (spatial query + full gate-predicate eval)
+  — a materially larger lift, and the scan/fire post-logic entanglement (`387400:292-315`) must be untangled.
+- **(B) Keep the throttled opp-scan SERIAL** (run it in the PhaseA walk), thread ONLY the per-fire body
+  `3825b0`/reimpl in PhaseB: sidesteps ALL four `387400` hazards. Smaller, safer. ⚠️ Mechanism is non-trivial
+  — `387400:292` consumes `3825b0`'s return `cVar6` for its post-fire branch (`:293-315`), so deferring the
+  fire out of `387400` strands that logic; needs a finer split than the current `a76b0`-level deferral.
+  Ceiling is gated by how much PhaseB cost is the per-fire body vs the throttled scan.
+- **(measure-first, recommended)** an a2.0-style per-leaf timing split of the throttled opp-scan
+  (`387400:238-289`) vs the per-fire body (`3825b0`) over a real battle — the SAME measure-first that turned
+  §8.12's 2-session lift into a 30-min lock. If the per-fire body dominates aggregate PhaseB time, (B) is the
+  clear win (most of the speedup for a fraction of the build + risk); if the throttled scan dominates, (A) is
+  mandatory. Decide A-vs-B on that number before sinking either build.
+
+⇒ **A4.0 = this audit. A4.1+ awaits the A-vs-B fork decision.** Independent of the fork, the structural
+prerequisite is the same first build step: **create-deferral + canonical drain at 1-shard** (the reimpl emits
+a C-transcribed `SpawnCommand` to a buffer instead of the inline `29f810`; the flush drains create+init+
+Class-2b in `(gom,rank,seq)` order). That removes the §0 inline-consume blocker on the threaded path and is
+fully 1-shard-validatable (DTWA-B3 `N/0` + DTDRAIN `rank_down=0`) before any real threads — so it can proceed
+while the A-vs-B measurement is taken.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
