@@ -4550,6 +4550,94 @@ static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
     return 0;
 }
 
+/* ── A3 ASSEMBLY: the unified takeover reimplementation of FUN_1403825b0 (firing_body_lift_scope.md §8.14).
+ * Mirrors 3825b0:60-497 as ONE function (decision inline keeping locals → R1c geometry → R2a/R2b applier →
+ * R3 cooldown). Returns 0 = no fire, 1 = fired, PFIRE_FALLBACK(2) = "I didn't handle this — run the binary".
+ * SAFE-ROLLOUT design: the reimpl handles only the COMMON tactical path; rare/dead edges fall back to the
+ * stock binary so the first takeover is minimal-risk:
+ *   - arc gate owner_type+0x4e==1 (DEAD in tactical per I3) → fallback (avoids the dead render-arc dot-prod);
+ *   - param_3==0 after resolution (the 383f70/405870 RNG aim path, g3_skip=0 in-game ⇒ never hit tactically)
+ *     → fallback (those leaves draw the LCG; defer to binary rather than transcribe a never-taken path).
+ * Calls each binary leaf exactly ONCE (like the binary) — so unlike the observe gate-functions it must NOT
+ * reuse them (that would double-call). RNG-tainted from R1c on ⇒ validated at the takeover by structural
+ * invariants + fire cadence, NOT bit-exact observe (§8.15). p2 may be NULL-redirected only inside the
+ * fallback path, so the reimpl's p2 stays the caller's. */
+#define PFIRE_FALLBACK 2
+static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
+    if (!g_dt_imgbase) return PFIRE_FALLBACK;
+    int64_t p2 = (int64_t)p2arg;
+    int64_t owner      = *(int64_t *)(p1 + 0x10);
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+
+    /* ---- gate1 (60-105) ---- */
+    if (owner == 0 || p2 == 0) return 0;
+    if (p3 != 0 && *(int64_t *)(p3 + 0x10) != p2) return 0;
+    if ((*(uint8_t *)(p2 + 0x74 * 8) & 0x40) != 0) return 0;
+    R1_VfuncFn vf = *(R1_VfuncFn *)(*(int64_t *)p2 + 0x10);
+    if (vf((int64_t *)p2, 0x11) != 0) return 0;
+    if (((R1_39b140Fn)(g_dt_imgbase + 0x39b140))((int64_t *)p2) != 0 &&
+        *(int8_t *)(*(int64_t *)(owner + 0x298) + 0xa4) == 0) return 0;
+    int64_t local_238 = *(int64_t *)(owner + 0x100);
+    if (local_238 != 0) {
+        if (*(int32_t *)(local_238 + 0x394) > 0) return 0;
+        if (*(int32_t *)(local_238 + 0x394) < 0 && *(int32_t *)(owner_type + 0x48) != 10) return 0;
+    }
+    if (((R1_540140Fn)(g_dt_imgbase + 0x540140))(owner_type, (int64_t *)p2) == 1) return 0;
+    if (((R1_35f470Fn)(g_dt_imgbase + 0x35f470))(*(int64_t *)(g_dt_imgbase + 0xb15418ULL),
+            *(int32_t *)(owner + 0x58), (int64_t *)p2, 1) == 1) return 0;
+    if ((*(int8_t *)(owner + 0x3b4) == 1 || *(int8_t *)(p2 + 0x3b4) == 1) &&
+        ((R1_39a540Fn)(g_dt_imgbase + 0x39a540))(owner, (int64_t *)p2) == 0) return 0;
+
+    /* ---- gate2a (107-163): resolve param_3, arc-gate fallback, compound → lVar7 ---- */
+    if (p3 == 0) {
+        uint32_t buf12[4] = {0,0,0,0};
+        p3 = ((R1_394a80Fn)(g_dt_imgbase + 0x394a80))((int64_t *)p2,
+                 ((R1_398440Fn)(g_dt_imgbase + 0x398440))(owner, buf12), 0, 0);
+    }
+    if (*(int8_t *)(owner_type + 0x4e) == 1) return PFIRE_FALLBACK;   /* :112 arc gate (dead) → binary */
+    int64_t lVar9_220 = *(int64_t *)(owner_type + 0x220);
+    int64_t lVar13    = *(int64_t *)(owner_type + 0x210);
+    if (lVar9_220 != 0 && local_238 != 0 && *(int32_t *)(local_238 + 0x394) < 0) lVar13 = lVar9_220;
+    int32_t sub_id = (p3 == 0) ? -1 : *(int32_t *)(p3 + 0x18);
+    int64_t lVar7 = ((R1_397e00Fn)(g_dt_imgbase + 0x397e00))(owner, p2, sub_id);
+    if (lVar7 == 0) {                                                  /* :159-163 fallback disjunct */
+        int64_t b2b0 = *(int64_t *)(owner + 0x2b0);
+        int fb;
+        if (b2b0 == 0) fb = 1;
+        else { R1_39b950Fn f = (R1_39b950Fn)(g_dt_imgbase + 0x39b950);
+               fb = (f(b2b0, 0x29, 1) == 0 && f(*(int64_t *)(owner + 0x2b0), 0x22, 1) == 0); }
+        if (fb && lVar13 != 0) lVar7 = lVar13; else return 0;
+    }
+
+    /* ---- gate2b (164-209): param_3==0 RNG aim path → fallback; else 385c70 aim + 385e70 LOS + range ---- */
+    if (p3 == 0) return PFIRE_FALLBACK;                               /* RNG aim path → binary (rare) */
+    float S[48]; memset(S, 0, sizeof S);
+    float mat1[16], mat2[16];
+    float *pa = (float *)((R1_385c70Fn)(g_dt_imgbase + 0x385c70))(p3, &S[4]);  /* :183 aim */
+    S[0] = pa[0]; S[1] = pa[1]; S[2] = pa[2];
+    memcpy(mat1, (void *)(g_dt_imgbase + 0x800820), 48);              /* :188-200 */
+    memcpy(mat2, (void *)(g_dt_imgbase + 0x800820), 48);
+    S[4] = S[5] = S[6] = 0.0f;                                        /* :192 local_2c8 = 0 */
+    if (((R1_385e70Fn)(g_dt_imgbase + 0x385e70))(p1, &S[4], mat1, mat2) == 0) return 0;  /* :201 LOS */
+    R1_SqrtFn esqrt = (R1_SqrtFn)(g_dt_imgbase + 0x776d48);
+    float dy = S[5] - S[1], dx = S[4] - S[0];                         /* :203-204 */
+    float dist = esqrt(dy*dy + dx*dx);
+    float maxr = ((R1_3857d0Fn)(g_dt_imgbase + 0x3857d0))(p1)
+               + ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)p2);
+    if (!(dist <= maxr && *(float *)(owner_type + 0x23c) <= dist)) return 0;  /* :208-209 range */
+
+    /* ---- R1c geometry (210-260): spread/lead/fire-gate/dispersion/Euler ---- */
+    if (pfire_r1c_geom(p1, (int64_t *)p2, lVar7, S, dist, mat1, mat2) == 0) return 0;  /* fire gate */
+
+    /* ---- R2 applier (261-402): create+init + Class-2b ---- */
+    int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2, lVar7, local_238, S);
+    pfire_r2b_emit(p1, proj, (int64_t *)p2, p3, lVar7, S);
+
+    /* ---- R3 cooldown + listener rebind (403-497) ---- */
+    pfire_r3_cooldown(p1, (int64_t *)p2);
+    return 1;
+}
+
 /* run the real FUN_1403a76b0 with the spawn-attribution window open. */
 static inline void dt_drain_tramp(int64_t ship, int32_t t) {
     g_drain_in_window = 1; g_a76b0_trampoline(ship, t); g_drain_in_window = 0;
