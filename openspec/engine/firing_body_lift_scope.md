@@ -911,6 +911,33 @@ Class-2b in `(gom,rank,seq)` order). That removes the §0 inline-consume blocker
 fully 1-shard-validatable (DTWA-B3 `N/0` + DTDRAIN `rank_down=0`) before any real threads — so it can proceed
 while the A-vs-B measurement is taken.
 
+**USER PICKED "prereq + measure together" (2026-06-07): build the 1-shard create-deferral AND the
+scan-vs-fire timer in one cycle.**
+
+### 8.18 A4.1 — create-deferral (1-shard) + scan-vs-fire timer BUILT, compile-green (2026-06-07)
+Two pieces in `hooks/winmm_proxy.c`, gated `EAW_PFIRE=4` (default-OFF; release ⇒ level-4 == STAGE B since the
+buffering reimpl needs the oracle-only DTWA-B3 hook):
+- **Scan-vs-fire timer (the A4.0 fork measurement, no new prologue):** QPC the whole fire subtree `a76b0`
+  (inclusive) in the flush-replay loop + the fire body (`3825b0`/reimpl) inside `dtwa_b3_3825b0_hook` (inner
+  reimpl call AND whole-hook span, so the oracle-validation overhead `val` is reported separately, not
+  confounding the split). `PFIRESPLIT` line reports `fire/fc` (B-relevant — fraction already threaded) and
+  `scan/fc` (A-relevant — fraction fork B leaves serial as the throttled opp-scan).
+- **Create-deferral (the structural prereq):** at level>=4 the reimpl computes payload+geometry and BUFFERS a
+  `PfireSpawnRec {p1,p2,p3,lVar7,S[48],rank,objid}` (capturing the firing `a76b0`'s canonical DTDRAIN key)
+  instead of calling R2a/R2b inline; buffer-full falls back to inline (never drop a shot). PhaseC drain
+  (`pfire_drain_spawns`, at the `2a62d0` flush AFTER the walk replay) applies create+init+Class-2b (R2a+R2b)
+  in insertion order (== ascending rank == canonical at 1-shard, no sort yet). **DTDRAIN coupling handled:**
+  the creates move out of the `a76b0` window into the post-replay drain, so the drain re-stamps `g_drain_cur_*`
+  from each record + resets `have_prev` (a fresh canonical sequence distinct from the replay-phase non-firing
+  creates) so `rank_down` is evaluated on the drain order; `g_b3_in_fire` is set around R2a so the DTWA-SPAWN
+  piggyback captures the deferred proj+args and `dtwa_b3_check` validates each drained projectile's §3 fields
+  (the A3.3 free-validation, relocated into the drain). R3 cooldown (self-write + Class-2b rebind) stays inline
+  in Phase-A at 1-shard (A4.3 buffers the rebind for N-shard). Compiles clean oracle+release+profile.
+**LAUNCH GATE (1-shard, the deferral must be a structural no-op):** DTB3SUM all `N/0` + DTB3MISS=0 (drained
+projectiles field-identical) + DTWA `idfail=0/ctrfail=0` + DTDRAIN `rank_down=0` (canonical drain order
+preserved through the buffer) + spawn-defer balance (drained≈deferred-fires, overflow=0) + 0 crashes; plus the
+`PFIRESPLIT` numbers to decide the A-vs-B fork. Recipe `just pfire=4 difftrace=1 launch-foc-desktop`.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

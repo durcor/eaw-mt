@@ -1988,12 +1988,40 @@ static uint32_t g_pfire_tot_deferred = 0, g_pfire_tot_fired = 0, g_pfire_overflo
                 g_pfire_flushes = 0, g_pfire_maxfill = 0;
 static uint32_t g_pfire_last_log = 0xFFFFFFFFu;
 
+/* A4.1 scan-vs-fire timing (the A4.0 fork measurement, §8.17): decompose the threaded-PhaseB cost into the
+ * per-fire body (3825b0/reimpl, threaded in BOTH forks) vs the rest of the fire subtree a76b0 — chiefly the
+ * throttled opp-scan 387400 (LIFTED in fork A, kept serial in fork B). Uses the detour points we are already
+ * inside (no new prologue): a76b0 timed in the flush-replay loop (inclusive = whole fire subtree per ship),
+ * the fire body timed inside dtwa_b3_3825b0_hook (inner reimpl/trampoline call only + the whole hook, so the
+ * oracle-validation overhead is reported separately and does not confound the split). scan_overhead =
+ * a76b0 − fire_body_hook. Cumulative QPC, reported with the PFIRE-B balance line. */
+static LARGE_INTEGER g_pf_qpf = {0};
+static long long g_pf_a76b0_qpc = 0;   /* Σ a76b0 inclusive (whole fire subtree, flush replay) */
+static long long g_pf_fire_qpc  = 0;   /* Σ the inner reimpl/trampoline call (the fire body that threads) */
+static long long g_pf_hook_qpc  = 0;   /* Σ the whole 3825b0 hook (fire body + oracle validation) */
+static long g_pf_a76b0_n = 0, g_pf_fire_n = 0;
+
+/* A4.1 create-deferral (§8.17 structural prereq, 1-shard): at EAW_PFIRE>=4 the reimpl COMPUTES the
+ * projectile payload + geometry and BUFFERS a spawn command instead of creating inline (29f810); the
+ * 2a62d0 flush drains create+init+Class-2b (R2a+R2b) in canonical (rank,seq) order AFTER the a76b0 walk
+ * replay. Removes the §0 inline-consume blocker on the threaded path; still 1-shard so insertion order ==
+ * ascending rank == canonical (no sort yet — that's the N-shard A4.3 step). Defined below (needs R2a/R2b/
+ * dtwa_b3_check); forward-declared here for the flush. The reimpl + applier are oracle-build-only (they
+ * need the DTWA-B3 hook to run), so the drain is too — in the release build level>=4 falls back to STAGE B
+ * (nothing buffered, no drain). */
+#if defined(EAW_PROFILE) || defined(EAW_ORACLE)
+static void pfire_drain_spawns(void);
+#endif
+static uint32_t g_pfire_spawn_drained = 0, g_pfire_spawn_overflow = 0, g_pfire_spawn_maxfill = 0;
+
 static int pfire_on(void) {
     if (g_pfire_level < 0) {
         const char *e = getenv("EAW_PFIRE");
         g_pfire_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
         if (g_pfire_level < 0) g_pfire_level = 0;
-        if (g_pfire_level >= 3)
+        if (g_pfire_level >= 4)
+            log_write("[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=4) — A4.1 create-deferral (1-shard buffer+canonical drain)\n");
+        else if (g_pfire_level == 3)
             log_write("[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=3) — A3.3 reimpl body takeover (1-shard, two-phase)\n");
         else if (g_pfire_level >= 2)
             log_write("[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=2) — STAGE B two-phase split (1-shard)\n");
@@ -2038,19 +2066,51 @@ static void pfire_a62d0_intercept(int64_t mgr) {
         int n = g_pfire_fire_count;
         if ((uint32_t)n > g_pfire_maxfill) g_pfire_maxfill = (uint32_t)n;
         for (int i = 0; i < n; i++) {       /* PhaseB: walk-order replay of the binary fire body */
-            if (g_pfire_a76b0_real)
+            if (g_pfire_a76b0_real) {
+                LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
                 g_pfire_a76b0_real(g_pfire_fire_buf[i].ship, g_pfire_fire_buf[i].tick);
+                QueryPerformanceCounter(&tb);
+                g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
+            }
             g_pfire_tot_fired++;
         }
         g_pfire_fire_count = 0;
         g_pfire_flushes++;
+        /* A4.1 PhaseC: drain the buffered spawn commands (create+init+Class-2b) in canonical order. At
+         * level<4 nothing was buffered (the reimpl created inline during replay), so this is a no-op.
+         * Oracle-build-only: the buffering reimpl needs the DTWA-B3 hook (release ⇒ level>=4 == STAGE B). */
+#if defined(EAW_PROFILE) || defined(EAW_ORACLE)
+        if (g_pfire_level >= 4) pfire_drain_spawns();
+#endif
     }
     if ((c & 0xfff) == 1) {                  /* periodic live-evidence */
         char m[192];
         sprintf(m, "[eaw-mt] PFIRE-%s: live — walk=%ld flush=%ld deferred=%u fired=%u maxfill=%u overflow=%u\n",
-                g_pfire_level >= 2 ? "B" : "A", g_pfire_a6b80_calls, g_pfire_a62d0_calls,
+                g_pfire_level >= 4 ? "C" : (g_pfire_level >= 2 ? "B" : "A"), g_pfire_a6b80_calls, g_pfire_a62d0_calls,
                 g_pfire_tot_deferred, g_pfire_tot_fired, g_pfire_maxfill, g_pfire_overflow);
         log_write(m);
+        if (g_pfire_level >= 4) {        /* A4.1 create-deferral buffer/drain balance */
+            char sm[160];
+            sprintf(sm, "[eaw-mt] PFIRE-C: spawn-defer — drained=%u maxfill=%u overflow=%u\n",
+                    g_pfire_spawn_drained, g_pfire_spawn_maxfill, g_pfire_spawn_overflow);
+            log_write(sm);
+        }
+        /* A4.1 scan-vs-fire split (the A4.0 fork measurement) */
+        if (g_pf_qpf.QuadPart > 0 && g_pf_a76b0_qpc > 0) {
+            double per_ms = (double)g_pf_qpf.QuadPart / 1000.0;
+            double fc = (double)g_pf_a76b0_qpc / per_ms;       /* fire-control subtree (a76b0) */
+            double fire = (double)g_pf_fire_qpc / per_ms;      /* the fire body (reimpl) — threads in A & B */
+            double hook = (double)g_pf_hook_qpc / per_ms;      /* fire body + oracle validation */
+            double scan = fc - hook;                           /* opp-scan + dispatch (≈ what fork A would lift) */
+            double val  = hook - fire;                         /* oracle-validation overhead (subtracted from both) */
+            double fire_frac = fc > 0.0 ? fire / fc : 0.0;     /* B-relevant: fraction already threaded */
+            double scan_frac = fc > 0.0 ? scan / fc : 0.0;     /* A-relevant: fraction fork B leaves serial */
+            char tn[320];
+            snprintf(tn, sizeof tn,
+                "PFIRESPLIT\tfc_ms=%.1f\tfire_ms=%.1f\tscan_ms=%.1f\tval_ms=%.1f\tfire/fc=%.4f\tscan/fc=%.4f\ta76b0_n=%ld\tfire_n=%ld\n",
+                fc, fire, scan, val, fire_frac, scan_frac, g_pf_a76b0_n, g_pf_fire_n);
+            log_write(tn);
+        }
     }
     if (g_pfire_a62d0_real) g_pfire_a62d0_real(mgr);
 }
@@ -2083,6 +2143,7 @@ static int pfire_repoint_calls(BYTE *fn, int size, BYTE *target, BYTE *stub) {
 static BOOL install_pfire_hooks(void) {
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
+    QueryPerformanceFrequency(&g_pf_qpf);   /* A4.1 scan-vs-fire timer */
     BYTE *fn2be640 = (BYTE *)exe + T2BE640_RVA;
     BYTE *fn3a6b80 = (BYTE *)exe + TA6B80_RVA;
     BYTE *fna6b80  = (BYTE *)exe + TA6B80_RVA;   /* 3a6b80, the per-object update */
@@ -4225,6 +4286,25 @@ typedef int64_t (*R1_3973b0Fn)(int64_t*);                 /* FUN_1403973b0 type-
 typedef float*  (*R1_381dc0Fn)(int64_t, float*, float, float*, int64_t, int32_t); /* dispersion (float arg3) */
 typedef void*   (*R1_20acd0Fn)(void*, float*, float*);    /* FUN_14020acd0 dir→Euler (DTARG2-lifted) */
 
+/* A4.1 buffered spawn command: everything R2a (create+init) + R2b (Class-2b) need to APPLY one shot at the
+ * canonical drain, captured by value in Phase-A. owner/owner_type/local_238 are re-derived from p1 at drain
+ * time; rank/objid carry the DTDRAIN canonical key (g_drain_cur_* of the firing a76b0, set during replay). */
+typedef struct { int64_t p1, p2, p3, lVar7; float S[48]; uint32_t rank; int32_t objid; } PfireSpawnRec;
+#define PFIRE_SPAWN_CAP 4096
+static PfireSpawnRec g_pfire_spawn_buf[PFIRE_SPAWN_CAP];
+static int g_pfire_spawn_count = 0;
+
+/* append one shot's payload; returns 1 if buffered, 0 if the buffer is full (caller falls back to inline
+ * create — never drop a shot). Captures the current firing a76b0's canonical (rank,objid). */
+static int pfire_spawn_buf_append(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7, const float *S) {
+    if (g_pfire_spawn_count >= PFIRE_SPAWN_CAP) { g_pfire_spawn_overflow++; return 0; }
+    PfireSpawnRec *r = &g_pfire_spawn_buf[g_pfire_spawn_count++];
+    r->p1 = p1; r->p2 = p2; r->p3 = p3; r->lVar7 = lVar7;
+    memcpy(r->S, S, sizeof r->S);
+    r->rank = g_drain_cur_rank; r->objid = g_drain_cur_objid;
+    return 1;
+}
+
 static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, float dist,
                           float *mat1, float *mat2) {
     int64_t owner      = *(int64_t *)(p1 + 0x10);
@@ -4631,11 +4711,17 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     /* ---- R1c geometry (210-260): spread/lead/fire-gate/dispersion/Euler ---- */
     if (pfire_r1c_geom(p1, (int64_t *)p2, lVar7, S, dist, mat1, mat2) == 0) return 0;  /* fire gate */
 
-    /* ---- R2 applier (261-402): create+init + Class-2b ---- */
-    int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2, lVar7, local_238, S);
-    pfire_r2b_emit(p1, proj, (int64_t *)p2, p3, lVar7, S);
+    /* ---- R2 applier (261-402): create+init + Class-2b ----
+     * A4.1: at level>=4 BUFFER the payload (deferred create — drained in canonical order at the flush) so N
+     * threads never call 29f810 concurrently; at level<4 (A3.3) create inline. Buffer-full falls back to
+     * inline (never drop a shot). The geometry S[] + lVar7 + p1/p2/p3 fully determine R2a/R2b. */
+    if (g_pfire_level < 4 || !pfire_spawn_buf_append(p1, p2, p3, lVar7, S)) {
+        int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2, lVar7, local_238, S);
+        pfire_r2b_emit(p1, proj, (int64_t *)p2, p3, lVar7, S);
+    }
 
-    /* ---- R3 cooldown + listener rebind (403-497) ---- */
+    /* ---- R3 cooldown + listener rebind (403-497) ---- self-write (object-granular) + Class-2b rebind;
+     * stays inline in Phase-A at 1-shard (A4.3 buffers the rebind for N-shard). */
     pfire_r3_cooldown(p1, (int64_t *)p2);
     return 1;
 }
@@ -5016,7 +5102,42 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
     }
 }
 
+/* A4.1 PhaseC drain — apply the buffered spawn commands (create+init+Class-2b) in canonical order at the
+ * 2a62d0 flush, AFTER the a76b0 walk replay (so every fire read the settled world in Phase-A). 1-shard:
+ * insertion order == ascending rank == canonical, so no sort. Re-stamps the DTDRAIN key (g_drain_cur_*)
+ * from each record so the create/order oracle (rank_down) is evaluated on the canonical drain sequence;
+ * have_prev reset starts a fresh sequence (the drain is a distinct pass from the replay-phase creates).
+ * g_b3_in_fire is set around R2a so the DTWA-SPAWN piggyback captures the deferred proj + create-args, and
+ * dtwa_b3_check validates each drained projectile's §3 fields (the A3.3 free-validation, relocated here). */
+static void pfire_drain_spawns(void) {
+    int n = g_pfire_spawn_count;
+    if (n <= 0) return;
+    if ((uint32_t)n > g_pfire_spawn_maxfill) g_pfire_spawn_maxfill = (uint32_t)n;
+    g_drain_have_prev = 0;
+    int armed = dt_on();
+    for (int i = 0; i < n; i++) {
+        PfireSpawnRec *rec = &g_pfire_spawn_buf[i];
+        int64_t p1 = rec->p1, p2 = rec->p2, p3 = rec->p3, lVar7 = rec->lVar7;
+        int64_t owner      = *(int64_t *)(p1 + 0x10);
+        int64_t owner_type = *(int64_t *)(p1 + 0x20);
+        int64_t local_238  = owner ? *(int64_t *)(owner + 0x100) : 0;
+        int32_t order_pre  = local_238 ? *(int32_t *)(local_238 + 0x394) : 0;   /* before R2a's charge++ */
+        g_drain_cur_rank = rec->rank; g_drain_cur_objid = rec->objid;           /* canonical key */
+        g_b3_in_fire = 1; g_b3_last_proj = 0; g_b3_args.have = 0;
+        g_drain_in_window = 1;
+        int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2, lVar7, local_238, rec->S);
+        pfire_r2b_emit(p1, proj, (int64_t *)p2, p3, lVar7, rec->S);
+        g_drain_in_window = 0;
+        g_b3_in_fire = 0;
+        g_pfire_spawn_drained++;
+        if (armed && proj && owner && owner_type)
+            dtwa_b3_check(proj, owner, owner_type, p2, p3, local_238, order_pre);
+    }
+    g_pfire_spawn_count = 0;
+}
+
 static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
+    LARGE_INTEGER hk0; QueryPerformanceCounter(&hk0);   /* A4.1: whole-hook span (fire body + validation) */
     int armed = dt_on();
     int pf = pfire_on();
     int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0, r1_g2a=0, r1_full=0;
@@ -5047,12 +5168,15 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
      * DTWA-SPAWN piggyback still captures g_b3_last_proj and dtwa_b3_check validates the reimpl's projectile
      * §3 fields (firer/tgt/dmg/life/sub/vis — all RNG-free) bit-exact for free. */
     int64_t r;
+    LARGE_INTEGER fb0; QueryPerformanceCounter(&fb0);   /* A4.1: fire-body span (the part that threads) */
     if (pf >= 3) {
         r = pfire_fire_reimpl(p1, (int64_t *)p2, p3);
         if (r == PFIRE_FALLBACK) r = g_b3_3825b0_trampoline(p1, p2, p3);
     } else {
         r = g_b3_3825b0_trampoline(p1, p2, p3);
     }
+    { LARGE_INTEGER fb1; QueryPerformanceCounter(&fb1);
+      g_pf_fire_qpc += (fb1.QuadPart - fb0.QuadPart); g_pf_fire_n++; }
     if (armed && p1) {
         g_b3_in_fire = 0;
         if (pf < 3) {
@@ -5095,6 +5219,8 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
             }
         }
     }
+    { LARGE_INTEGER hk1; QueryPerformanceCounter(&hk1);
+      g_pf_hook_qpc += (hk1.QuadPart - hk0.QuadPart); }   /* A4.1: whole-hook span */
     return r;
 }
 
