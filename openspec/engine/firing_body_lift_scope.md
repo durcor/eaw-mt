@@ -736,6 +736,33 @@ Region 2 (the applier); DTWA-B3 validated it bit-exact in-game.
   retrofit delta) + all structural invariants hold + the host `parallel_fire_test` property reproduced;
   measure the actual speedup (target ~3.5-6×, a2.0 `p≈0.65`).
 
+**A3 BUILD FOUNDATIONS (decided 2026-06-06, user picked "straight to A3"):**
+- ⚠️ **The hook is C, not C++** (`hooks/winmm_proxy.c` built by `x86_64-w64-mingw32-gcc`, NOT g++; the
+  `sim/` lifts are host-only g++ for `just sim-test`). So the A3 reimpl **cannot call `firing_spawn.cpp` /
+  `firing_intercept.cpp` directly** — their logic is transcribed into C in the hook. The existing **DTWA-B3
+  oracle (winmm_proxy.c ~4048-4400) already C-transcribes the §3 `proj+0xe8` field computation** (recompute-
+  and-compare) ⇒ that is the seed for the create+init applier; promote it from "recompute for comparison" to
+  "compute for the buffered create".
+- **A-reimpl = ORCHESTRATION, not full leaf reimplementation:** the reimpl reproduces `3825b0`'s control flow
+  + the glue FP arithmetic (faithful grouping), but CALLS the ~40 binary leaves (resolved by RVA) for the
+  heavy reads — we do NOT reimplement `374b50`/`39b950`/`398010`/`535cb0`/`395c70`/`33fb70`/`397e00`/`383f70`
+  /`385e70`/`399450`/`381dc0`/etc. internally.
+- ⚠️ **OBSERVE-FIRST sub-staging (the STAGE-A-analogue, to isolate transcription risk from takeover risk):**
+  before flipping the control-flow takeover, run the reimpl ALONGSIDE the binary (entry-detour `3825b0`, let
+  the binary run, then recompute the reimpl's outputs on a pre-call snapshot and compare bit-for-bit, like
+  DTFINT/DTREVEAL/DTWA-B3) until it matches across a full battle. **CAVEAT — orchestration idempotency:**
+  re-calling a binary leaf in observe-mode is only safe if the leaf is side-effect-free on shared state
+  (pure read); leaves that mutate (`535cb0`/`535fb0` build/destroy a stack temp = local, OK; but verify each
+  before re-calling). Where a leaf is not safely re-callable, snapshot its result during the binary's own
+  call (piggyback) rather than re-invoking — the DTWA-B3 `5400f0`-cache-read trick (methodology #18).
+- **Build chunks (compile-gated by `build-winmm-oracle` with NO launch; then launch-validated):** (A3.0)
+  binary-leaf scaffolding (RVA `#define`s + fn-ptr typedefs + resolution); (A3.1) R3a cooldown reimpl +
+  observe oracle [self-contained, own-object writes, the "new cooldown oracle" the gate needs]; (A3.2) R1
+  decision/geometry skeleton + create-args + R2 init (promote DTWA-B3 transcription) + observe oracle for the
+  create args/init; (A3.3) flip to takeover `EAW_PFIRE=3` (buffer + drain at the `2a62d0` flush via the
+  applier) + the full A3 gate. Each chunk compiles green before the next; launch cycles validate (user drives
+  a space battle — fire-path data needs combat, per §8.12 launch note).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
