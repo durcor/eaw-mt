@@ -4061,6 +4061,27 @@ static uint32_t g_b3_firer_ok=0,g_b3_firer_bad=0, g_b3_tgt_ok=0,g_b3_tgt_bad=0,
                 g_b3_life_ok=0,g_b3_life_bad=0, g_b3_vis_ok=0,g_b3_vis_bad=0;
 static uint32_t g_b3_detail=0, g_b3_missshown=0, g_b3_last=0xFFFFFFFFu;
 
+/* ── PATH-A / A3 chunk R2: create-args observe capture (firing_body_lift_scope.md §8.14) ───────────────
+ * The §8.14 A-reimpl applier (pfire_apply_spawn, a later post-R1 chunk) must re-issue the projectile
+ * create with the SAME args the binary passes to 29f810 at 3825b0:266:
+ *     29f810(mgr=*(owner+0x2b8), template=lVar7, type_index=*(294bc0(&registry,owner+0x58)+0x4c),
+ *            pos=&local_2b8, orient=&local_230, 1, 0)
+ * Those args are exactly the params the existing dtwa_29f810_hook already receives (arg3 "flags" IS the
+ * type_index; arg5 "p5" IS the orient ptr). R2-observe captures them when the firing-window piggyback
+ * fires (the FIRST create inside a 3825b0 call = the projectile), then validates the RNG-INDEPENDENT ones
+ * the applier reconstructs from firer state — mgr == *(owner+0x2b8) (re-confirms the Int #1 / I2
+ * manager-resolution the applier depends on) and template == proj+0x298 — and logs pos/type_index for the
+ * payload map. (pos/orient are spread-RNG-perturbed geometry → stored, not bit-asserted here; their math is
+ * DTFINT-validated and their in-game fidelity lands at the A3.3 takeover gate.) Observe-only, RNG-free,
+ * zero control-flow risk — same class as DTWA-B3. */
+typedef struct {
+    int64_t mgr, template_id; int32_t type_index; float pos[3]; int64_t orient;
+    int have;
+} PfireSpawnArgs;
+static PfireSpawnArgs g_b3_args;          /* args of the in-flight projectile's 29f810 create */
+static uint32_t g_b3_arg_mgr_ok=0, g_b3_arg_mgr_bad=0, g_b3_arg_tmpl_ok=0, g_b3_arg_tmpl_bad=0,
+                g_b3_arg_n=0, g_b3_arg_detail=0;
+
 /* run the real FUN_1403a76b0 with the spawn-attribution window open. */
 static inline void dt_drain_tramp(int64_t ship, int32_t t) {
     g_drain_in_window = 1; g_a76b0_trampoline(ship, t); g_drain_in_window = 0;
@@ -4220,7 +4241,15 @@ static int64_t dtwa_29f810_hook(int64_t mgr, int64_t template_id, int32_t flags,
     }
     int64_t ret = g_dtwa_29f810_trampoline(mgr, template_id, flags, pos, p5, p6, p7);
     /* DTWA-B3 piggyback: when inside a 3825b0 firing window, the FIRST create is the projectile. */
-    if (g_b3_in_fire && ret && !g_b3_last_proj) g_b3_last_proj = ret;
+    if (g_b3_in_fire && ret && !g_b3_last_proj) {
+        g_b3_last_proj = ret;
+        /* R2: capture the create args (arg3 "flags" = type_index, arg5 "p5" = orient ptr). */
+        g_b3_args.mgr = mgr; g_b3_args.template_id = template_id;
+        g_b3_args.type_index = flags; g_b3_args.orient = p5;
+        if (pos) { g_b3_args.pos[0]=pos[0]; g_b3_args.pos[1]=pos[1]; g_b3_args.pos[2]=pos[2]; }
+        else     { g_b3_args.pos[0]=g_b3_args.pos[1]=g_b3_args.pos[2]=0.0f; }
+        g_b3_args.have = 1;
+    }
     if (!dt_on() || !have_before) goto dtwa_diag;
     if (ret == 0) { g_dtwa_null++; goto dtwa_diag; }
     dt_drain_on_spawn();   /* DT-DRAIN a0: attribute this create to the current 3a76b0 emitter */
@@ -4385,6 +4414,25 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
         if (*(int32_t *)(rec + 0x60) == exp_vis) g_b3_vis_ok++; else g_b3_vis_bad++;
       } }
 
+    /* R2 (§8.14): validate the captured 29f810 create args the applier will reconstruct.
+     * mgr == *(owner+0x2b8) re-confirms the I2 manager-resolution; template == proj+0x298 (tmpl). */
+    if (g_b3_args.have) {
+        g_b3_arg_n++;
+        int64_t exp_mgr = *(int64_t *)(owner + 0x2b8);
+        if (g_b3_args.mgr == exp_mgr)        g_b3_arg_mgr_ok++;  else g_b3_arg_mgr_bad++;
+        if (g_b3_args.template_id == tmpl)   g_b3_arg_tmpl_ok++; else g_b3_arg_tmpl_bad++;
+        if (g_b3_arg_detail < 16) {
+            char ab[256];
+            snprintf(ab, sizeof ab,
+                "DTB3ARG\tev=%u\tmgr=%d(exp_mgr=%d)\ttmpl=%d\ttype_idx=%d\tpos=%.2f,%.2f,%.2f\n",
+                g_b3_arg_detail, (g_b3_args.mgr==exp_mgr), (g_b3_args.template_id==tmpl),
+                (g_b3_args.template_id==tmpl), g_b3_args.type_index,
+                g_b3_args.pos[0], g_b3_args.pos[1], g_b3_args.pos[2]);
+            log_write(ab); g_b3_arg_detail++;
+        }
+        g_b3_args.have = 0;
+    }
+
     if (g_b3_detail < 48) {
         char rb[320];
         snprintf(rb, sizeof rb,
@@ -4429,10 +4477,11 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
         if (tk != g_b3_last && (tk & 0x3ffu) == 0) {     /* every 1024 ticks */
             g_b3_last = tk; char db[384];
             snprintf(db, sizeof db,
-                "DTB3SUM\ttick=%u\tn=%u\tfirer=%u/%u\ttgt=%u/%u\tsub=%u/%u\tsub_reasn=%u\tdmg=%u/%u\tlife=%u/%u\tvis=%u/%u\tcharge=%u\tskip=%u\n",
+                "DTB3SUM\ttick=%u\tn=%u\tfirer=%u/%u\ttgt=%u/%u\tsub=%u/%u\tsub_reasn=%u\tdmg=%u/%u\tlife=%u/%u\tvis=%u/%u\tcharge=%u\tskip=%u\targ_n=%u\targ_mgr=%u/%u\targ_tmpl=%u/%u\n",
                 tk, g_b3_n, g_b3_firer_ok,g_b3_firer_bad, g_b3_tgt_ok,g_b3_tgt_bad,
                 g_b3_sub_ok,g_b3_sub_bad, g_b3_sub_reasn, g_b3_dmg_ok,g_b3_dmg_bad, g_b3_life_ok,g_b3_life_bad,
-                g_b3_vis_ok,g_b3_vis_bad, g_b3_charge, g_b3_skip);
+                g_b3_vis_ok,g_b3_vis_bad, g_b3_charge, g_b3_skip,
+                g_b3_arg_n, g_b3_arg_mgr_ok,g_b3_arg_mgr_bad, g_b3_arg_tmpl_ok,g_b3_arg_tmpl_bad);
             log_write(db);
         }
     }
