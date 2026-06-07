@@ -4203,6 +4203,81 @@ typedef float   (*R1_397780Fn)(int64_t*);                             /* FUN_140
 typedef float   (*R1_SqrtFn)(float);                                  /* FUN_140776d48 engine sqrt */
 static uint32_t g_r1_g3_ok=0, g_r1_g3_bug=0, g_r1_g3_nofire=0, g_r1_g3_skip=0;
 
+/* R1c geometry (3825b0:210-260): spread → lead-solve (399450) → fire gate (lead!=0 && 383ba0) → dispersion
+ * (381dc0) → dir→Euler (20acd0), producing the create's pos/orient. RNG-TAINTED (spread draws ffbb0/ffdb0;
+ * 381dc0 draws too) ⇒ NOT observe-validatable — transcription validated at the A3.3 takeover (the reimpl's
+ * draws replace the binary's). 399450 uses the §8.12 locked global scratch DAT_140b2c380 (1-shard fine;
+ * N-shard wraps it in the lock). ⚠️ ABI: 381dc0's 3rd arg (dist) is float-BY-VALUE (XMM) — typed float here
+ * (the all-int64 passthrough B381dc0Fn would mis-pass it). ⚠️ STACK ADJACENCY: the create takes &local_2b8
+ * (pos) and &local_230 (orient) as contiguous vec3s, so the binary's stack locals are mirrored in one float
+ * S[] indexed by (0x2d8-rbp_off)/4 — S[0..2]=local_2d8/2d4/2d0 (aim in), S[4..6]=local_2c8/2c4/2c0,
+ * S[8..10]=local_2b8/uStack_2b4/local_2b0 (=create pos), S[12..14]=local_2a8/2a4/2a0, S[42..44]=local_230/
+ * 22c/228 (=create orient). Caller passes aim in S[0..2] + dist + the 385e70 matrices (mat1/mat2). Returns
+ * 1 (fire → create with pos=&S[8], orient=&S[42]) / 0 (no fire). */
+typedef float   (*R1_ffbb0Fn)(uint32_t*);                 /* FUN_1401ffbb0(&LCG) random float */
+typedef char    (*R1_ffdb0Fn)(uint32_t*, int32_t);        /* FUN_1401ffdb0(&LCG, pct) prob roll */
+typedef int32_t (*R1_370f00Fn)(int64_t, int64_t);         /* FUN_140370f00(lVar7, 0) */
+typedef float*  (*R1_399450Fn)(int64_t, float*, int64_t, float*, float*, int32_t); /* lead solver */
+typedef char    (*R1_383ba0Fn)(int64_t, float*);          /* FUN_140383ba0 fire-gate predicate */
+typedef int64_t (*R1_3973b0Fn)(int64_t*);                 /* FUN_1403973b0 type-record (error path) */
+typedef float*  (*R1_381dc0Fn)(int64_t, float*, float, float*, int64_t, int32_t); /* dispersion (float arg3) */
+typedef void*   (*R1_20acd0Fn)(void*, float*, float*);    /* FUN_14020acd0 dir→Euler (DTARG2-lifted) */
+
+static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, float dist,
+                          float *mat1, float *mat2) {
+    int64_t owner      = *(int64_t *)(p1 + 0x10);
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+    uint32_t *LCG = (uint32_t *)(g_dt_imgbase + 0xa13e24);
+
+    if (*(int8_t *)(owner_type + 0x4f) == 1) {                  /* :210 weapon has spread → 3 LCG draws */
+        R1_ffbb0Fn fbb0 = (R1_ffbb0Fn)(g_dt_imgbase + 0x1ffbb0);
+        S[8] = fbb0(LCG); S[9] = fbb0(LCG); S[6] = fbb0(LCG);   /* :211-213 local_2b8/uStack_2b4/local_2c0 */
+    } else {
+        R1_ffdb0Fn fdb0 = (R1_ffdb0Fn)(g_dt_imgbase + 0x1ffdb0);
+        if (*(int32_t *)(p1 + 0x3c) < 0 || fdb0(LCG, 0x32) != 0) {   /* :215-219 use mat1 col */
+            S[8] = mat1[3]; S[6] = mat1[11]; S[9] = mat1[7];
+        } else {                                                     /* :222-224 use mat2 col */
+            S[8] = mat2[3]; S[6] = mat2[11]; S[9] = mat2[7];
+        }
+    }
+    S[4] = S[8]; S[5] = S[9];        /* :226 local_2c8 = (local_2b8,uStack_2b4) */
+    S[12] = S[0]; S[13] = S[1];      /* :227 local_2a8 = (local_2d8,fStack_2d4) [aim x,y] */
+    S[14] = S[2];                    /* :228 local_2a0 = local_2d0 [aim z] */
+    S[10] = S[6];                    /* :229 local_2b0 = local_2c0 */
+
+    float buf220[4] = {0,0,0,0};                                 /* local_220 scratch for 399450/381dc0 */
+    R1_370f00Fn f370f00 = (R1_370f00Fn)(g_dt_imgbase + 0x370f00);
+    int32_t uVar16 = f370f00(lVar7, 0);                          /* :230 */
+    R1_399450Fn f399450 = (R1_399450Fn)(g_dt_imgbase + 0x399450);
+    float *pf = f399450(owner, buf220, (int64_t)p2, &S[12], &S[4], uVar16);  /* :231 lead solver */
+    float lx = pf[0], ly = pf[1], lz = pf[2];                    /* :233-235 */
+    if (!(ly*ly + lx*lx + lz*lz != 0.0f)) return 0;             /* :236 no lead solution → no fire */
+    S[0] = lx; S[1] = ly; S[2] = lz;                            /* :237 local_2d8/2d4/2d0 = lead */
+    R1_383ba0Fn f383ba0 = (R1_383ba0Fn)(g_dt_imgbase + 0x383ba0);
+    if (f383ba0(p1, &S[0]) == 0) return 0;                      /* :238 fire-gate predicate fail */
+
+    int64_t lVar9 = *(int64_t *)((int64_t)p2 + 0x53 * 8);      /* :239 p2[0x53] type-def */
+    if (*(int64_t *)(lVar9 + 0x1648) == 0) {                    /* :240 missing XML category mask */
+        R1_3973b0Fn f3973b0 = (R1_3973b0Fn)(g_dt_imgbase + 0x3973b0);
+        f3973b0(p2);                                            /* :241 (error log omitted — cosmetic) */
+        lVar9 = *(int64_t *)((int64_t)p2 + 0x53 * 8);          /* :248 re-read */
+    }
+    int64_t mask = *(int64_t *)(lVar9 + 0x1648);
+
+    S[4] = S[0]; S[5] = S[1];        /* :250 local_2c8 = (lead.x, lead.y) */
+    S[6] = S[2];                     /* :251 local_2c0 = lead.z */
+    uVar16 = *(int32_t *)(lVar7 + 0x1fe8);                       /* :252 */
+    R1_381dc0Fn f381dc0 = (R1_381dc0Fn)(g_dt_imgbase + 0x381dc0);
+    pf = f381dc0(p1, buf220, dist, &S[4], mask, uVar16);        /* :253 dispersion (dist = float arg3) */
+    S[0] = pf[0]; S[1] = pf[1]; S[2] = pf[2];                   /* :255-257 local_2d8.. = dispersed dir */
+
+    R1_20acd0Fn f20acd0 = (R1_20acd0Fn)(g_dt_imgbase + 0x20acd0);
+    f20acd0(&S[4], &S[8], &S[0]);    /* :258 20acd0(&local_2c8,&local_2b8,&local_2d8) → Euler in local_2c8 */
+    S[44] = S[6];                    /* :259 local_228 = local_2c0 */
+    S[42] = S[4]; S[43] = S[5];      /* :260 local_230 = local_2c8 → create orient */
+    return 1;                        /* fire: create pos=&S[8], orient=&S[42] */
+}
+
 static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
     int64_t owner      = *(int64_t *)(p1 + 0x10);
     int64_t owner_type = *(int64_t *)(p1 + 0x20);
