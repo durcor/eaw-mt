@@ -4278,6 +4278,77 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
     return 1;                        /* fire: create pos=&S[8], orient=&S[42] */
 }
 
+/* R2a applier — create + scalar init (3825b0:261-328): 294bc0 type-index lookup → 29f810 create →
+ * write the proj+0xe8 (=plVar12[0x1d]) record: firer id / damage (+charge) / lifetime / velocity / target /
+ * vis-frame. This is the DTWA-B3-validated §3 field map, now as the actual WRITE path (the takeover applier).
+ * Transcription-only (creates a real object ⇒ runs only at the A3.3 takeover, validated by DTWA-B3). Inputs:
+ * lVar7 = weapon template, local_238 = charge order-record, S[] = R1c geometry (create pos=&S[8],
+ * orient=&S[42]; S[2]=disp.z, S[10]=spread.z for the +0x6c velocity term). Returns the created projectile.
+ * ⚠️ The muzzle-SFX block (:272-284, Class-3 presentation feeding the render handle rec+0xb0) is DEFERRED
+ * (local_res20=0 ⇒ rec+0xb0=0); add it back post-validation (or route via the a1 SFX buffer). */
+typedef int64_t (*R2_294bc0Fn)(int64_t, int32_t);     /* registry lookup → type record */
+typedef int32_t (*R2_5400f0Fn)(int64_t);              /* lifetime (caches at owner_type+0x4a0) */
+typedef int64_t (*R2_3952a0Fn)(int64_t, int32_t);     /* charge damage-scale record */
+typedef int64_t (*R2_39b1a0Fn)(int64_t*);             /* sub-extent applicability */
+typedef char    (*R2_372210Fn)(int64_t);              /* sub-extent suppressor */
+typedef void    (*R2_39d6a0Fn)(int64_t);              /* post-create vis register */
+
+static int64_t pfire_r2a_create_init(int64_t p1, int64_t *p2, int64_t lVar7, int64_t local_238, float *S) {
+    int64_t owner      = *(int64_t *)(p1 + 0x10);
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+
+    R2_294bc0Fn f294bc0 = (R2_294bc0Fn)(g_dt_imgbase + 0x294bc0);
+    int64_t treg = f294bc0((int64_t)(g_dt_imgbase + 0xa16fd0), *(int32_t *)(owner + 0x58));  /* :261 */
+    int32_t type_index = *(int32_t *)(treg + 0x4c);
+    int64_t mgr = *(int64_t *)(owner + 0x2b8);
+    EngCreateObjFn f29f810 = (EngCreateObjFn)(g_dt_imgbase + 0x29f810);
+    int64_t proj = f29f810(mgr, lVar7, type_index, &S[8], (int64_t)&S[42], 1, 0);  /* :265 create */
+    /* :272-284 muzzle SFX (Class-3) DEFERRED → local_res20 = 0. */
+
+    int64_t rec = *(int64_t *)(proj + 0xe8);                          /* :286 plVar12[0x1d] */
+    *(int32_t *)(rec + 0x58) = *(int32_t *)(owner + 0x50);            /* :287 firer id */
+    *(int32_t *)(rec + 0x5c) = 0;                                     /* :288 */
+
+    float dmg = *(float *)(owner_type + 0x478);                       /* :289-292 damage */
+    if (dmg <= 0.0f) dmg = *(float *)(lVar7 + 0x474);
+    *(float *)(rec + 0x64) = dmg;
+    if (local_238 != 0 && *(int32_t *)(local_238 + 0x394) < 0) {      /* :293-298 charge scale */
+        *(int32_t *)(local_238 + 0x394) += 1;
+        R2_3952a0Fn f3952a0 = (R2_3952a0Fn)(g_dt_imgbase + 0x3952a0);
+        int64_t cr = f3952a0(owner, 0x46);
+        if (cr != 0) *(float *)(rec + 0x64) = *(float *)(cr + 0x17c) * *(float *)(rec + 0x64);
+    }
+
+    R2_5400f0Fn f5400f0 = (R2_5400f0Fn)(g_dt_imgbase + 0x5400f0);     /* :300-305 lifetime */
+    int32_t life = f5400f0(owner_type);
+    *(int32_t *)(rec + 0x68) = (life == 0) ? *(int32_t *)(lVar7 + 0x440) : f5400f0(owner_type);
+
+    R1_3857d0Fn f3857d0 = (R1_3857d0Fn)(g_dt_imgbase + 0x3857d0);     /* :306-309 velocity base */
+    R1_397780Fn f397780 = (R1_397780Fn)(g_dt_imgbase + 0x397780);
+    float spd = f3857d0(p1);
+    if (spd <= 0.0f) spd = *(float *)(lVar7 + 0x4bc);
+    *(float *)(rec + 0x6c) = spd;
+    *(float *)(rec + 0x6c) = f397780(p2) + *(float *)(rec + 0x6c);    /* :310-311 +extent (addend LEFT) */
+    R2_39b1a0Fn f39b1a0 = (R2_39b1a0Fn)(g_dt_imgbase + 0x39b1a0);     /* :312-316 +sub-extent */
+    R2_372210Fn f372210 = (R2_372210Fn)(g_dt_imgbase + 0x372210);
+    if (f39b1a0(p2) != 0 && f372210(*(int64_t *)(owner + 0x298)) == 0)
+        *(float *)(rec + 0x6c) = f397780((int64_t *)p2[0x56]) + *(float *)(rec + 0x6c);
+    *(int64_t *)(rec + 0x08) = (int64_t)p2;                           /* :318 target */
+    { float d = S[2] - S[10]; uint32_t u; memcpy(&u,&d,4); u &= 0x7fffffffu; memcpy(&d,&u,4); /* :320 ABS */
+      *(float *)(rec + 0x6c) = d + *(float *)(rec + 0x6c); }
+
+    int32_t vo = *(int32_t *)(owner_type + 0x4a4);                    /* :321-328 vis frame */
+    if (vo > 0) {
+        int64_t b15418 = *(int64_t *)(g_dt_imgbase + 0xb15418ULL);
+        int32_t base = (b15418 == 0) ? 0 : *(int32_t *)(b15418 + 0x10);
+        *(int32_t *)(rec + 0x60) = base + vo;
+        R2_39d6a0Fn f39d6a0 = (R2_39d6a0Fn)(g_dt_imgbase + 0x39d6a0);
+        f39d6a0(proj);
+        *(int64_t *)(rec + 0xb0) = 0;                                 /* local_res20 (SFX deferred) */
+    }
+    return proj;
+}
+
 static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
     int64_t owner      = *(int64_t *)(p1 + 0x10);
     int64_t owner_type = *(int64_t *)(p1 + 0x20);
