@@ -4289,7 +4289,11 @@ static uint32_t g_r1_g3_ok=0, g_r1_g3_bug=0, g_r1_g3_nofire=0, g_r1_g3_skip=0;
  * S[8..10]=local_2b8/uStack_2b4/local_2b0 (=create pos), S[12..14]=local_2a8/2a4/2a0, S[42..44]=local_230/
  * 22c/228 (=create orient). Caller passes aim in S[0..2] + dist + the 385e70 matrices (mat1/mat2). Returns
  * 1 (fire → create with pos=&S[8], orient=&S[42]) / 0 (no fire). */
-typedef float   (*R1_ffbb0Fn)(uint32_t*);                 /* FUN_1401ffbb0(&LCG) random float */
+/* ⚠️ FUN_1401ffbb0 really takes (LCG, lo, hi) and returns a uniform random FLOAT in [lo,hi] (ret in RAX
+ * low32). Ghidra dropped the lo/hi args (showed `ffbb0(&LCG)`); in the binary they are leftover GP regs
+ * (RDX/R8) holding the two muzzle-matrix bounds (mat1[k],mat2[k]) — the spread cone. Passing without them
+ * ⇒ garbage range ⇒ spread-weapon projectiles spawn at the origin. lo/hi are float-bits in GP regs. */
+typedef int64_t (*R1_ffbb0Fn)(uint32_t*, int64_t, int64_t); /* (LCG, lo_bits, hi_bits) → float in RAX low32 */
 typedef char    (*R1_ffdb0Fn)(uint32_t*, int32_t);        /* FUN_1401ffdb0(&LCG, pct) prob roll */
 /* ⚠️ 370f00 is Ghidra-typed `void`/undefined4 but actually RETURNS A FLOAT (the projectile speed) in XMM0 —
  * 3825b0:230 `uVar16 = 370f00(...)` then feeds 399450's param_6, which 399450 uses as a FLOAT multiplier
@@ -4321,6 +4325,14 @@ static int pfire_spawn_buf_append(int64_t p1, int64_t p2, int64_t p3, int64_t lV
     return 1;
 }
 
+/* call FUN_1401ffbb0(LCG, lo, hi) → uniform random float in [lo,hi]. lo/hi pass as float-bits in GP regs;
+ * the result float is in RAX's low 32 bits. */
+static inline float pfire_ffbb0_range(R1_ffbb0Fn f, uint32_t *lcg, float lo, float hi) {
+    int64_t lob = 0, hib = 0; memcpy(&lob, &lo, 4); memcpy(&hib, &hi, 4);
+    int64_t r = f(lcg, lob, hib);
+    float out; memcpy(&out, &r, 4); return out;
+}
+
 static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, float dist,
                           float *mat1, float *mat2) {
     int64_t owner      = *(int64_t *)(p1 + 0x10);
@@ -4329,7 +4341,10 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
 
     if (*(int8_t *)(owner_type + 0x4f) == 1) {                  /* :210 weapon has spread → 3 LCG draws */
         R1_ffbb0Fn fbb0 = (R1_ffbb0Fn)(g_dt_imgbase + 0x1ffbb0);
-        S[8] = fbb0(LCG); S[9] = fbb0(LCG); S[6] = fbb0(LCG);   /* :211-213 local_2b8/uStack_2b4/local_2c0 */
+        /* spread cone: uniform random between the two muzzle matrices' translation columns (mat1[k],mat2[k]) */
+        S[8] = pfire_ffbb0_range(fbb0, LCG, mat1[3],  mat2[3]);   /* :211 x */
+        S[9] = pfire_ffbb0_range(fbb0, LCG, mat1[7],  mat2[7]);   /* :212 y */
+        S[6] = pfire_ffbb0_range(fbb0, LCG, mat1[11], mat2[11]);  /* :213 z */
     } else {
         R1_ffdb0Fn fdb0 = (R1_ffdb0Fn)(g_dt_imgbase + 0x1ffdb0);
         if (*(int32_t *)(p1 + 0x3c) < 0 || fdb0(LCG, 0x32) != 0) {   /* :215-219 use mat1 col */
@@ -4510,6 +4525,12 @@ static void pfire_r2b_emit(int64_t p1, int64_t proj, int64_t *p2, int64_t p3, in
     }
     R2_3a06a0Fn f3a06a0 = (R2_3a06a0Fn)(g_dt_imgbase + 0x3a06a0);
     f3a06a0(owner, p2, proj);                                        /* :402 Class-2b shot-register */
+    { static int dbg = 0; if (dbg < 8) { dbg++; char b[256];
+        snprintf(b, sizeof b, "[eaw-mt] PFPOS proj@%.1f,%.1f,%.1f  firer@%.1f,%.1f,%.1f  rec0xb0=%llx guided=%d\n",
+                 *(float*)(proj+0x78), *(float*)(proj+0x7c), *(float*)(proj+0x80),
+                 *(float*)(owner+0x78), *(float*)(owner+0x7c), *(float*)(owner+0x80),
+                 (unsigned long long)*(int64_t*)(rec+0xb0), (*(int32_t*)(lVar7+0x1fe8)==1));
+        log_write(b); } }
 }
 
 /* R3 cooldown (3825b0:403-497): recharge-timer/burst-counter recompute (param_1+0x58/0x5c/0x68, own-object
