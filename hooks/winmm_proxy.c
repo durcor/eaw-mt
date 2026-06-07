@@ -4098,6 +4098,7 @@ typedef char    (*R1_35f470Fn)(int64_t, int32_t, int64_t*, int32_t); /* FUN_1403
 typedef char    (*R1_39a540Fn)(int64_t, int64_t*);             /* FUN_14039a540(owner, param_2) */
 typedef int64_t (*R1_VfuncFn)(int64_t*, int32_t);              /* (*(*p2+0x10))(p2, selector) */
 static uint32_t g_r1_g1_ok=0, g_r1_g1_bug=0, g_r1_g1_nofire=0, g_r1_g1_n=0;
+static uint32_t g_r1_g2_ok=0, g_r1_g2_bug=0, g_r1_g2_nofire=0;   /* combined gate1+gate2a verdict */
 
 /* Returns 1 if the firer passes the 3825b0:60-105 early gates (binary would continue), else 0. */
 static int pfire_r1_gate1(int64_t p1, int64_t *p2, int64_t p3) {
@@ -4136,6 +4137,54 @@ static int pfire_r1_gate1(int64_t p1, int64_t *p2, int64_t p3) {
         if (f39a540(owner, p2) == 0) return 0;
     }
     return 1;                                                          /* reached :106 — early gates pass */
+}
+
+/* R1 gate-2a (3825b0:107-163): param_3 resolve + targeting gates, ending at the 159-163 compound that
+ * decides whether the binary enters the aim/fire body. Assumes gate-1 passed. Returns 1 if the firer
+ * would enter the aim body (continues toward firing), 0 if it bails. RNG-free. The dead-in-tactical arc
+ * gate (owner_type+0x4e==1, §I3) is treated as assume-PASS: if it executed and blocked, the binary would
+ * not fire, so the one-directional oracle (r==1 ⇒ verdict==1) is unaffected; skipping its buffer-passing
+ * dot-product avoids a crash-risk transcription on a path that is dead in the tactical sim. */
+typedef uint32_t* (*R1_398440Fn)(int64_t, uint32_t*);          /* FUN_140398440(owner, &buf12) */
+typedef int64_t   (*R1_394a80Fn)(int64_t*, void*, char, char); /* FUN_140394a80(p2, buf, 0, 0) */
+typedef int64_t   (*R1_397e00Fn)(int64_t, int64_t, int32_t);   /* FUN_140397e00(owner, p2, sub_id) */
+typedef char      (*R1_39b950Fn)(int64_t, int32_t, char);      /* FUN_14039b950(rec, sel, 1) */
+
+static int pfire_r1_gate2a(int64_t p1, int64_t *p2, int64_t p3) {
+    int64_t owner      = *(int64_t *)(p1 + 0x10);
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+
+    if (p3 == 0) {                                                     /* :107-109 resolve param_3 */
+        uint32_t buf12[4] = {0,0,0,0};                                 /* local_214 (12B; 16 for slack) */
+        R1_398440Fn f398440 = (R1_398440Fn)(g_dt_imgbase + 0x398440);
+        R1_394a80Fn f394a80 = (R1_394a80Fn)(g_dt_imgbase + 0x394a80);
+        uint32_t *u8 = f398440(owner, buf12);
+        p3 = f394a80(p2, u8, 0, 0);
+    }
+    /* :112 arc gate — DEAD in tactical (+0x4e==0); assume-pass (see header). */
+
+    int64_t order_rec = *(int64_t *)(owner + 0x100);                  /* lVar7 from :83 == local_238 */
+    int64_t lVar9  = *(int64_t *)(owner_type + 0x220);                /* :147 */
+    int64_t lVar13 = *(int64_t *)(owner_type + 0x210);                /* :148 */
+    if (lVar9 != 0 && order_rec != 0 && *(int32_t *)(order_rec + 0x394) < 0)
+        lVar13 = lVar9;                                               /* :149-151 */
+    int32_t sub_id = (p3 == 0) ? -1 : *(int32_t *)(p3 + 0x18);        /* :152-157 uVar16 */
+
+    R1_397e00Fn f397e00 = (R1_397e00Fn)(g_dt_imgbase + 0x397e00);     /* :158 aim resolver */
+    int64_t lv7 = f397e00(owner, (int64_t)p2, sub_id);
+    /* :159-163 compound: continue iff lv7!=0 OR (fallback via owner+0x2b0 flags AND lVar13!=0). */
+    if (lv7 != 0) return 1;
+    int64_t b2b0 = *(int64_t *)(owner + 0x2b0);
+    int fallback_ok;
+    if (b2b0 == 0) {
+        fallback_ok = 1;                                              /* lVar7==0 ⇒ left disjunct true */
+    } else {
+        R1_39b950Fn f39b950 = (R1_39b950Fn)(g_dt_imgbase + 0x39b950);
+        fallback_ok = (f39b950(b2b0, 0x29, 1) == 0 &&
+                       f39b950(*(int64_t *)(owner + 0x2b0), 0x22, 1) == 0);
+    }
+    if (fallback_ok && lVar13 != 0) return 1;                         /* enters aim body via lVar13 */
+    return 0;                                                          /* compound false ⇒ binary returns 0 */
 }
 
 /* run the real FUN_1403a76b0 with the spawn-attribution window open. */
@@ -4516,14 +4565,15 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
 
 static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
     int armed = dt_on();
-    int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0;
+    int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0, r1_full=0;
     if (armed && p1) {
         owner      = *(int64_t *)(p1 + 0x10);
         owner_type = *(int64_t *)(p1 + 0x20);
         local238   = owner ? *(int64_t *)(owner + 0x100) : 0;
         order_pre  = local238 ? *(int32_t *)(local238 + 0x394) : 0;
-        /* R1 gate-1 observe: evaluate the early-gate verdict on the PRE-call state. */
+        /* R1 observe: evaluate the gate verdict on the PRE-call state (gate1 early, +gate2a targeting). */
         r1_g1 = pfire_r1_gate1(p1, (int64_t *)p2, p3);
+        r1_full = r1_g1 ? pfire_r1_gate2a(p1, (int64_t *)p2, p3) : 0;
         g_b3_in_fire = 1; g_b3_last_proj = 0;
     }
     int64_t r = g_b3_3825b0_trampoline(p1, p2, p3);
@@ -4533,6 +4583,9 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
         g_r1_g1_n++;
         if (r == 1) { if (r1_g1) g_r1_g1_ok++; else g_r1_g1_bug++; }
         else if (r1_g1) g_r1_g1_nofire++;
+        /* combined gate1+gate2a verdict (r==1 ⇒ must pass; g2_bug must be 0). */
+        if (r == 1) { if (r1_full) g_r1_g2_ok++; else g_r1_g2_bug++; }
+        else if (r1_full) g_r1_g2_nofire++;
         if (r == 1 && g_b3_last_proj && owner && owner_type)
             dtwa_b3_check(g_b3_last_proj, owner, owner_type, p2, p3, local238, order_pre);
         uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
@@ -4546,8 +4599,9 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 g_b3_arg_n, g_b3_arg_mgr_ok,g_b3_arg_mgr_bad, g_b3_arg_tmpl_ok,g_b3_arg_tmpl_bad);
             log_write(db);
             snprintf(db, sizeof db,
-                "DTR1SUM\ttick=%u\tg1_n=%u\tg1_ok=%u\tg1_bug=%u\tg1_nofire=%u\n",
-                tk, g_r1_g1_n, g_r1_g1_ok, g_r1_g1_bug, g_r1_g1_nofire);
+                "DTR1SUM\ttick=%u\tg1_n=%u\tg1_ok=%u\tg1_bug=%u\tg1_nofire=%u\tg2_ok=%u\tg2_bug=%u\tg2_nofire=%u\n",
+                tk, g_r1_g1_n, g_r1_g1_ok, g_r1_g1_bug, g_r1_g1_nofire,
+                g_r1_g2_ok, g_r1_g2_bug, g_r1_g2_nofire);
             log_write(db);
         }
     }
