@@ -673,6 +673,69 @@ concurrently can run concurrently AT ALL — here a 10-minute decompile read of 
 inline-consume + LCG, `3a6b80` Lua pump) showed both stock halves are non-threadable, converting a planned
 multi-session threaded-takeover build into a one-decision architectural fork BEFORE any risky live-tick code.
 
+### 8.14 PATH A (lift the fire-emit path) — A1 decode/catalog + increment plan (2026-06-06)
+**User picked path A (§8.13 fork): the genuine ~3.5-6× ceiling — lift the fire-control body so PhaseB runs
+LIFTED on N threads.** A1 is the b1-style risk-free decode: the full `3825b0` body (`decomp/3825b0.c`,
+re-read end-to-end) cataloged into three regions by the §8.13 threading verdict, each leaf classified
+{binary-read-safe-on-stable | lifted-sim (already built) | deferred-write (command buffer) | self-write
+(object-granular, on-thread)}. **Strategy = A-REIMPL** (faithful hook reimplementation of `3825b0`'s control
+flow, delegating heavy READS to the binary leaves — pure on stable post-barrier state per the §8.5 write-audit
++ §8.7 query-vfunc spot-check — math to lifted `sim/`, and routing the 3 cross-entity WRITES + SFX to the
+command buffers). A-reimpl is the only strategy that yields cleanly deferrable writes for true N-shard; the
+alternative "run the binary + intercept its writes" (A-provisional) fails because the binary inline-consumes
+the create result and emits the Class-2b writes mid-frame on it (§8.13). The b3 host build already lifted
+Region 2 (the applier); DTWA-B3 validated it bit-exact in-game.
+
+**REGION 1 — DECISION + GEOMETRY (`3825b0:60-260`): all READS → run on-thread on stable state.**
+- Gate cascade: `:71` self-alive `param_2+0x74&0x40`; `:74` `vfunc_2(tgt,0x11)` (=`395ac0`, pure, §8.7);
+  `:78` `39b140`; `:93` `540140`; `:97` `35f470` FOG (⚠ scratch `a28538..` → §8.12 LOCK); `:104` `39a540`;
+  `:108-109` `398440`+`394a80` target sub-resolve; `:112-145` firing-ARC gate (`385cf0` bone/`12d2c0`/
+  `139800` normalize/dot — DEAD in tactical, `+0x4e==0`, per I3, but transcribe the branch); `:158` `397e00`
+  aim-point resolver; `:161-162` `39b950` flags; `:165-173` `398440`+`vfunc_2(0x16)`+`405870` (UnitAI
+  target redirect); `:174` `383f70` / `:183` `385c70` aim point; `:201` `385e70` LOS; `:203-209` `776d48`
+  sqrt range-check + `3857d0` + `397780` range gate; `:230` `370f00`; `:231` `399450` FULL LEAD SOLVER
+  (⚠ scratch `b2c380..` → §8.12 LOCK; reaches lifted `399e20`/`393b70`-linear in fallback, DTFINT-clean);
+  `:238` `383ba0` aim-valid; `:211-225`+`:253` `381dc0` SPREAD (⚠ LCG `a13e24` → `SimRng::substream`);
+  `:258` `20acd0` dir→Euler (✅ lifted `sim/targeting_aim`).
+- **Lifted-sim available:** intercept lead `firing_intercept` (399e20/393b70-linear, DTFINT 473k/473k),
+  spread `firing_apply_spread` (381dc0, RNG-retrofit), dir→Euler `targeting_aim` (20acd0).
+
+**REGION 2 — CREATE + INIT + Class-2b (`3825b0:261-402`) = the b3 APPLIER (✅ already lifted = `sim/firing_spawn`).**
+- `:266` `29f810` create (Class-2 SpawnCommand, I1 id-order); `:285` `2d5240` muzzle SFX (Class-3 SfxCommand,
+  a1 pattern); `:339-400` `proj+0xe8` init — firer `+0x58`/dmg `+0x64`/life `+0x68`/vel `+0x6c`/target `+0x08`/
+  guided-vs-ballistic transform `+0x24..+0x90` (✅ `ProjectileInit`, DTWA-B3 bit-exact 362/0); `:350` `220e90`
+  target `+0x38` listener (Class-2b Command — depends on the created proj's `vfunc_2(proj,8)` → folds into the
+  applier, methodology #18); `:402` `3a06a0` shot-register (Class-2b Command — firer record + global shroud
+  mgr `b15418`). All three cross-writes depend on `plVar12` ⇒ they ARE the applier, drained in `(gom,rank,seq)`.
+
+**REGION 3 — FIRER COOLDOWN/AMMO SELF-UPDATE (`3825b0:403-465+`): SELF-WRITES (object-granular → on-thread).**
+- ⚠ **NEW (not in b3's scope, which was create+init only):** `:403-406` ammo counter `param_1+0x5c`;
+  `:410` LCG draw for recharge jitter (⚠ `a13e24` → `SimRng::substream`); `:412/439/450/455/459` cooldown
+  timer `param_1+0x58`; `:417` shroud frame `param_1+0x68`; `:418-421` `285d70` deregister + `param_1+0xc8`;
+  `:423-456` cooldown scaling (`374b50`/`39b950`/`398010`/`535cb0`/`395c70`/`33fb70`). All writes are to
+  `param_1` (the firer's own hardpoint fire-control component) ⇒ Phase-A-safe by object-granularity (1 firer =
+  1 shard); only the LCG draw needs the substream retrofit. Needs its OWN in-game oracle (cooldown/ammo
+  bit-exact) since b3's DTWA-B3 only covered Region 2.
+
+**INCREMENT PLAN (mirrors I1-I5 / b1-b3 discipline; reassessment gate after A3):**
+- **A1 = this decode/catalog/strategy.** ✅
+- **A2 (host) = `sim/firing_control.{h,cpp}`** — the Region-1 decision/geometry skeleton (providers injected
+  for the binary read-leaves) producing a `SpawnCommand` via the built `firing_spawn`, + the Region-3 cooldown
+  self-update (RNG via `SimRng::substream`). Host gate: recorded inputs reproduce the b3 payload + a
+  cooldown-determinism check; reuses firing_spawn/firing_intercept/targeting_aim. No launch risk.
+- **A3 (in-game, 1-shard, `EAW_PFIRE=3`) = emit-redirection takeover** — in PhaseB, replace the binary
+  `3825b0` call with `firing_control` (still no real threads): compute on-thread, buffer SpawnCommand +
+  Class-2b + SFX, drain at the `2a62d0` flush in walk order via the lifted applier (which calls binary
+  `29f810` then replays the init). Gate (the STAGE-A-analogue for path A — control-flow takeover, no threads):
+  DTWA-B3 bit-exact (projectiles field-identical to binary), DTWA `idfail=0`, DTDRAIN `rank_down=0`, a NEW
+  cooldown self-write oracle (`param_1+0x58/0x5c` identical), buffer balance, 0 crashes. **REASSESSMENT GATE:
+  if the reimpl reproduces the binary bit-exactly, A4 is mechanical; if a branch diverges, fix/reassess.**
+- **A4 (in-game, N-shard, `EAW_PFIRE=4`) = thread PhaseB** — run `firing_control` on N workers (per-thread
+  `ShardBuffer`), §8.12 scratch LOCKS on `399450`/`35f470`, RNG substreams, `SpatialQueryGuard` on the
+  opp-scan (§8.6), canonical drain. Gate: replay-determinism + lockstep (NOT stock-equivalence, the §8.10
+  retrofit delta) + all structural invariants hold + the host `parallel_fire_test` property reproduced;
+  measure the actual speedup (target ~3.5-6×, a2.0 `p≈0.65`).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
