@@ -4082,6 +4082,62 @@ static PfireSpawnArgs g_b3_args;          /* args of the in-flight projectile's 
 static uint32_t g_b3_arg_mgr_ok=0, g_b3_arg_mgr_bad=0, g_b3_arg_tmpl_ok=0, g_b3_arg_tmpl_bad=0,
                 g_b3_arg_n=0, g_b3_arg_detail=0;
 
+/* ── PATH-A / A3 chunk R1 (firing_body_lift_scope.md §8.14): the DECISION/geometry skeleton, transcribed
+ * to C from 3825b0:60-260. The §8.14 A-reimpl runs the fire DECISION by CALLING the binary gate leaves
+ * (pure reads on stable state per the §8.5 write-audit) + the glue. R1-gate-1 is the first bounded,
+ * RNG-FREE sub-chunk (3825b0:60-105): the early gates that early-return 0 on failure. It is observe-
+ * validated one-directionally: a fired shot (binary r==1) MUST have passed every early gate, so
+ * binary r==1 ⇒ pfire_r1_gate1()==1 (g1_bug counts the impossible r==1 & g1==0; g1_nofire counts the
+ * expected g1==1 & r==0 = passed-early-gates-but-blocked-later). Run BEFORE the trampoline on the same
+ * pre-call state the binary sees; the only side-effectful gate (35f470 rebuilds a per-call global fog
+ * buffer) is idempotent — the binary's own call rebuilds it again, so the binary is unperturbed.
+ * Types mirror the decompile: p2 = longlong* (so `p2+N` is *8 byte indexing; `(int64_t)p2+N` is bytes). */
+typedef char    (*R1_39b140Fn)(int64_t*);                       /* FUN_14039b140(param_2) */
+typedef char    (*R1_540140Fn)(int64_t, int64_t*);              /* FUN_140540140(owner_type, param_2) */
+typedef char    (*R1_35f470Fn)(int64_t, int32_t, int64_t*, int32_t); /* FUN_14035f470(b15418,sid,p2,1) */
+typedef char    (*R1_39a540Fn)(int64_t, int64_t*);             /* FUN_14039a540(owner, param_2) */
+typedef int64_t (*R1_VfuncFn)(int64_t*, int32_t);              /* (*(*p2+0x10))(p2, selector) */
+static uint32_t g_r1_g1_ok=0, g_r1_g1_bug=0, g_r1_g1_nofire=0, g_r1_g1_n=0;
+
+/* Returns 1 if the firer passes the 3825b0:60-105 early gates (binary would continue), else 0. */
+static int pfire_r1_gate1(int64_t p1, int64_t *p2, int64_t p3) {
+    if (!g_dt_imgbase) return 1;                       /* can't eval → don't claim a verdict */
+    int64_t owner = *(int64_t *)(p1 + 0x10);          /* 3825b0:62 */
+    if (owner == 0) return 0;
+    if (p2 == 0) return 0;                             /* :65 */
+    if (p3 != 0 && *(int64_t *)(p3 + 0x10) != (int64_t)p2) return 0;   /* :68 */
+    if ((*(uint8_t *)((int64_t)p2 + 0x74 * 8) & 0x40) != 0) return 0;  /* :71  param_2+0x74 (longlong*) */
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+
+    R1_VfuncFn vf = *(R1_VfuncFn *)(*(int64_t *)p2 + 0x10);            /* :74 vfunc_2(p2,0x11) */
+    if (vf(p2, 0x11) != 0) return 0;
+
+    R1_39b140Fn f39b140 = (R1_39b140Fn)(g_dt_imgbase + 0x39b140);     /* :78 */
+    if (f39b140(p2) != 0 &&
+        *(int8_t *)(*(int64_t *)(owner + 0x298) + 0xa4) == 0) return 0;
+
+    int64_t order_rec = *(int64_t *)(owner + 0x100);                  /* :83 local_238 source */
+    if (order_rec != 0) {
+        if (*(int32_t *)(order_rec + 0x394) > 0) return 0;            /* :85 */
+        if (*(int32_t *)(order_rec + 0x394) < 0 &&
+            *(int32_t *)(owner_type + 0x48) != 10) return 0;          /* :88 */
+    }
+
+    R1_540140Fn f540140 = (R1_540140Fn)(g_dt_imgbase + 0x540140);     /* :93 */
+    if (f540140(owner_type, p2) == 1) return 0;
+
+    int64_t b15418 = *(int64_t *)(g_dt_imgbase + 0xb15418ULL);       /* DAT_140b15418 shroud/sensor mgr */
+    R1_35f470Fn f35f470 = (R1_35f470Fn)(g_dt_imgbase + 0x35f470);     /* :97 fog (idempotent rebuild) */
+    if (f35f470(b15418, *(int32_t *)(owner + 0x58), p2, 1) == 1) return 0;
+
+    if ((*(int8_t *)(owner + 0x3b4) == 1 ||                           /* :102-105 */
+         *(int8_t *)((int64_t)p2 + 0x3b4) == 1)) {
+        R1_39a540Fn f39a540 = (R1_39a540Fn)(g_dt_imgbase + 0x39a540);
+        if (f39a540(owner, p2) == 0) return 0;
+    }
+    return 1;                                                          /* reached :106 — early gates pass */
+}
+
 /* run the real FUN_1403a76b0 with the spawn-attribution window open. */
 static inline void dt_drain_tramp(int64_t ship, int32_t t) {
     g_drain_in_window = 1; g_a76b0_trampoline(ship, t); g_drain_in_window = 0;
@@ -4460,17 +4516,23 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
 
 static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
     int armed = dt_on();
-    int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0;
+    int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0;
     if (armed && p1) {
         owner      = *(int64_t *)(p1 + 0x10);
         owner_type = *(int64_t *)(p1 + 0x20);
         local238   = owner ? *(int64_t *)(owner + 0x100) : 0;
         order_pre  = local238 ? *(int32_t *)(local238 + 0x394) : 0;
+        /* R1 gate-1 observe: evaluate the early-gate verdict on the PRE-call state. */
+        r1_g1 = pfire_r1_gate1(p1, (int64_t *)p2, p3);
         g_b3_in_fire = 1; g_b3_last_proj = 0;
     }
     int64_t r = g_b3_3825b0_trampoline(p1, p2, p3);
     if (armed && p1) {
         g_b3_in_fire = 0;
+        /* R1 gate-1: r==1 ⇒ gate1 must pass (g1_bug = impossible); g1==1 & r==0 = blocked later. */
+        g_r1_g1_n++;
+        if (r == 1) { if (r1_g1) g_r1_g1_ok++; else g_r1_g1_bug++; }
+        else if (r1_g1) g_r1_g1_nofire++;
         if (r == 1 && g_b3_last_proj && owner && owner_type)
             dtwa_b3_check(g_b3_last_proj, owner, owner_type, p2, p3, local238, order_pre);
         uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
@@ -4482,6 +4544,10 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 g_b3_sub_ok,g_b3_sub_bad, g_b3_sub_reasn, g_b3_dmg_ok,g_b3_dmg_bad, g_b3_life_ok,g_b3_life_bad,
                 g_b3_vis_ok,g_b3_vis_bad, g_b3_charge, g_b3_skip,
                 g_b3_arg_n, g_b3_arg_mgr_ok,g_b3_arg_mgr_bad, g_b3_arg_tmpl_ok,g_b3_arg_tmpl_bad);
+            log_write(db);
+            snprintf(db, sizeof db,
+                "DTR1SUM\ttick=%u\tg1_n=%u\tg1_ok=%u\tg1_bug=%u\tg1_nofire=%u\n",
+                tk, g_r1_g1_n, g_r1_g1_ok, g_r1_g1_bug, g_r1_g1_nofire);
             log_write(db);
         }
     }
