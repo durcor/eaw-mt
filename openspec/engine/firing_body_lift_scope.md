@@ -792,10 +792,30 @@ checkpoint before the buffer-passing gate-2b.**
   the fire path, but does NOT exercise the reject branches when an upstream caller pre-filters — count the
   `(r==0 & verdict==0)` rejections to see whether the reject logic was actually tested (here ≈2, i.e. barely).
 
-**NEXT = gate-2b (`3825b0:164-209`: aim-point `383f70`/`385c70` + matrix/vec buffer init + LOS `385e70` +
-range `3857d0`/`397780`/sqrt — passes scratch BUFFERS to binary fns, size carefully / objdump-verify; adds
-the dominant range/LOS reject filter so it also exercises the reject paths) → R1c geometry (`211-260`) →
-R2 applier `pfire_apply_spawn` (`261-402`) → R3 cooldown (`403-490`) → A3.3 takeover flip (`EAW_PFIRE=3`).**
+**✅ gate-2b ADDED + IN-GAME PASS (2026-06-07, evidence `eaw-mt.log.gate2b-validate`).** `pfire_r1_gate2b`
+transcribes `3825b0:164-209` (aim-point + LOS + range, the dominant per-tick fire/no-fire filter), the first
+chunk passing scratch BUFFERS to binary fns. **Leaf-safety vetted FIRST (caught two RNG perturbation traps
+before launch): `405870` (UnitAI target redirect) AND `383f70` (aim, `:121`) BOTH draw the global LCG
+(`1ffb40`) → re-invoking them observe-only would shift the sim's RNG stream; so the `param_3==0` aim path is
+SKIPPED (returns -1, validated at the A3.3 takeover instead). The `param_3!=0` path (`385c70` aim + `385e70`
+LOS + `3857d0`/`397780` range) is RNG-free + shared-write-free (verified) ⇒ safe to re-invoke.** `385e70`
+writes `param_2[0..2]` (vec3) + `param_3[0..0xb]` (3×4) per `decomp/385e70.c` → buffers over-sized to 64B;
+matrices init from `DAT_140800820` (48B). **RESULT (2 battles, ~362 fires / 264k calls): `g3_ok=362`,
+`g3_bug=0`, `g3_skip=0` (param_3 always resolved → full coverage, no RNG path hit), `g3_nofire=115680`
+(gate-2b correctly REJECTED ~148k range/LOS-failing calls — the reject path now HEAVILY exercised, the
+coverage gate1/gate2a lacked); sim-invariant (DTB3 fields N/0, DTWA `idfail=0/ctrfail=0`, DTDRAIN
+`rank_down=0` ⇒ the buffer re-invocations did NOT perturb the sim); 0 crashes (64B buffers correctly
+sized).** ⇒ **the full R1 DECISION transcription (`60-209`, gate1+gate2a+gate2b) is COMPLETE + in-game
+validated** — the RNG-free fire/no-fire verdict is reproduced with zero false accept/reject of any fired
+shot and the dominant reject filter proven discriminating + correct. Methodology banked (25): for a
+buffer-passing observe chunk, vet EACH re-invoked leaf for (a) RNG draws and (b) shared-state writes BEFORE
+launching — `383f70`/`405870` hid `1ffb40` draws that a launch-without-vetting would have silently turned
+into sim perturbation; skip the RNG-tainted branch (validate it at takeover) and size output buffers from
+the leaf's decompiled writes (385e70 = vec3+3×4 → 64B).
+
+**NEXT = R1c geometry (`3825b0:211-260`: spread `381dc0` [LCG→substream] + lead solver `399450` [locked
+scratch] + `20acd0` dir→Euler — the RNG-tainted geometry, validated at takeover not observe) → R2 applier
+`pfire_apply_spawn` (`261-402`) → R3 cooldown (`403-490`) → A3.3 takeover flip (`EAW_PFIRE=3`).**
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
