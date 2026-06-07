@@ -1993,12 +1993,14 @@ static int pfire_on(void) {
         const char *e = getenv("EAW_PFIRE");
         g_pfire_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
         if (g_pfire_level < 0) g_pfire_level = 0;
-        if (g_pfire_level >= 2)
+        if (g_pfire_level >= 3)
+            log_write("[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=3) — A3.3 reimpl body takeover (1-shard, two-phase)\n");
+        else if (g_pfire_level >= 2)
             log_write("[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=2) — STAGE B two-phase split (1-shard)\n");
         else if (g_pfire_level == 1)
             log_write("[eaw-mt] PFIRE: in-game fire takeover ARMED (EAW_PFIRE=1) — STAGE A identity passthrough\n");
         else
-            log_write("[eaw-mt] PFIRE: off (EAW_PFIRE=1 identity / =2 two-phase to arm the t2be640 takeover)\n");
+            log_write("[eaw-mt] PFIRE: off (EAW_PFIRE=1 identity / =2 two-phase / =3 reimpl takeover to arm)\n");
     }
     return g_pfire_level;
 }
@@ -5016,6 +5018,7 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
 
 static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
     int armed = dt_on();
+    int pf = pfire_on();
     int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0, r1_g2a=0, r1_full=0;
     if (armed && p1) {
         owner      = *(int64_t *)(p1 + 0x10);
@@ -5023,44 +5026,73 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
         local238   = owner ? *(int64_t *)(owner + 0x100) : 0;
         order_pre  = local238 ? *(int32_t *)(local238 + 0x394) : 0;
         /* R1 observe: evaluate the gate verdict on the PRE-call state (gate1 early, +gate2a targeting,
-         * +gate2b aim/LOS/range). gate2b returns -1 when the binary takes the RNG aim path (skip). */
-        r1_g1 = pfire_r1_gate1(p1, (int64_t *)p2, p3);
-        r1_g2a = r1_g1 ? pfire_r1_gate2a(p1, (int64_t *)p2, p3) : 0;
-        r1_full = r1_g2a ? pfire_r1_gate2b(p1, (int64_t *)p2, p3) : 0;
+         * +gate2b aim/LOS/range). gate2b returns -1 when the binary takes the RNG aim path (skip).
+         * DISABLED at takeover (pf>=3): r is then the reimpl's OWN output, so the r-vs-verdict compare is
+         * tautological, AND the reimpl already calls these leaves exactly once — re-invoking the gate
+         * functions here would double-call them (wasteful, and the idempotent-but-global 35f470 fog rebuild
+         * twice). The free validation at takeover is dtwa_b3_check on the reimpl's created projectile. */
+        if (pf < 3) {
+            r1_g1 = pfire_r1_gate1(p1, (int64_t *)p2, p3);
+            r1_g2a = r1_g1 ? pfire_r1_gate2a(p1, (int64_t *)p2, p3) : 0;
+            r1_full = r1_g2a ? pfire_r1_gate2b(p1, (int64_t *)p2, p3) : 0;
+        }
         g_b3_in_fire = 1; g_b3_last_proj = 0;
     }
-    int64_t r = g_b3_3825b0_trampoline(p1, p2, p3);
+    /* ── A3.3 TAKEOVER (EAW_PFIRE=3) ── drive the firing body from the lifted reimpl instead of the binary.
+     * Runs in PhaseB (a76b0 is deferred to the 2a62d0 flush at level>=2, so every 3825b0 call here is on the
+     * settled world). pfire_fire_reimpl handles the common tactical path (returns 0 no-fire / 1 fired) and
+     * returns PFIRE_FALLBACK for the rare/dead edges (arc gate owner_type+0x4e==1; param_3==0 RNG aim path) —
+     * it bails BEFORE any RNG draw on those, so the binary fallback re-runs cleanly with no LCG perturbation.
+     * 1-shard: the reimpl's R2a create runs INLINE (= PhaseC), and it calls the binary 29f810, so the
+     * DTWA-SPAWN piggyback still captures g_b3_last_proj and dtwa_b3_check validates the reimpl's projectile
+     * §3 fields (firer/tgt/dmg/life/sub/vis — all RNG-free) bit-exact for free. */
+    int64_t r;
+    if (pf >= 3) {
+        r = pfire_fire_reimpl(p1, (int64_t *)p2, p3);
+        if (r == PFIRE_FALLBACK) r = g_b3_3825b0_trampoline(p1, p2, p3);
+    } else {
+        r = g_b3_3825b0_trampoline(p1, p2, p3);
+    }
     if (armed && p1) {
         g_b3_in_fire = 0;
-        /* R1 gate-1: r==1 ⇒ gate1 must pass (g1_bug = impossible); g1==1 & r==0 = blocked later. */
-        g_r1_g1_n++;
-        if (r == 1) { if (r1_g1) g_r1_g1_ok++; else g_r1_g1_bug++; }
-        else if (r1_g1) g_r1_g1_nofire++;
-        /* gate1+gate2a verdict (r==1 ⇒ must pass; g2_bug must be 0). */
-        if (r == 1) { if (r1_g2a) g_r1_g2_ok++; else g_r1_g2_bug++; }
-        else if (r1_g2a) g_r1_g2_nofire++;
-        /* gate1+gate2a+gate2b verdict; r1_full==-1 = skipped RNG aim path (param_3==0). */
-        if (r1_full == -1) g_r1_g3_skip++;
-        else if (r == 1) { if (r1_full == 1) g_r1_g3_ok++; else g_r1_g3_bug++; }
-        else if (r1_full == 1) g_r1_g3_nofire++;
+        if (pf < 3) {
+            /* R1 gate-1: r==1 ⇒ gate1 must pass (g1_bug = impossible); g1==1 & r==0 = blocked later. */
+            g_r1_g1_n++;
+            if (r == 1) { if (r1_g1) g_r1_g1_ok++; else g_r1_g1_bug++; }
+            else if (r1_g1) g_r1_g1_nofire++;
+            /* gate1+gate2a verdict (r==1 ⇒ must pass; g2_bug must be 0). */
+            if (r == 1) { if (r1_g2a) g_r1_g2_ok++; else g_r1_g2_bug++; }
+            else if (r1_g2a) g_r1_g2_nofire++;
+            /* gate1+gate2a+gate2b verdict; r1_full==-1 = skipped RNG aim path (param_3==0). */
+            if (r1_full == -1) g_r1_g3_skip++;
+            else if (r == 1) { if (r1_full == 1) g_r1_g3_ok++; else g_r1_g3_bug++; }
+            else if (r1_full == 1) g_r1_g3_nofire++;
+        }
         if (r == 1 && g_b3_last_proj && owner && owner_type)
             dtwa_b3_check(g_b3_last_proj, owner, owner_type, p2, p3, local238, order_pre);
         uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
         if (tk != g_b3_last && (tk & 0x3ffu) == 0) {     /* every 1024 ticks */
             g_b3_last = tk; char db[384];
             snprintf(db, sizeof db,
-                "DTB3SUM\ttick=%u\tn=%u\tfirer=%u/%u\ttgt=%u/%u\tsub=%u/%u\tsub_reasn=%u\tdmg=%u/%u\tlife=%u/%u\tvis=%u/%u\tcharge=%u\tskip=%u\targ_n=%u\targ_mgr=%u/%u\targ_tmpl=%u/%u\n",
+                "DTB3SUM\ttick=%u\tn=%u\tfirer=%u/%u\ttgt=%u/%u\tsub=%u/%u\tsub_reasn=%u\tdmg=%u/%u\tlife=%u/%u\tvis=%u/%u\tcharge=%u\tskip=%u\targ_n=%u\targ_mgr=%u/%u\targ_tmpl=%u/%u%s\n",
                 tk, g_b3_n, g_b3_firer_ok,g_b3_firer_bad, g_b3_tgt_ok,g_b3_tgt_bad,
                 g_b3_sub_ok,g_b3_sub_bad, g_b3_sub_reasn, g_b3_dmg_ok,g_b3_dmg_bad, g_b3_life_ok,g_b3_life_bad,
                 g_b3_vis_ok,g_b3_vis_bad, g_b3_charge, g_b3_skip,
-                g_b3_arg_n, g_b3_arg_mgr_ok,g_b3_arg_mgr_bad, g_b3_arg_tmpl_ok,g_b3_arg_tmpl_bad);
+                g_b3_arg_n, g_b3_arg_mgr_ok,g_b3_arg_mgr_bad, g_b3_arg_tmpl_ok,g_b3_arg_tmpl_bad,
+                pf >= 3 ? "\tTAKEOVER=reimpl" : "");
             log_write(db);
-            snprintf(db, sizeof db,
-                "DTR1SUM\ttick=%u\tg1_n=%u\tg1_ok=%u\tg1_bug=%u\tg1_nofire=%u\tg2_ok=%u\tg2_bug=%u\tg2_nofire=%u\tg3_ok=%u\tg3_bug=%u\tg3_nofire=%u\tg3_skip=%u\n",
-                tk, g_r1_g1_n, g_r1_g1_ok, g_r1_g1_bug, g_r1_g1_nofire,
-                g_r1_g2_ok, g_r1_g2_bug, g_r1_g2_nofire,
-                g_r1_g3_ok, g_r1_g3_bug, g_r1_g3_nofire, g_r1_g3_skip);
-            log_write(db);
+            if (pf < 3) {
+                snprintf(db, sizeof db,
+                    "DTR1SUM\ttick=%u\tg1_n=%u\tg1_ok=%u\tg1_bug=%u\tg1_nofire=%u\tg2_ok=%u\tg2_bug=%u\tg2_nofire=%u\tg3_ok=%u\tg3_bug=%u\tg3_nofire=%u\tg3_skip=%u\n",
+                    tk, g_r1_g1_n, g_r1_g1_ok, g_r1_g1_bug, g_r1_g1_nofire,
+                    g_r1_g2_ok, g_r1_g2_bug, g_r1_g2_nofire,
+                    g_r1_g3_ok, g_r1_g3_bug, g_r1_g3_nofire, g_r1_g3_skip);
+                log_write(db);
+            } else {
+                snprintf(db, sizeof db,
+                    "DTR1SUM\ttick=%u\tTAKEOVER(EAW_PFIRE=3): reimpl drives the fire body; r-vs-gate observe disabled (r is the reimpl's own verdict)\n", tk);
+                log_write(db);
+            }
         }
     }
     return r;

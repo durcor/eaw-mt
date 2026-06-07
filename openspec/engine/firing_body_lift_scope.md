@@ -817,6 +817,33 @@ the leaf's decompiled writes (385e70 = vec3+3×4 → 64B).
 scratch] + `20acd0` dir→Euler — the RNG-tainted geometry, validated at takeover not observe) → R2 applier
 `pfire_apply_spawn` (`261-402`) → R3 cooldown (`403-490`) → A3.3 takeover flip (`EAW_PFIRE=3`).**
 
+**✅ R1c + R2 applier + R3 cooldown TRANSCRIBED + unified into `pfire_fire_reimpl` (commits 4403307→de771bd,
+compile-green; R1c/R2a takeover-validated note carried from the gate-2b observe pass).** The reimpl mirrors
+the whole firing body as one function — decision inline (gate1+gate2a+gate2b-common) → R1c geometry → R2a/R2b
+applier → R3 cooldown — returning 0 (no-fire) / 1 (fired) / `PFIRE_FALLBACK` (2 = run the stock binary).
+Safe-rollout design: handles only the common tactical path; falls back to the binary for the rare/dead edges
+(the `owner_type+0x4e==1` arc gate, and the `param_3==0` RNG aim path that in-game data showed never occurs
+tactically, `g3_skip=0`) — and it bails BEFORE any RNG draw on those, so the binary fallback re-runs with no
+LCG perturbation. Each binary leaf called exactly once (binary parity, no double-call).
+
+### 8.16 PATH A — A3.3 TAKEOVER WIRED (compile-green, EAW_PFIRE=3) — 2026-06-07
+The takeover flip is wired into the existing DTWA-B3 `3825b0` entry-detour (`dtwa_b3_3825b0_hook`): when
+`pfire_on() >= 3`, the hook calls `pfire_fire_reimpl(p1,p2,p3)` instead of the binary trampoline; on
+`PFIRE_FALLBACK` it calls the binary. Default-OFF, 1-shard, gated behind `EAW_PFIRE=3` (mirrors STAGE A/B).
+Because level≥2 already DEFERS the fire to the `2a62d0` flush (`pfire_a76b0_intercept`), every `3825b0` call
+under takeover runs in **PhaseB on the settled world** — A3.3 is STAGE-B-two-phase + the reimpl body, exactly
+the seam A4 threads. **Validation comes for free:** at takeover the reimpl's R2a creates the projectile via
+the binary `29f810`, so the DTWA-SPAWN piggyback captures it and `dtwa_b3_check` auto-validates its §3 fields
+(firer/tgt/dmg/life/sub/vis — all RNG-free, so still a bit-exact oracle even though R1c-onward geometry is
+RNG-tainted). **Two oracle-interactions handled:** (1) the R1 gate-verdict observe (g* vs binary r) is gated
+OFF at `pf>=3` — r is then the reimpl's own output so the compare is tautological, and the reimpl already
+calls those leaves once (re-invoking would double-call, incl. the global `35f470` fog rebuild); (2) DTR1SUM
+prints a takeover marker instead of the now-frozen gate counters. Compile-green via `build-winmm-oracle`.
+**LAUNCH GATE (the A3 reassessment gate, §8.14):** DTB3SUM all `N/0` (reimpl projectile field-identical to
+binary) + DTWA `idfail=0/ctrfail=0` + DTDRAIN `rank_down=0` + sane fire cadence + low/zero fallback rate +
+0 crashes ⇒ A4 is mechanical; if a field diverges, fix/reassess. Needs a live space battle (fire-path data
+needs combat) — `just pfire=3 difftrace=1 launch-foc-desktop` (or the oracle-launch recipe).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

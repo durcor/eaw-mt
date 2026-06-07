@@ -19,7 +19,7 @@ offwatch := ""
 a1 := ""
 # a2.0 Amdahl measurement (oracle build): time 3a6b80 body vs 3a76b0 fire-control, DT hooks skipped. Override: just a2measure=1 launch-foc-desktop
 a2measure := ""
-# Milestone pfire (§8.10 step 4): gated in-game fire takeover at t2be640 (default OFF, 1-shard). =1 STAGE A identity passthrough, =2 STAGE B two-phase settle/fire split. Override: just pfire=2 launch-foc-desktop
+# Milestone pfire (§8.10 step 4): gated in-game fire takeover at t2be640 (default OFF, 1-shard). =1 STAGE A identity passthrough, =2 STAGE B two-phase settle/fire split, =3 A3.3 reimpl body takeover (needs difftrace=1 for the DTWA-B3 gate). Override: just pfire=3 difftrace=1 launch-foc-desktop
 pfire := ""
 save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
