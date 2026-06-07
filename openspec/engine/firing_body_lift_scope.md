@@ -977,6 +977,30 @@ the rejecting gate/R1c via the ungated `PFIRE-C` counters at pfire=3 (now visibl
 firer split; the prime suspect is the STAGE-B settled-state read or the never-observe-validated R1c geometry.
 Re-validate with a PROPER oracle: reimpl fire-rate ≈ binary fire-rate per firer-faction, not just field N/0.
 
+### 8.20 ROOT CAUSE FOUND + 2 fixes; create-geometry has a CLASS of Ghidra-args traps (2026-06-07, 9f91d65, 909e4b8)
+Localized with in-game exit-stage counters + value dumps (PFLEAD lead I/O, PFPOS proj-vs-firer position).
+The reimpl rejected 100% of fires at the **R1c lead-zero check** (`r1cfail=80,199=100%`, `reachedR2=0`). Cause
++ fixes, both in the never-observe-validated R1c geometry:
+- **(1) `370f00` is Ghidra-`void`/undefined4 but RETURNS A FLOAT (projectile speed) in XMM0**, and `399450`'s
+  `param_6` is a **float** lead-multiplier (`399450:214 local_104 * param_6`). Transcribed as int ⇒ leftover-RAX
+  garbage into a float arg ⇒ `lead = x*0 = 0` ⇒ never fires. **FIX: `370f00`→float, `399450` param_6→float,
+  `rec+0x90` stores float bits.** In-game: `reachedR2 0→16,364`, `lead0 100%→~0`, DTB3SUM all `N/0`, ships fire.
+- **(2) `ffbb0` (spread draw) is really `ffbb0(LCG, lo, hi)`→uniform random in `[lo,hi]`** (ret RAX low32; lo/hi
+  = float-bits in GP regs RDX/R8). Ghidra **dropped lo/hi** (showed `ffbb0(&LCG)`); the binary's leftover regs
+  hold the two muzzle matrices' translation columns (`mat1[k]`,`mat2[k]` = the spread cone). My 1-arg call ⇒
+  garbage bounds ⇒ spread-weapon projectiles at the origin. **FIX: spread branch = `ffbb0_range(LCG, mat1[k],
+  mat2[k])`, k∈{3,7,11}.** First ship group now spawns at the muzzle.
+- **REMAINING (unfixed): a 2nd firer population still spawns at EXACT `(0,0,0)`** ⇒ their `mat1`/`mat2`
+  translation is 0 (`385e70` not filling the muzzle for them) = a further create-geometry trap.
+
+**Methodology #27:** a Ghidra-`void`/undefined4 function may actually return a FLOAT in XMM0, and Ghidra DROPS
+trailing args passed in leftover registers — both invisible at the call site, both bit-wrong if transcribed
+literally. **The field oracle (DTB3SUM `N/0`) is necessary-not-sufficient** — it validated firer/tgt/dmg/life
+but NOT the create POSITION/GEOMETRY, which is exactly where these bugs live. **The right fix is a create-pos/
+orient OBSERVE oracle at pfire=2** (binary fires; recompute the reimpl's geometry on the same pre-call state and
+compare to the binary's actual projectile transform) to surface ALL the remaining traps in one battle, instead
+of whack-a-mole one-per-launch. Then re-validate fire-rate≈binary per faction (methodology #26).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
