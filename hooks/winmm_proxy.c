@@ -5465,6 +5465,21 @@ static int64_t  g_i4_last_ctx = 0, g_i4_last_mgr = 0;
 static int32_t  g_i4_last_oid = -1;
 static uint32_t g_i4_hp = 0, g_i4_objtrans = 0, g_i4_mgrtrans = 0, g_i4_idup = 0, g_i4_iddown = 0, g_i4_ideq = 0;
 static uint64_t g_i4_total_hp = 0, g_i4_total_ticks = 0, g_i4_max_hp = 0, g_i4_max_obj = 0;
+/* I5 VALIDATION HARNESS (§8.38): the per-tick world-state fingerprint = the serial-vs-parallel determinism gate.
+ * Folded inside the I4 detour: when 387010 fires for an object, that object's MOVEMENT for this tick already ran
+ * (locomotor precedes fire-control within its 3a76b0), so its position is SETTLED + reproducible. Each distinct
+ * fire-control object's (object_id, pos x/y/z @+0x78) is hashed (FNV-1a) and accumulated COMMUTATIVELY (sum) into
+ * a per-tick world hash — order-independent, so the eventual parallel reordering of the walk can't perturb it. A
+ * parallel fire-control tick that stays deterministic reproduces this DTWORLD stream tick-for-tick on a fixed
+ * save+replay; a desync (different targeting→different shots→different downstream motion) breaks it. Covers
+ * fire-control objects (ships w/ hardpoints); projectiles/non-combat = a later completeness refinement. */
+static uint64_t g_i4_whash = 0; static uint32_t g_i4_wobj = 0;
+static inline uint64_t dt_fnv_obj(int32_t id, const float *pos3) {
+    uint64_t x = DT_FNV_BASIS; const uint8_t *b;
+    b = (const uint8_t *)&id;  for (int i = 0; i < 4;  i++) { x ^= b[i]; x *= DT_FNV_PRIME; }
+    b = (const uint8_t *)pos3; for (int i = 0; i < 12; i++) { x ^= b[i]; x *= DT_FNV_PRIME; }
+    return x;
+}
 
 static void i4_387010_hook(int64_t hp, int32_t tick) {
     if (g_dt_imgbase) {
@@ -5487,16 +5502,25 @@ static void i4_387010_hook(int64_t hp, int32_t tick) {
                         (unsigned long long)g_i4_max_hp, (unsigned long long)g_i4_max_obj);
                     log_write(b);
                 }
+                if (dt_on() && (g_i4_tick & 0x3ffu) == 0 && g_i4_tick == g_i4_logged) {  /* I5 harness fingerprint */
+                    char wb[96];
+                    snprintf(wb, sizeof wb, "DTWORLD\ttick=%u\tobj=%u\th=%016llx\n",
+                             g_i4_tick, g_i4_wobj, (unsigned long long)g_i4_whash);
+                    log_write(wb);
+                }
             }
             g_i4_tick = tk;
             g_i4_hp = g_i4_objtrans = g_i4_mgrtrans = g_i4_idup = g_i4_iddown = g_i4_ideq = 0;
             g_i4_last_ctx = 0; g_i4_last_oid = -1; g_i4_last_mgr = 0;
+            g_i4_whash = 0; g_i4_wobj = 0;
         }
         g_i4_hp++;
         int64_t ctx = *(int64_t *)(hp + 0x10);              /* context = the owning GameObject */
-        if (ctx && ctx != g_i4_last_ctx) {                  /* object transition */
+        if (ctx && ctx != g_i4_last_ctx) {                  /* object transition = a distinct object */
             int32_t oid = *(int32_t *)(ctx + 0x50);         /* §I1 object_id */
             int64_t mgr = *(int64_t *)(ctx + 0x2b8);        /* §I1 manager */
+            g_i4_whash += dt_fnv_obj(oid, (const float *)(ctx + 0x78));  /* fold settled pos (commutative) */
+            g_i4_wobj++;
             if (g_i4_last_ctx != 0) {
                 g_i4_objtrans++;
                 if      (oid > g_i4_last_oid) g_i4_idup++;

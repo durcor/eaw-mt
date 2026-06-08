@@ -1478,6 +1478,22 @@ enumerable+partitionable [I4], Phase-A concurrent-safe [Fork B 1-3], Phase-B buf
 I4], host scheduler validated) and treat the in-game threaded tick as a separate engineering milestone gated on the
 harness; (c) attempt the in-game fan-out now despite the validation gap (high risk, weak gate).
 
+### 8.38 B3.5.1 — I5 VALIDATION HARNESS v1: per-tick world fingerprint in the ORACLE build (2026-06-08)
+User picked (a) — build the harness. The existing `dt_emit`/FNV fingerprint was profile-build-only (`a76b0_hook`,
+crashes on battle load); rebuilt the same idea in the STABLE oracle build, folded INSIDE the I4 `387010` detour
+(no new risky entry-hook). **Insight that makes the I4 site valid:** when `387010` fires for object X, X's MOVEMENT
+for this tick already ran (the locomotor precedes fire-control within X's `3a76b0`), so X's position `@+0x78` is
+SETTLED — folding it there captures X's reproducible this-tick position. Each distinct fire-control object's
+`(object_id, pos x/y/z)` is FNV-1a hashed and accumulated **commutatively (sum)** into a per-tick world hash —
+order-independent, so the eventual parallel reordering of the walk cannot perturb it. Emits `DTWORLD tick obj h`
+on the 1024-tick cadence (alongside the I4 line; sampled, since a desync persists). **The determinism gate:** a
+parallel fire-control tick that stays deterministic reproduces this `DTWORLD` stream on a fixed save+replay; a
+desync (different targeting → different shots → divergent downstream motion) breaks the hash and STAYS broken.
+Compile-green, gated `EAW_DIFFTRACE=1`. **Coverage:** fire-control objects (ships with hardpoints) — the units the
+parallelization actually moves; projectiles/non-combat objects are a later completeness refinement (would need the
+full GOM/registry walk, not the fire-control work-list). NEXT = validate the harness (stock save-replay → identical
+`DTWORLD` stream across two runs = the determinism BASELINE), then it gates the in-game N-shard fan-out.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
