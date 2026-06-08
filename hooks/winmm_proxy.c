@@ -4140,6 +4140,7 @@ static uint32_t g_drain_last=0xFFFFFFFFu, g_drain_detail=0;
  * that the binary just filled, sidestepping its memoizing write). Observe-only; EAW_DIFFTRACE=1. */
 static int     g_b3_in_fire   = 0;       /* inside a 3825b0 call → next 29f810 create is the projectile */
 static int64_t g_b3_last_proj = 0;       /* the projectile captured by the 29f810 piggyback */
+static int64_t g_pf_reimpl_p2 = 0;       /* the reimpl's RESOLVED param_2 (post-405870 redirect) for the tgt oracle */
 static uint32_t g_b3_n=0, g_b3_skip=0, g_b3_charge=0;
 static uint32_t g_b3_firer_ok=0,g_b3_firer_bad=0, g_b3_tgt_ok=0,g_b3_tgt_bad=0,
                 g_b3_sub_ok=0,g_b3_sub_bad=0,g_b3_sub_reasn=0, g_b3_dmg_ok=0,g_b3_dmg_bad=0,
@@ -4815,8 +4816,10 @@ static int pfire_compute_geom(int64_t p1, int64_t *p2arg, int64_t p3,
 static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     float S[48];
     int64_t lVar7 = 0, local_238 = 0, p3r = p3, p2r = (int64_t)p2arg;
+    g_pf_reimpl_p2 = (int64_t)p2arg;                   /* default (fallback fires keep the caller's target) */
     int g = pfire_compute_geom(p1, p2arg, p3, S, &lVar7, &local_238, &p3r, &p2r, NULL, NULL);
     if (g != 1) return g;                              /* 0 no-fire / PFIRE_FALLBACK propagated */
+    g_pf_reimpl_p2 = p2r;                              /* the resolved (maybe 405870-redirected) target */
 
     /* ---- R2 applier (261-402): create+init + Class-2b ---- A3.3 inline create (1-shard).
      * p2r = the RESOLVED target (the param_3==0 path may have redirected it via 405870) — the binary uses the
@@ -5361,8 +5364,14 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
             else if (r == 1) { if (r1_full == 1) g_r1_g3_ok++; else g_r1_g3_bug++; }
             else if (r1_full == 1) g_r1_g3_nofire++;
         }
-        if (r == 1 && g_b3_last_proj && owner && owner_type)
-            dtwa_b3_check(g_b3_last_proj, owner, owner_type, p2, p3, local238, order_pre);
+        if (r == 1 && g_b3_last_proj && owner && owner_type) {
+            /* tgt oracle checks rec+0x08 == param_2. At takeover the param_3==0 path may REDIRECT param_2
+             * (405870), and the projectile correctly stores the redirected target — so compare against the
+             * reimpl's RESOLVED p2 (g_pf_reimpl_p2), not the stale pre-redirect arg, else redirected fires
+             * false-flag. (At pf<3 the binary's internal redirect is invisible, so use the entry p2 as before.) */
+            int64_t chk_p2 = (pf >= 3) ? g_pf_reimpl_p2 : p2;
+            dtwa_b3_check(g_b3_last_proj, owner, owner_type, chk_p2, p3, local238, order_pre);
+        }
         uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
         if (tk != g_b3_last && (tk & 0x3ffu) == 0) {     /* every 1024 ticks */
             g_b3_last = tk; char db[384];
