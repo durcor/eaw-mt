@@ -1369,6 +1369,30 @@ obs_match=4,860,045 obs_wmiss=0 obs_smiss=0 obs_lmiss=74,352`, no crash; EVERY D
 `383f70` reaches its `:121` draw). ⇒ the per-candidate substream yields the bit-identical winner+score while the
 global LCG is bypassed — the I2 retrofit is selection-safe, empirically confirmed. NEXT = step 4 (thread-pool the
 candidate walk + the
+thread-local `1ffb40` redirect; residual leaf decodes `397060`/`373670`/`396cb0` owed first) + step 5.
+
+### 8.34 B3.3.6 — STEP 4 PREREQUISITE: residual leaf audit COMPLETE + a decisive GRANULARITY finding (2026-06-08)
+Decoded the residual per-candidate leaves (Ghidra): `397060` (membership test — does the cand appear in its
+`+0x2b0`+200 list), `373670` / `396cb0` (bounded array indexers at `+0xc40`/`+0x2d0`). **All 3 are PURE READS** —
+no writes, heap, TLS, static buffers, or mutating vfuncs (`264b8b0` from the §8.29 list was a stale entry — NOT a
+callee). ⇒ **the leaf audit is COMPLETE: with steps 1-3's primitives (FOG lock, skeleton pre-warm, RNG substream)
+the entire per-candidate eval is concurrent-call-safe** (every other leaf — `39b140`/`39a540`/`540140`/`3973b0`/
+`398440`/`397780`/`2648b0`/`3857d0`/`383ba0`/`776d48`/`12d2c0`-after-warm/`145fa0` + vfuncs `0x11`/`9`/`0x118` — was
+already grep-clean reads). Methodology-#23 gate PASSED.
+**⛔ BUT — DECISIVE GRANULARITY FINDING (DTSCAN avg_us): a per-`385190`-call thread pool is UNPROFITABLE.** Each
+`385190` call costs **~1-5 µs** (`avg_us` 1.1→5.4 across the battle; total ≈23 s over 4.9M calls). That is BELOW
+OS thread wakeup/sync latency (~5-20 µs), so fanning ONE call's handful of candidates across worker threads is a
+guaranteed NET LOSS — sync overhead dwarfs the work. Fork B's literal definition (intra-`385190` candidate fan-out)
+is the WRONG GRAIN; the §8.28 "payoff capped by the serial tick driver" caveat is in fact sharper than stated.
+**THE PRIMITIVES ARE NOT WASTED — they retarget:** steps 1-3 + this audit prove `385190`/`387400` are safe to run
+as a CONCURRENT Phase-A BODY, so the profitable realization is the OUTER OBJECT-GRANULAR parallelism — the
+`ShardScheduler` (`sim/shard_scheduler.h`, built+host-validated) running `387400` per-hardpoint/object across shards
+(hundreds-thousands of independent fire-control calls per tick, amortizing thread sync over MANY scans per shard).
+That is the convergence of Fork A and Fork B: Fork B's concurrent-safety work is exactly what lets the object-grain
+scheduler (Fork A's domain) run the fire-control body safely. **⇒ Step 4 RESHAPES: do NOT build a per-call thread
+pool (knowingly slower). The remaining work is wiring `387400` as a `ShardScheduler` Phase-A body — which needs the
+long-deferred `FrozenSnapshot` + iteration-set + tick-driver-replacement engine-source pieces (`sim_tick_decomp_
+program.md`). USER DECISION (Rule 6) pending.**
 thread-local `1ffb40` redirect; residual leaf decodes `397060`/`373670`/`396cb0`/`264b8b0` owed first) + step 5
 (deterministic reduction replicating the `score==1.0` early-exit; confirm 1.0 is the global-min score).
 
