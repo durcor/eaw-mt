@@ -1301,6 +1301,25 @@ per-thread FOG scratch (§8.29 H3); (2) serial skeleton pre-warm pass over shoot
 (5) deterministic reduction replicating `385190`'s early-exit-at-`score==1.0` (confirm 1.0 is the global-min score,
 else segmented-scan §8.28); validate via DTSCANOBS winner/score parity + stability. Residual leaf decodes
 (`397060`/`373670`/`396cb0`/`264b8b0`) still owed before step 4 but all expected clean (§8.29 grep).
+
+### 8.31 B3.3.3 — FORK B STEP 1: `35f470` FOG made concurrent-safe via a lock-guarded primitive (2026-06-08)
+Decoded `35f470`'s scratch filler `FUN_14035dec0` (`decomp/35dec0.c`): it's a target-silhouette projection that
+pushes ~8+ bounding-corner points (12-byte {x,y,flag} each) into the `DynamicVectorClass` at `DAT_140a28530`
+(vtable `+0`, buf `DAT_140a28538`/`+8`, count `DAT_140a28540`/`+0x10`, cap `+0x14`) via `19f6a0` grow + the
+`20d1c0/210/260/2b0/310/3b0/340/380` corner projectors; `35f470` then runs a per-segment grid-occlusion loop
+(`4c0e00`) over that vector. **A TRUE per-thread lift = transcribing `35dec0` + 8 projectors + `4c0e00` + `39a230`
+(~10 functions) onto a thread-local vector — disproportionate, since FOG is the CHEAP gate clause (the parallel
+win is `383f70`/bones) and many calls early-out before touching the scratch (fog-disabled `DAT_140a284c4==0`,
+always-visible target flags).** **DECISION (Step 1): a LOCK-GUARDED primitive** — wrap the real `35f470` in a
+`CRITICAL_SECTION` so the shared `DynamicVectorClass` build+consume is serialized across scan-worker threads, reusing
+the engine logic BIT-EXACTLY (no transcription risk). Correct + deterministic (each call fully rebuilds+consumes its
+own query; result is order-independent) + reversible. **Built** `pfire_fog_occluded(b15418, sid, cand)` (the §8.29
+clause-I call now routes through it) + `g_fog_cs` (init in `install_dtscan_hook`). The lock is INERT in the current
+serial reimpl (uncontended) — it is the safe primitive the step-4 thread pool will rely on; validated NO-REGRESSION
+(DTSCANOBS winner/score/LCG parity preserved with the wrapper in the gate). **Deferred optimization (if step-4
+profiling shows FOG contention):** lock-free early-outs (`35f470:16-23`, pure reads — needs a `39a230` concurrent-
+safety audit) + a lock-around-`35dec0`-build-then-copy-out so the per-segment `4c0e00` loop runs lock-free on a
+thread-local segment copy (the SpatialQueryGuard §8.6 pattern applied to FOG).
 - **RESIDUAL DECODES (not yet read, all flagged for the same write-scan):** `397060` (gate clause H), `373670`,
   `396cb0`, `264b8b0` (`383f70` callees). `776d48` confirmed = sqrt.
 **NET so far:** the per-candidate hazard surface is SMALL — one definite lift (`35f470`), one substream (`1ffb40`),

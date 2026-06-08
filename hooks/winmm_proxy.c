@@ -5150,6 +5150,21 @@ typedef void    (*R1_20e780Fn)(int64_t, void*);      /* FUN_14020e780(grid, &box
 typedef char    (*R1_397060Fn)(int64_t*);            /* FUN_140397060(cand) gate predicate */
 typedef float   (*R1_Vfunc118Fn)(int64_t*, int64_t); /* (*(*owner+0x118))(owner, tgt_id) → priority score */
 
+/* ── Fork B STEP 1 (firing_body_lift_scope.md §8.31): FOG `35f470` made concurrent-call-safe. `35f470`'s only
+ * shared mutable state is the global silhouette DynamicVectorClass at DAT_140a28530 (buf+8/count+0x10/cap+0x14),
+ * which it frees+rebuilds (via 35dec0) + consumes per call → concurrent calls = use-after-free. A true per-thread
+ * scratch = a ~10-function transcription (35dec0 + 8 corner projectors + 4c0e00 + 39a230); disproportionate for
+ * the CHEAP gate clause. So serialize the global-scratch critical section with a CRITICAL_SECTION and reuse the
+ * engine `35f470` bit-exactly. INERT in the serial reimpl (uncontended); the safe primitive the step-4 thread pool
+ * relies on. Deterministic: each call fully rebuilds+consumes its own query, so the 0/1 result is order-independent. */
+static CRITICAL_SECTION g_fog_cs;
+static int pfire_fog_occluded(int64_t b15418, int32_t team, int64_t cand) {
+    EnterCriticalSection(&g_fog_cs);
+    int r = ((R1_35f470Fn)(g_dt_imgbase + 0x35f470))(b15418, team, (int64_t *)cand, 1);
+    LeaveCriticalSection(&g_fog_cs);
+    return r;
+}
+
 static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
     if (!g_dt_imgbase) return 0;
     const float WIN  = *(float *)(g_dt_imgbase + 0x899780);   /* DAT_140899780 = 1.0 (perfect winner) */
@@ -5192,8 +5207,8 @@ static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
         if (!((*(char *)(owner + 0x3b4) != 1 && *(char *)((int64_t)c + 0x3b4) != 1) ||
               ((R1_39a540Fn)(g_dt_imgbase + 0x39a540))(owner, c) != 0)) continue;     /* G */
         if (((R1_397060Fn)(g_dt_imgbase + 0x397060))(c) != 0) continue;              /* H */
-        if (((R1_35f470Fn)(g_dt_imgbase + 0x35f470))(b15418, *(int32_t *)(owner + 0x58), c, 1) == 1)
-            continue;                                                                 /* I FOG */
+        if (pfire_fog_occluded(b15418, *(int32_t *)(owner + 0x58), (int64_t)c) == 1)
+            continue;                                                                 /* I FOG (§8.31 lock-guarded) */
         if (!(*(char *)(owner_type + 0x4e) != 1 ||
               ((R1_383ba0Fn)(g_dt_imgbase + 0x383ba0))(p1, (float *)((int64_t)c + 0x78)) != 0))
             continue;                                                                 /* J */
@@ -5339,6 +5354,7 @@ static BOOL install_dtscan_hook(void) {
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
     if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
+    InitializeCriticalSection(&g_fog_cs);    /* Fork B §8.31: guards 35f470's global FOG scratch for the scan workers */
     BYTE *fn = (BYTE *)exe + DTSCAN_385190_RVA;
     size_t n = sizeof dtscan_385190_prologue;        /* 15 */
     if (memcmp(fn, dtscan_385190_prologue, n) != 0) {
