@@ -5133,6 +5133,76 @@ static BOOL install_dtwa_spawn_hook(void) {
     return TRUE;
 }
 
+/* ── DTSCAN (firing_body_lift_scope.md §8.17 / A4 B2): characterize the opportunity-scan's expensive leaf.
+ * FUN_140385190 is the per-candidate spatial-eval + full gate-predicate; it is CALLED ONLY by the opp-scan in
+ * FUN_140387400 (scan-exclusive, confirmed across decomp/), so a single entry-detour directly measures the
+ * scan's candidate-eval LOAD, per-eval COST (the §8.9 "expensive part" = ~80% of fire-control per PFIRESPLIT),
+ * and SELECTION outcomes. Pure observe (binary runs unchanged). A selection = 385190 returns non-null with the
+ * winner score DAT_140899780 (=1.0). RNG note: the scan/385190 are RNG-RETROFIT under A4 (substream the
+ * random start + per-candidate 383f70 draw) ⇒ the lift will NOT be bit-exact vs the global-LCG binary BY
+ * DESIGN; the right gate is this STRUCTURAL distribution (eval count / hit rate / cost), not a value replay. */
+#define DTSCAN_385190_RVA 0x385190ULL
+static const BYTE dtscan_385190_prologue[15] = {   /* push rbp; push rdi; sub rsp,0xa8; movss xmm0,[r8] */
+    0x40,0x55, 0x57, 0x48,0x81,0xec,0xa8,0x00,0x00,0x00, 0xf3,0x41,0x0f,0x10,0x00
+};
+typedef int64_t (*Eval385190Fn)(int64_t, int64_t, float*);
+static Eval385190Fn g_dtscan_385190_trampoline = NULL;
+static uint64_t g_dtscan_evals = 0, g_dtscan_hit = 0, g_dtscan_winner = 0;
+static int64_t  g_dtscan_eval_qpc = 0;
+static uint32_t g_dtscan_last = 0xFFFFFFFFu;
+
+static int64_t dtscan_385190_hook(int64_t p1, int64_t cand, float *score) {
+    LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+    int64_t ret = g_dtscan_385190_trampoline(p1, cand, score);
+    LARGE_INTEGER t1; QueryPerformanceCounter(&t1);
+    g_dtscan_eval_qpc += (t1.QuadPart - t0.QuadPart);
+    g_dtscan_evals++;
+    if (ret != 0) {
+        g_dtscan_hit++;
+        if (score && g_dt_imgbase && *score == *(float *)(g_dt_imgbase + 0x899780)) g_dtscan_winner++;  /* ==1.0 sentinel */
+    }
+    if (dt_on()) {
+        uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+        if (tk != g_dtscan_last && (tk & 0x3ffu) == 0) {     /* every 1024 ticks */
+            g_dtscan_last = tk;
+            LARGE_INTEGER qpf; QueryPerformanceFrequency(&qpf);
+            double ms = qpf.QuadPart ? (double)g_dtscan_eval_qpc * 1000.0 / (double)qpf.QuadPart : 0.0;
+            char sb[224];
+            snprintf(sb, sizeof sb,
+                "DTSCAN\ttick=%u\tevals=%llu\thit=%llu\twinner=%llu\teval_ms=%.1f\tavg_us=%.3f\n",
+                tk, (unsigned long long)g_dtscan_evals, (unsigned long long)g_dtscan_hit,
+                (unsigned long long)g_dtscan_winner, ms,
+                g_dtscan_evals ? ms * 1000.0 / (double)g_dtscan_evals : 0.0);
+            log_write(sb);
+        }
+    }
+    return ret;
+}
+
+static BOOL install_dtscan_hook(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
+    BYTE *fn = (BYTE *)exe + DTSCAN_385190_RVA;
+    size_t n = sizeof dtscan_385190_prologue;        /* 15 */
+    if (memcmp(fn, dtscan_385190_prologue, n) != 0) {
+        log_write("[eaw-mt] WARN: opp-scan eval (0x385190) prologue mismatch — DTSCAN not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_write("[eaw-mt] WARN: VirtualAlloc for DTSCAN trampoline failed\n"); return FALSE; }
+    memcpy(tramp, dtscan_385190_prologue, n);
+    write_abs_jmp(tramp + n, (uint64_t)(fn + n));
+    g_dtscan_385190_trampoline = (Eval385190Fn)tramp;
+    DWORD old;
+    VirtualProtect(fn, n, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)dtscan_385190_hook);
+    VirtualProtect(fn, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, n);
+    log_write("[eaw-mt] DTSCAN: opp-scan eval (0x385190) load/cost/selection observe installed\n");
+    return TRUE;
+}
+
 /* ── DTWA-B3: structural oracle for the b3 projectile create+init restructure (see globals above). ────
  * Entry-detour FUN_1403825b0. Prologue (objdump 0x3825b0): mov rax,rsp; push rbp/rbx/rsi/rdi/r13/r15;
  * lea -0x218(rax),rbp = 18 bytes, all position-independent (clean cut before `sub rsp`). */
@@ -11485,6 +11555,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_dtwa_spawn_hook();/* DTWA-SPAWN: CreateObject I1 append-order + manager-resolution oracle (EAW_DIFFTRACE=1) */
         install_dtwa_b3_hook();   /* DTWA-B3: firing-body projectile init §3 source-map oracle (EAW_DIFFTRACE=1) */
         install_dtwa_sig_hook();  /* DTWASIG: signal fan-out Command-schema/traffic oracle (EAW_DIFFTRACE=1) */
+        install_dtscan_hook();    /* DTSCAN: opp-scan eval (0x385190) load/cost/selection observe (A4 B2, EAW_DIFFTRACE=1) */
         install_a1_sfx_hook();    /* a1: gated SFX takeover — 2d5290 buffer+canonical-drain (EAW_A1=1 to arm) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
         }
