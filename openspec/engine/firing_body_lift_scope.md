@@ -1197,6 +1197,49 @@ gate walk N-shard; B3.4 = fork-A thread the `387400` team-walk with the `:250` t
 RNG-transparency result simplifies B3.3: since the serial reimpl's draw-stream already matches the binary, the
 substream retrofit (H2) is the ONLY thing that changes the numbers, and only when shards run concurrently.
 
+### 8.28 B3.3.0 — PRE-BUILD AUDIT: the "drop the binary + N-shard in-game" framing OVERSHOOTS; B3.3 is a fork (2026-06-08)
+Methodology #23 again (audit before any thread code, mirroring §8.17). The §8.27 NEXT bullet ("drop the binary +
+N-shard the scan in-game") is NOT achievable as written. Two findings:
+- **SUBSTRATE (in-game threading is blocked the SAME way the whole Phase-A tick is):** the binary drives the scan
+  from its SINGLE-THREADED tick loop (`28d400`→`3a76b0`→`387010`→`387400`→`385190`). Object-granular Phase-A
+  parallelism REPLACES that loop with `ShardScheduler` (`sim/shard_scheduler.h`) — which is built+host-validated
+  but UNWIRED (needs the lifted Phase-A orchestrators + `FrozenSnapshot`, the long-deferred engine-source pieces).
+  The hook can't inject N-way threading into the binary's loop. So the only IN-GAME threading available is
+  INTRA-`385190`-call (fan the per-candidate eval across a pool inside the reimpl) — and that needs a per-leaf
+  concurrent-call safety audit, which the next finding shows is expensive.
+- **LEAF CONCURRENT-CALL SAFETY (the in-game intra-call hazard is worse than the H1/H2/H3 list implied):** `35f470`
+  (FOG, gate clause I) `HeapFree`s + reallocs a SHARED global scratch buffer `DAT_140a28538` (+count `+0x40` /
+  flags `+0x44`) on EVERY call (decomp/35f470.c:31-48). Concurrent calls = use-after-free. A lock around it
+  serializes the realloc — i.e. serializes the per-candidate "expensive part" the parallelism targets — so fork B
+  would have to LIFT `35f470` (per-thread scratch) too. `383f70` (reach) draws the global LCG (H2) and calls
+  `12d2c0`/`3858b0`/`398440`/`373670`/`396cb0` whose static-buffer/re-entrancy safety is UNAUDITED. ⇒ in-game
+  intra-call threading is a multi-leaf lift with real race/crash risk, not a wrapper job.
+- **EARLY-OUT vs PARALLEL-REDUCE EQUIVALENCE (must resolve for EITHER fork's determinism gate):** serial `385190`
+  is a left-fold-with-early-EXIT (`:93-94` returns at the first `score==1.0`). A parallel map+reduce reproduces it
+  bit-exactly IFF `1.0` is the GLOBAL-MIN score (no candidate scores `< 1.0`); then "first 1.0 in query order" ≡
+  "first occurrence of the global min". If any score `< 1.0` can appear AFTER a `1.0` in query order, serial stops
+  early on the `1.0` while a plain min-reduce picks the `<1.0` ⇒ DIVERGENCE. The design (1.0 = "perfect, stop")
+  strongly implies 1.0 is the min, but it is UNCONFIRMED — needs an empirical probe (count any per-candidate
+  `score < 1.0`). If 1.0 is not the min, the reduction must be a segmented-scan replicating the early-exit (still
+  deterministic, just not a plain min).
+
+**THE FORK (Rule-6 gate — user decides):**
+- **Fork A — HOST determinism gate (low risk, buildable now, mirrors the command-system build):** lift `385190` as
+  a host `sim/opp_scan` module — guarded query (H1 `SpatialQueryGuard`, built) + substreamed reach (H2
+  `SimRng::substream`, built) + serialized/per-thread FOG (H3) — driven by the existing `ShardScheduler`, with a
+  `just sim-test` gate proving the winner+score is SHARDING-INVARIANT (N∈{1,2,4,8} × shuffled order ≡ serial,
+  bit-identical), reusing the §8.26 selection-determinism result. In-game N-shard stays deferred to the (separate)
+  scheduler wiring — same honest split as the command system. Resolves the early-out question in the host harness.
+- **Fork B — IN-GAME intra-`385190` threading (high risk, real in-game speedup):** lift `35f470` (per-thread FOG
+  scratch) + audit the `383f70` callee leaves for concurrent-call safety, then fan the candidate walk across a
+  hook-owned thread pool inside the reimpl with H2 substreams. Validate via DTSCANOBS (winner/score must still
+  match the binary) + stability. The leaf-safety audit + `35f470` lift are a multi-session sub-program.
+
+**RECOMMENDATION: Fork A** — it is the in-scope, low-risk continuation consistent with how every prior parallel
+piece was validated (host gate, in-game deferred to the unbuilt scheduler), and Fork B's payoff is capped by the
+serial tick driver anyway (you'd speed one hardpoint's scan while the loop still visits hardpoints serially). This
+session = B3.3.0 (audit) pending the fork decision.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
