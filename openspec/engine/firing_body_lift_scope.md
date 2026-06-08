@@ -1270,6 +1270,37 @@ code. Scanned `decomp/` for each leaf (write-signature grep + body read). **Verd
   GameObjects of that type (worse than per-object), making the vfunc-`0x78` verdict more important: if it's an
   idempotent load/residency guard → read-only-once-loaded → safe; if it evaluates an animation pose INTO the shared
   model buffer per call → cross-object hazard. Decode `0x78` via Ghidra (model-resource vtable slot) = the gate.
+
+### 8.30 B3.3.2 — vfunc 0x78 DECODED = dirty-flag-guarded SHARED pose eval ⇒ Fork B needs a serial skeleton pre-warm (2026-06-08)
+Resolved the gate via Ghidra (RTTI map + `DumpVtable` + `DecompileAt`). The `3858b0`-returned model is **`alHModel`**
+(vtable `0x818d90` — every method in the `0x12xxxx` cluster, `GetName` at slot 6/`+0x30` matching `12d520`); vfunc
+`0x78` = slot 15 = **`FUN_14012c7c0` = `alHModel::vfunc_15`**. Decompiled (`decomp/12c7c0.c`): it is a **lazy,
+dirty-flag-guarded, MUTATING pose evaluation on the shared model**:
+```
+if (model[+0x30] & 0x20) {            // dirty bit
+    model[+0x30] &= 0xdf;             // CLEAR (non-atomic read-modify-write)
+    pose = 13fe60(model);
+    146310 / 1467b0 / 146d50(model+0xe8, pose, model+0x38);   // eval pose INTO the shared bone buffer
+    for each sub-mesh in model[+0xf0]: vfunc_0x58(...) + toggle *(sub+6) bit 2;   // more shared writes
+}                                     // (recurses into model[+0xb0] parent first)
+```
+**VERDICT — concurrent-call HAZARD, but idempotent once clean.** When the dirty bit is set it WRITES the model's
+bone buffer (`+0x38`), its mesh (`+0xe8`), and each sub-mesh's flag byte, then clears the bit; when clear it no-ops.
+In the opp-scan EVERY candidate-eval calls `3858b0(param_1)` on the SAME shooter model, and same-type candidates
+share their model asset — so a threaded candidate walk = concurrent non-atomic RMW on one model's dirty flag + bone
+buffer = data race / torn writes. This confirms the §8.29 worry: vfunc `0x78` is the pose-eval case, not a load guard.
+**FORK B IS FEASIBLE WITH A SERIAL SKELETON PRE-WARM** (the clean mitigation, NOT a full skeleton lift): before the
+parallel candidate walk, call `alHModel::vfunc_15` ONCE serially on the shooter model AND each distinct candidate
+model (the dirty bit is set only by the animation pass, not re-set within a tick's fire-pass) → every worker's
+later vfunc `0x78` finds the bit CLEAR → no-op → the bone reads are pure/concurrent-safe. In the existing serial
+reimpl the first candidate-eval already warms the shooter for free; the parallel version must HOIST that warm-up
+out of the loop + extend it to candidate models. Bounded, cheap (one eval per distinct model), confined to the
+model instance (no other shared state touched). **NET — Fork B build plan now fully scoped:** (1) lift `35f470`
+per-thread FOG scratch (§8.29 H3); (2) serial skeleton pre-warm pass over shooter+candidate models (this finding);
+(3) per-thread `SimRng` substream for `383f70`'s draw (H2); (4) thread-pool the gate+score+reach candidate walk;
+(5) deterministic reduction replicating `385190`'s early-exit-at-`score==1.0` (confirm 1.0 is the global-min score,
+else segmented-scan §8.28); validate via DTSCANOBS winner/score parity + stability. Residual leaf decodes
+(`397060`/`373670`/`396cb0`/`264b8b0`) still owed before step 4 but all expected clean (§8.29 grep).
 - **RESIDUAL DECODES (not yet read, all flagged for the same write-scan):** `397060` (gate clause H), `373670`,
   `396cb0`, `264b8b0` (`383f70` callees). `776d48` confirmed = sqrt.
 **NET so far:** the per-candidate hazard surface is SMALL — one definite lift (`35f470`), one substream (`1ffb40`),
