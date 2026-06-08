@@ -21,6 +21,8 @@ a1 := ""
 a2measure := ""
 # B3.1 (§8.25): arm the 385190 opp-scan selection-bit-exact reimpl diff (oracle build, also needs difftrace=1; ~2x scan cost). Override: just difftrace=1 dtscanobs=1 launch-foc-desktop
 dtscanobs := ""
+# B3.2 (§8.26): arm the 385190 opp-scan TAKEOVER — the reimpl drives target acquisition (self-validating, 1-shard, oracle build + difftrace=1). Override: just difftrace=1 pfirescan=1 launch-foc-desktop
+pfirescan := ""
 # Milestone pfire (§8.10 step 4): gated in-game fire takeover at t2be640 (default OFF, 1-shard). =1 STAGE A identity passthrough, =2 STAGE B two-phase settle/fire split, =3 A3.3 reimpl body takeover, =4 A4.1 create-deferral (buffer+canonical drain, still 1-shard); =3/=4 need difftrace=1 for the DTWA-B3 gate. Override: just pfire=4 difftrace=1 launch-foc-desktop
 pfire := ""
 save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
@@ -231,6 +233,7 @@ launch-foc-desktop:
       EAW_A1={{a1}} \
       EAW_A2MEASURE={{a2measure}} \
       EAW_DTSCAN_OBS={{dtscanobs}} \
+      EAW_PFIRE_SCAN={{pfirescan}} \
       EAW_PFIRE={{pfire}} \
       SteamAppId=32470 \
       SteamGameId=32470 \

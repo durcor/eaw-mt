@@ -5238,9 +5238,15 @@ static Eval385190Fn g_dtscan_385190_trampoline = NULL;
 static uint64_t g_dtscan_evals = 0, g_dtscan_hit = 0, g_dtscan_winner = 0;
 static int64_t  g_dtscan_eval_qpc = 0;
 static uint32_t g_dtscan_last = 0xFFFFFFFFu;
-/* B3.1 selection-bit-exact observe (EAW_DTSCAN_OBS=1, default OFF — it DOUBLES the scan cost). */
-static int      g_dtscan_obs_enabled = -1;
-static uint64_t g_dtscan_obs_n = 0, g_dtscan_obs_match = 0, g_dtscan_obs_wmiss = 0, g_dtscan_obs_smiss = 0;
+/* B3.1 observe (EAW_DTSCAN_OBS=1) + B3.2 takeover (EAW_PFIRE_SCAN=1). Both run the binary AND the reimpl per
+ * call (~2x scan cost — oracle/validation builds only) and diff winner ptr + score + post-LCG state. OBSERVE
+ * restores the binary's authoritative state and RETURNS the binary's winner; TAKEOVER leaves the reimpl's state
+ * and RETURNS the reimpl's winner, so the reimpl DRIVES 387400's target acquisition. §8.25/§8.26: the reimpl
+ * calls 383f70 on the IDENTICAL candidate sequence as the binary ⇒ it advances the LCG identically (lmiss=0
+ * expected) ⇒ driving the reimpl is RNG-stream-transparent, not just selection-bit-exact. */
+static int      g_dtscan_obs_enabled = -1, g_dtscan_takeover_enabled = -1;
+static uint64_t g_dtscan_obs_n = 0, g_dtscan_obs_match = 0, g_dtscan_obs_wmiss = 0,
+                g_dtscan_obs_smiss = 0, g_dtscan_obs_lmiss = 0;
 static uint32_t g_dtscan_obs_detail = 0;
 static int dtscan_obs_on(void) {
     if (g_dtscan_obs_enabled < 0) {
@@ -5252,9 +5258,23 @@ static int dtscan_obs_on(void) {
     }
     return g_dtscan_obs_enabled;
 }
+static int dtscan_takeover_on(void) {
+    if (g_dtscan_takeover_enabled < 0) {
+        const char *e = getenv("EAW_PFIRE_SCAN");
+        g_dtscan_takeover_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_dtscan_takeover_enabled
+            ? "[eaw-mt] PFIRESCAN: 385190 opp-scan TAKEOVER ARMED (EAW_PFIRE_SCAN=1 — reimpl drives target acquisition, 1-shard, self-validating)\n"
+            : "[eaw-mt] PFIRESCAN: off (set EAW_PFIRE_SCAN=1 to drive the opp-scan from the reimpl)\n");
+    }
+    return g_dtscan_takeover_enabled;
+}
 
 static int64_t dtscan_385190_hook(int64_t p1, int64_t cand, float *score) {
-    float score_in = (score && g_dt_imgbase) ? *score : 0.0f;   /* capture INPUT best-score before the binary mutates it */
+    int do_obs = dtscan_obs_on(), do_takeover = dtscan_takeover_on();
+    uint32_t *LCG  = g_dt_imgbase ? (uint32_t *)(g_dt_imgbase + 0xa13e24) : NULL;
+    float    score_in = (score && g_dt_imgbase) ? *score : 0.0f;   /* INPUT best-score, before the binary mutates it */
+    uint32_t lcg_pre  = LCG ? *LCG : 0;                            /* LCG before the binary's 383f70 draws */
+
     LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
     int64_t ret = g_dtscan_385190_trampoline(p1, cand, score);
     LARGE_INTEGER t1; QueryPerformanceCounter(&t1);
@@ -5264,27 +5284,32 @@ static int64_t dtscan_385190_hook(int64_t p1, int64_t cand, float *score) {
         g_dtscan_hit++;
         if (score && g_dt_imgbase && *score == *(float *)(g_dt_imgbase + 0x899780)) g_dtscan_winner++;  /* ==1.0 sentinel */
     }
-    /* B3.1: re-run the host reimpl on the binary's INPUT state, LCG-rewound, and diff winner ptr + score.
-     * §8.25: selection is RNG-independent ⇒ an EXACT match is expected (wmiss=0, smiss=0 is the gate). */
-    if (dtscan_obs_on() && score && g_dt_imgbase) {
-        uint32_t *LCG = (uint32_t *)(g_dt_imgbase + 0xa13e24);
-        uint32_t lcg_save = *LCG;                            /* the binary's post-scan LCG (its 383f70 draws applied) */
-        float my_score = score_in;
-        int64_t my_winner = pfire_opp_scan_reimpl(p1, cand, &my_score);
-        *LCG = lcg_save;                                     /* restore → the reimpl's 383f70 draws don't perturb the game */
+    int64_t out = ret;
+    /* B3.1/B3.2: re-run the reimpl on the binary's INPUT state (LCG rewound) and diff winner + score + post-LCG. */
+    if ((do_obs || do_takeover) && score && g_dt_imgbase && LCG) {
+        uint32_t lcg_bin = *LCG; float score_bin = *score;        /* binary's authoritative post-state */
+        *LCG = lcg_pre; *score = score_in;                        /* rewind to the binary's pre-scan state */
+        int64_t my_winner = pfire_opp_scan_reimpl(p1, cand, score);
+        uint32_t lcg_re = *LCG; float score_re = *score;          /* reimpl's post-state */
         g_dtscan_obs_n++;
-        int wmatch = (my_winner == ret), smatch = (my_score == *score);
-        if (wmatch && smatch) g_dtscan_obs_match++;
+        int wmatch = (my_winner == ret), smatch = (score_re == score_bin), lmatch = (lcg_re == lcg_bin);
+        if (wmatch && smatch && lmatch) g_dtscan_obs_match++;
         else {
             if (!wmatch) g_dtscan_obs_wmiss++;
             if (!smatch) g_dtscan_obs_smiss++;
+            if (!lmatch) g_dtscan_obs_lmiss++;
             if (g_dtscan_obs_detail < 32) {
-                char db[224];
+                char db[256];
                 snprintf(db, sizeof db,
-                    "DTSCANOBS\tbin_w=%p\tre_w=%p\tbin_s=%.5f\tre_s=%.5f\tin_s=%.5f\n",
-                    (void *)ret, (void *)my_winner, *score, my_score, score_in);
+                    "DTSCANOBS\tbin_w=%p\tre_w=%p\tbin_s=%.5f\tre_s=%.5f\tin_s=%.5f\tlcg_bin=%08x\tlcg_re=%08x\n",
+                    (void *)ret, (void *)my_winner, score_bin, score_re, score_in, lcg_bin, lcg_re);
                 log_write(db); g_dtscan_obs_detail++;
             }
+        }
+        if (do_takeover) {
+            out = my_winner;                                      /* DRIVE the reimpl; leave its LCG/score state */
+        } else {
+            *LCG = lcg_bin; *score = score_bin;                   /* OBSERVE: restore the binary's authoritative state */
         }
     }
     if (dt_on()) {
@@ -5293,19 +5318,21 @@ static int64_t dtscan_385190_hook(int64_t p1, int64_t cand, float *score) {
             g_dtscan_last = tk;
             LARGE_INTEGER qpf; QueryPerformanceFrequency(&qpf);
             double ms = qpf.QuadPart ? (double)g_dtscan_eval_qpc * 1000.0 / (double)qpf.QuadPart : 0.0;
-            char sb[320];
+            char sb[360];
             snprintf(sb, sizeof sb,
-                "DTSCAN\ttick=%u\tevals=%llu\thit=%llu\twinner=%llu\teval_ms=%.1f\tavg_us=%.3f"
-                "\tobs_n=%llu\tobs_match=%llu\tobs_wmiss=%llu\tobs_smiss=%llu\n",
-                tk, (unsigned long long)g_dtscan_evals, (unsigned long long)g_dtscan_hit,
+                "DTSCAN\ttick=%u\tmode=%s\tevals=%llu\thit=%llu\twinner=%llu\teval_ms=%.1f\tavg_us=%.3f"
+                "\tobs_n=%llu\tobs_match=%llu\tobs_wmiss=%llu\tobs_smiss=%llu\tobs_lmiss=%llu\n",
+                tk, do_takeover ? "TAKEOVER" : (do_obs ? "observe" : "off"),
+                (unsigned long long)g_dtscan_evals, (unsigned long long)g_dtscan_hit,
                 (unsigned long long)g_dtscan_winner, ms,
                 g_dtscan_evals ? ms * 1000.0 / (double)g_dtscan_evals : 0.0,
                 (unsigned long long)g_dtscan_obs_n, (unsigned long long)g_dtscan_obs_match,
-                (unsigned long long)g_dtscan_obs_wmiss, (unsigned long long)g_dtscan_obs_smiss);
+                (unsigned long long)g_dtscan_obs_wmiss, (unsigned long long)g_dtscan_obs_smiss,
+                (unsigned long long)g_dtscan_obs_lmiss);
             log_write(sb);
         }
     }
-    return ret;
+    return out;
 }
 
 static BOOL install_dtscan_hook(void) {
