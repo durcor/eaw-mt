@@ -5445,6 +5445,95 @@ static BOOL install_dtscan_hook(void) {
     return TRUE;
 }
 
+/* ── I4 ITERATION-SET CAPTURE (firing_body_lift_scope.md §8.35): the ShardScheduler work-list, captured live.
+ * Entry-detour on FUN_140387010 — the per-HardPoint fire-control entry, called once per serviced hardpoint per
+ * tick by the per-object 3a76b0 walk (objdump-confirmed: param_1=HardPoint in rcx, context=*(HP+0x10), tick=edx).
+ * Per tick it records the HardPoint work-list: count (hp), distinct-object structure via context TRANSITIONS
+ * (objtrans — a shard-by-OBJECT partition is clean iff hardpoints are grouped, i.e. objtrans≈distinct objects),
+ * the visitation-order-vs-object_id direction (idup/iddown/ideq — the head-insert I4 note predicts visitation ≈
+ * DESCENDING object_id, so the canonical drain key is the visitation RANK not object_id), and manager transitions
+ * (mgrtrans — the DTWA dual-manager population). Observe-only; binary runs unchanged. Gates the object-grain shard
+ * feasibility: is the per-tick set enumerable + stably ordered + cleanly object-partitionable. */
+#define I4_387010_RVA 0x387010ULL
+static const BYTE i4_387010_prologue[15] = {   /* mov [rsp+0x10],rbx; push rdi; sub rsp,0x20; cmpq [rcx+0x20],0 */
+    0x48,0x89,0x5c,0x24,0x10, 0x57, 0x48,0x83,0xec,0x20, 0x48,0x83,0x79,0x20,0x00
+};
+typedef void (*Hp387010Fn)(int64_t, int32_t);
+static Hp387010Fn g_i4_387010_trampoline = NULL;
+static uint32_t g_i4_tick = 0xFFFFFFFFu, g_i4_logged = 0xFFFFFFFFu;
+static int64_t  g_i4_last_ctx = 0, g_i4_last_mgr = 0;
+static int32_t  g_i4_last_oid = -1;
+static uint32_t g_i4_hp = 0, g_i4_objtrans = 0, g_i4_mgrtrans = 0, g_i4_idup = 0, g_i4_iddown = 0, g_i4_ideq = 0;
+static uint64_t g_i4_total_hp = 0, g_i4_total_ticks = 0, g_i4_max_hp = 0, g_i4_max_obj = 0;
+
+static void i4_387010_hook(int64_t hp, int32_t tick) {
+    if (g_dt_imgbase) {
+        uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : (uint32_t)tick;
+        if (tk != g_i4_tick) {                              /* tick boundary → close out the previous tick */
+            if (g_i4_tick != 0xFFFFFFFFu) {
+                g_i4_total_hp += g_i4_hp; g_i4_total_ticks++;
+                if (g_i4_hp > g_i4_max_hp) g_i4_max_hp = g_i4_hp;
+                uint32_t distinct_obj = g_i4_objtrans + (g_i4_hp ? 1 : 0);   /* exact iff hardpoints are grouped */
+                if (distinct_obj > g_i4_max_obj) g_i4_max_obj = distinct_obj;
+                if (dt_on() && (g_i4_tick & 0x3ffu) == 0 && g_i4_tick != g_i4_logged) {
+                    g_i4_logged = g_i4_tick;
+                    char b[288];
+                    snprintf(b, sizeof b,
+                        "I4\ttick=%u\thp=%u\tobj=%u\tobjtrans=%u\tmgrtrans=%u\tidup=%u\tiddown=%u\tideq=%u"
+                        "\tavg_hp=%.1f\tmax_hp=%llu\tmax_obj=%llu\n",
+                        g_i4_tick, g_i4_hp, distinct_obj, g_i4_objtrans, g_i4_mgrtrans,
+                        g_i4_idup, g_i4_iddown, g_i4_ideq,
+                        g_i4_total_ticks ? (double)g_i4_total_hp / (double)g_i4_total_ticks : 0.0,
+                        (unsigned long long)g_i4_max_hp, (unsigned long long)g_i4_max_obj);
+                    log_write(b);
+                }
+            }
+            g_i4_tick = tk;
+            g_i4_hp = g_i4_objtrans = g_i4_mgrtrans = g_i4_idup = g_i4_iddown = g_i4_ideq = 0;
+            g_i4_last_ctx = 0; g_i4_last_oid = -1; g_i4_last_mgr = 0;
+        }
+        g_i4_hp++;
+        int64_t ctx = *(int64_t *)(hp + 0x10);              /* context = the owning GameObject */
+        if (ctx && ctx != g_i4_last_ctx) {                  /* object transition */
+            int32_t oid = *(int32_t *)(ctx + 0x50);         /* §I1 object_id */
+            int64_t mgr = *(int64_t *)(ctx + 0x2b8);        /* §I1 manager */
+            if (g_i4_last_ctx != 0) {
+                g_i4_objtrans++;
+                if      (oid > g_i4_last_oid) g_i4_idup++;
+                else if (oid < g_i4_last_oid) g_i4_iddown++;
+                else                          g_i4_ideq++;
+                if (mgr != g_i4_last_mgr) g_i4_mgrtrans++;
+            }
+            g_i4_last_ctx = ctx; g_i4_last_oid = oid; g_i4_last_mgr = mgr;
+        }
+    }
+    g_i4_387010_trampoline(hp, tick);
+}
+
+static BOOL install_i4_387010_hook(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
+    BYTE *fn = (BYTE *)exe + I4_387010_RVA;
+    size_t n = sizeof i4_387010_prologue;            /* 15 */
+    if (memcmp(fn, i4_387010_prologue, n) != 0) {
+        log_write("[eaw-mt] WARN: hardpoint dispatch (0x387010) prologue mismatch — I4 not installed\n");
+        return FALSE;
+    }
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_write("[eaw-mt] WARN: VirtualAlloc for I4 trampoline failed\n"); return FALSE; }
+    memcpy(tramp, i4_387010_prologue, n);
+    write_abs_jmp(tramp + n, (uint64_t)(fn + n));
+    g_i4_387010_trampoline = (Hp387010Fn)tramp;
+    DWORD old;
+    VirtualProtect(fn, n, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)i4_387010_hook);
+    VirtualProtect(fn, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, n);
+    log_write("[eaw-mt] I4: hardpoint iteration-set capture (0x387010) installed\n");
+    return TRUE;
+}
+
 /* ── DTWA-B3: structural oracle for the b3 projectile create+init restructure (see globals above). ────
  * Entry-detour FUN_1403825b0. Prologue (objdump 0x3825b0): mov rax,rsp; push rbp/rbx/rsi/rdi/r13/r15;
  * lea -0x218(rax),rbp = 18 bytes, all position-independent (clean cut before `sub rsp`). */
@@ -11798,6 +11887,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_dtwa_b3_hook();   /* DTWA-B3: firing-body projectile init §3 source-map oracle (EAW_DIFFTRACE=1) */
         install_dtwa_sig_hook();  /* DTWASIG: signal fan-out Command-schema/traffic oracle (EAW_DIFFTRACE=1) */
         install_dtscan_hook();    /* DTSCAN: opp-scan eval (0x385190) load/cost/selection observe (A4 B2, EAW_DIFFTRACE=1) */
+        install_i4_387010_hook(); /* I4: HardPoint iteration-set capture (0x387010) for the ShardScheduler work-list (EAW_DIFFTRACE=1) */
         install_a1_sfx_hook();    /* a1: gated SFX takeover — 2d5290 buffer+canonical-drain (EAW_A1=1 to arm) */
         log_write("[eaw-mt] DT oracle hooks installed (EAW_DIFFTRACE=1 to capture)\n");
         }
