@@ -1155,6 +1155,27 @@ battle; (B3.2) wire the takeover at `387400:273` (1-shard, default-OFF env gate)
 query in `SpatialQueryGuard` + per-team `SimRng::substream` and parallelize the gate walk (N-shard); (B3.4)
 fork-A: thread the `387400` team-walk with the `:250` team-start substreamed. This session = B3.0 (decode) only.
 
+### 8.26 B3.1 — `385190` host reimpl LIFTED, SELECTION-BIT-EXACT in-game PASS (2026-06-08, b69bed2)
+Built `pfire_opp_scan_reimpl` (winmm_proxy.c) — a line-for-line transcription of `385190` (box → `20e780`
+query → 12-clause gate walk → `vfunc_0x118` score → `383f70` reach → select), every binary leaf called via its
+`g_dt_imgbase+RVA` trampoline; new typedefs `2acb60`/`20e780`/`397060`/`vfunc_0x118` join the existing R1 leaf
+set. Added the **DTSCANOBS** observe (`EAW_DTSCAN_OBS=1`, default-OFF, `just dtscanobs=1`): per `385190` call it
+captures the INPUT `*score`, runs the binary (trampoline), then re-runs the reimpl on that same input under an
+LCG save/restore (so the reimpl's `383f70` draws don't perturb the game), and diffs the returned winner ptr +
+resulting score.
+**RESULT (live space battle, `eaw-mt.log` DTSCAN line):** `obs_n=4,699,072 obs_match=4,699,072 obs_wmiss=0
+obs_smiss=0`, ZERO `DTSCANOBS` mismatch lines, no crash — **selection-bit-exact across 4.7M evals.** This
+CONFIRMS the §8.25 refinement empirically: despite `383f70`'s `:121` LCG bone-start draw, the reimpl picks the
+IDENTICAL winner + IDENTICAL score as the binary on every call ⇒ the opp-scan lift is bit-exact-on-selection, a
+STRONGER gate than §8.24's load/cost distribution. (The genuine RNG seam stays in the dispatcher `387400:250`.)
+**This is the SERIAL 1-shard transcription** — it calls `20e780` directly and lets `383f70` draw the global LCG
+(safe under save/restore in the observe). NEXT: B3.2 wire the takeover at `387400:273` (repoint the `385190`
+call to the reimpl, env-gated, 1-shard) → in-game PASS; then B3.3 wrap H1 `SpatialQueryGuard` + H2 `383f70`
+`SimRng::substream` + H3 FOG scratch lock and parallelize the gate walk (N-shard); B3.4 fork-A team-walk.
+**Methodology bank:** the DTSCANOBS pattern = run-binary-then-reimpl-on-captured-input-under-LCG-save/restore is
+the §8.25/#27 observe applied to a SELECTION (ptr+score) rather than a geometry (pos) — works because the
+captured INPUT (`*score` pre-mutation) + the frozen grid make the reimpl's verdict independent of the live RNG.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
