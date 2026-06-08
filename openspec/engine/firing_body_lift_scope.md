@@ -1426,6 +1426,29 @@ the set is stable/enumerable, rank order matches the serial visitation (the cano
 object→hardpoint ownership is clean (shard-by-object splits no object's hardpoints). Then I5 wires the scheduler +
 the extended create/emit drain. NEXT = build the I4 iteration-set capture.
 
+### 8.36 B3.4.1 — I4 ITERATION-SET CAPTURE built + PASS; shard-by-object structure confirmed (2026-06-08, f5692b6)
+Built the entry-detour on `387010` (`i4_387010_hook`, objdump-confirmed prologue + `context=*(HP+0x10)`, `tick=edx`)
+recording the per-tick HardPoint work-list: `hp` count, `obj` (distinct via context transitions), `objtrans`,
+`mgrtrans`, and the visitation-order-vs-object_id direction (`idup`/`iddown`/`ideq`). Observe-only, under
+`EAW_DIFFTRACE=1`. **The MAIN-MENU background battle runs the full fire-control sim** (no manual battle load needed)
+— it produced clean I4 lines immediately. **RESULT (stable across ticks):** `tick=1024 hp=439 obj=8 objtrans=7
+iddown=7 idup=0 ideq=0 mgrtrans=0` / `tick=2048 hp=428 obj=7 objtrans=6 iddown=6 idup=0 ideq=0 mgrtrans=0`.
+**All three I4 gates PASS:**
+1. **Work-list enumerable:** ~430 HardPoints across 7-8 distinct objects per tick (~55 hp/object — substantial
+   per-object work, good for amortizing thread sync; a larger loaded battle scales `obj` up = more shards).
+2. **Shard-by-object is CLEAN:** `objtrans == obj-1` every tick ⇒ each object's hardpoints are CONTIGUOUS in the
+   visitation (no interleaving) ⇒ a shard-by-object partition splits no object's hardpoints (schema §2 satisfied).
+3. **Visitation runs STRICTLY DESCENDING object_id:** `iddown == objtrans`, `idup == ideq == 0` ⇒ confirms the
+   head-insert master-list order (newest object first) — so sorting the Phase-B drain by object_id would REVERSE
+   the create sequence; the canonical merge key MUST be the visitation RANK (the I4 box of
+   `sim_parallel_command_schema.md` §7), empirically validated here. `mgrtrans=0` = single-manager population in
+   this small scene (multi-manager expected in larger battles per DTWA).
+⇒ the `ShardScheduler` `WorkItem{object_id, rank}` stream is live-confirmed: enumerable, cleanly object-grouped,
+rank = descending-id visitation order. **NEXT = I5: wire the `ShardScheduler` over this work-list (Phase-A = the
+fire-control scan/decision, already concurrent-safe via Fork B steps 1-3) + extend the Phase-B create/emit drain
+(EAW_PFIRE A4.1 deferral) to the full `387010` body; validate via the DIFFTRACE position fingerprint + DTSCANOBS
+parity under N-shard.**
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
