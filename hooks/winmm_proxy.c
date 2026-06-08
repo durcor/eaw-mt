@@ -2101,12 +2101,12 @@ static void pfire_a62d0_intercept(int64_t mgr) {
         log_write(m);
         if (g_pfire_level >= 2) {        /* reimpl-fire diagnostics (pf>=3 takeover; pf==2 = the observe funnel) */
             char sm[384];
-            sprintf(sm, "[eaw-mt] PFIREDBG entry=%u | passG1=%u passG2a=%u passG2b=%u reachedR2=%u | rej: g1=%u g2a=%u g2b=%u fb_arc=%u fb_p3=%u r1c(lead0=%u aim383ba0=%u) | lvl=%u\n",
+            sprintf(sm, "[eaw-mt] PFIREDBG entry=%u | passG1=%u passG2a=%u passG2b=%u reachedR2=%u | rej: g1=%u g2a=%u g2b=%u fb_arc=%u p3eq0(lifted)=%u r1c(lead0=%u aim383ba0=%u) | lvl=%u\n",
                     g_pfdbg_entry,
                     g_pfdbg_pass_g1, g_pfdbg_pass_g2a, g_pfdbg_pass_g2b, g_pfdbg_inline,
                     g_pfdbg_entry - g_pfdbg_pass_g1,                          /* gate1 rejects */
                     g_pfdbg_pass_g1 - g_pfdbg_fb_arc - g_pfdbg_pass_g2a,      /* gate2a rejects (excl fb_arc) */
-                    g_pfdbg_pass_g2a - g_pfdbg_fb_p3 - g_pfdbg_pass_g2b,      /* gate2b rejects (excl fb_p3) */
+                    g_pfdbg_pass_g2a - g_pfdbg_pass_g2b,                      /* gate2b rejects (p3==0 is now a LIFTED sub-path, not a reject) */
                     g_pfdbg_fb_arc, g_pfdbg_fb_p3, g_pfdbg_r1c_lead0, g_pfdbg_r1c_aimgate,
                     g_pfdbg_reimpl_lvl);
             log_write(sm);

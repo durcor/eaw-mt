@@ -1072,6 +1072,24 @@ speedup therefore lives in **lifting the `param_3==0` aim path** (`383f70` direc
 redirect — the RNG-aim branch the reimpl defers), not in threading the already-lifted body. This supersedes
 the A4.0 "fire body is ~20% of fire-control" framing: of the body itself, the lifted slice is a further ~3%.
 
+### 8.23 A4 INCREMENT 1 — `param_3==0` RNG-aim path LIFTED, fire body CLOSED (pf==2 bit-exact) (2026-06-07, 30e83cf)
+**User picked "param_3==0 first" (the bounded, lower-risk A4 entry over the bigger opp-scan lift).** The reimpl
+deferred ~97% of fires because `pfire_compute_geom` fell back at `param_3==0`. Lifted `3825b0:164-181` as
+ORCHESTRATION (A-reimpl — call the binary leaves, don't reimplement): `398440(p2,&scratch)` dead read (:165,
+pure, output unused) + optional `405870` UnitAI target-redirect (`vfunc_2(p2,0x16)`→`405870`, :167-170) +
+`383f70(p1,&aim,target,&flag)` aim (:174) + aim-fail gate (:178). **Decoded all 3 leaves: none write shared
+state; `405870`/`383f70` draw the LCG (0-1× each) ⇒ observe-safe under the pf==2 LCG save/restore.** The
+redirect REASSIGNS the target for the rest of the body (lead solver `399450` + Class-2b `+0x38` listener +
+`3a06a0` shot-register + R3) — propagated via a new `out_p2` from `compute_geom`, mirroring the binary's
+in-place `param_2` reassignment.
+**VALIDATION (pf==2 observe, battle run) = BIT-EXACT:** `PFOBS-SUM n=139878 match=139878 mismatch=0 origin=0
+GENUINE_underfire=0 fallback=0`. **`fallback` dropped 31873→0**; `n` rose ~25k→140k (the ~101k `param_3==0`
+fires now compared, not deferred); every create-pos matches the binary on the replayed LCG. ⇒ **the fire body
+is now ~100% reimpl-driven** (only the dead `+0x4e==1` arc gate would fall back, `fb_arc=0` in tactical).
+Fixed a cosmetic `PFIREDBG` funnel underflow (`fb_p3` is now a LIFTED sub-path, not a reject → relabeled
+`p3eq0(lifted)`, removed from the reject math). **NEXT A4 increment = the opp-scan `387400`+`385190` lift
+(~80% of PhaseB time, the real threading ceiling), then create-deferral on full coverage, then N-shard.**
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
