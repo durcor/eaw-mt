@@ -1176,6 +1176,27 @@ call to the reimpl, env-gated, 1-shard) → in-game PASS; then B3.3 wrap H1 `Spa
 the §8.25/#27 observe applied to a SELECTION (ptr+score) rather than a geometry (pos) — works because the
 captured INPUT (`*score` pre-mutation) + the frozen grid make the reimpl's verdict independent of the live RNG.
 
+### 8.27 B3.2 — opp-scan TAKEOVER wired, in-game PASS (RNG-stream-transparent) (2026-06-08, bc7e1fe)
+Flipped the DTSCANOBS machinery into a takeover at the `385190` entry detour (= the `387400:273` call site, since
+`385190` is scan-exclusive): `EAW_PFIRE_SCAN=1` (`just pfirescan=1`) makes `dtscan_385190_hook` RETURN the reimpl's
+winner and LEAVE the reimpl's LCG/score state, so `pfire_opp_scan_reimpl` actually DRIVES `387400`'s opportunity-
+target acquisition (the `382510` assign + `OpportunityTargetAcquired` event downstream). Self-validating: the hook
+still runs the binary, rewinds the LCG, runs the reimpl on the captured input, and diffs **winner + score + post-
+LCG state** before returning the reimpl's result.
+**NEW (stronger) claim proven: the takeover is RNG-STREAM-TRANSPARENT, not just selection-bit-exact.** Added an
+`obs_lmiss` check (binary's post-scan LCG == reimpl's). Reasoning: `385190`'s only LCG-drawing call is `383f70`,
+invoked on exactly the candidates that pass the gate, in frozen-grid query order — IDENTICAL set+order in the
+reimpl ⇒ identical draw count ⇒ identical final LCG. **RESULT (live space battle, `eaw-mt.log` DTSCAN
+`mode=TAKEOVER`):** `obs_n=3,065,365 obs_match=3,065,365 obs_wmiss=0 obs_smiss=0 obs_lmiss=0`, ZERO `DTSCANOBS`
+lines, no crash — the reimpl drives target acquisition AND the global LCG ends in the binary's exact state every
+call ⇒ provably indistinguishable from the binary at the `385190` boundary (downstream RNG untouched).
+**This validates the SERIAL 1-shard takeover.** B3.2 still runs the binary alongside for the diff (2× cost, an
+oracle-build validation, NOT a perf win). **NEXT: B3.3 = drop the binary run + wrap the three hazards (H1 `20e780`
+→ `SpatialQueryGuard`, H2 `383f70` → `SimRng::substream`, H3 `35f470` FOG → scratch lock) and parallelize the
+gate walk N-shard; B3.4 = fork-A thread the `387400` team-walk with the `:250` team-start substreamed.** The
+RNG-transparency result simplifies B3.3: since the serial reimpl's draw-stream already matches the binary, the
+substream retrofit (H2) is the ONLY thing that changes the numbers, and only when shards run concurrently.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
