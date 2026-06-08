@@ -1315,8 +1315,10 @@ always-visible target flags).** **DECISION (Step 1): a LOCK-GUARDED primitive** 
 the engine logic BIT-EXACTLY (no transcription risk). Correct + deterministic (each call fully rebuilds+consumes its
 own query; result is order-independent) + reversible. **Built** `pfire_fog_occluded(b15418, sid, cand)` (the §8.29
 clause-I call now routes through it) + `g_fog_cs` (init in `install_dtscan_hook`). The lock is INERT in the current
-serial reimpl (uncontended) — it is the safe primitive the step-4 thread pool will rely on; validated NO-REGRESSION
-(DTSCANOBS winner/score/LCG parity preserved with the wrapper in the gate). **Deferred optimization (if step-4
+serial reimpl (uncontended) — it is the safe primitive the step-4 thread pool will rely on. **NO-REGRESSION PASS
+(live space battle, FOG routed through the wrapper under takeover): `mode=TAKEOVER evals=5,812,922
+obs_match=5,812,922 obs_wmiss=0 obs_smiss=0 obs_lmiss=0`, 0 divergence lines, no crash** — the lock-guarded `35f470`
+returns identical results and the takeover keeps full winner/score/LCG parity ⇒ the refactor is behavior-preserving. **Deferred optimization (if step-4
 profiling shows FOG contention):** lock-free early-outs (`35f470:16-23`, pure reads — needs a `39a230` concurrent-
 safety audit) + a lock-around-`35dec0`-build-then-copy-out so the per-segment `4c0e00` loop runs lock-free on a
 thread-local segment copy (the SpatialQueryGuard §8.6 pattern applied to FOG).
