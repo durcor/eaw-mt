@@ -1396,6 +1396,36 @@ program.md`). USER DECISION (Rule 6) pending.**
 thread-local `1ffb40` redirect; residual leaf decodes `397060`/`373670`/`396cb0`/`264b8b0` owed first) + step 5
 (deterministic reduction replicating the `score==1.0` early-exit; confirm 1.0 is the global-min score).
 
+### 8.35 B3.4.0 — OBJECT-GRAIN PATH chosen; ShardScheduler-wiring SCOPING AUDIT (2026-06-08)
+User picked the object-grain `ShardScheduler` path (§8.34). Scoped what wiring `387400`/`387010` as a Phase-A body
+concretely requires, grounded in the caller chain (NOT memory): the per-tick fire-control iterates **per HardPoint**
+— `28d400`(coordinator) → per-object `3a76b0` → `387010`(one HardPoint) → {`387400` opp-target+fire-control,
+`381ff0` fire, `387170`}. So:
+- **ITERATION SET (the shard work-list) = the HardPoints serviced this tick.** `387010` is the per-HardPoint entry
+  (`param_1`=HardPoint, `param_2`=tick). Per schema §2 a shard owns a WHOLE GameObject (all its hardpoints) so the
+  intra-object fire-budget force-sum stays bit-exact — so the WorkItem grain is the OBJECT, each running all its
+  hardpoints' `387010` serially within one shard. Source = the GOM combat-object list `3a76b0` already walks.
+- **PHASE-A / PHASE-B SPLIT is INSIDE `387400`/`387010`, not between them.** Phase-A (parallel, made safe by Fork B
+  steps 1-3 + the §8.34 leaf audit): the opp-scan `385190` team-walk + the target DECISION. Phase-B (buffered +
+  serial drain): the `3825b0` FIRE → `29f810` projectile create (Class-2 `SpawnCommand`) + the `220ed0`/`382510`
+  order/target-assign emits (Class-2b `Command`). The EAW_PFIRE A4.1 create-deferral (1-shard `ShardBuffer` +
+  canonical drain, already built) is the START of this split at the `3825b0` level — it must extend to cover
+  `387010`'s `381ff0`/`387170` create/emit too.
+- **FrozenSnapshot read-set is SMALL for the scan:** the spatial grid is already frozen during the fire-pass (§8.6),
+  candidate object fields are read-only then, and the alHModel poses are settled by the step-2 pre-warm. So the
+  scan likely needs NO double-buffered snapshot — it reads the live-but-frozen world. The fire half's read-set
+  (muzzle matrices, weapon stats) is per-object/local. ⇒ `FrozenSnapshot` may reduce to a sweep-barrier, not a copy.
+- **This IS `sim_tick_decomp_program.md` I2-I5** (the engine-source program): I2 GOM apply internals (`29f810`
+  buckets + context-mgr resolution), I3 firing/projectile-spawn sub-path (LARGELY DONE via EAW_PFIRE), I4 iteration-
+  set lift (capture the per-tick HardPoint/object work-list as an explicit ordered list for the ShardScheduler), I5
+  assemble host Phase-A/B tick + realize the scheduler. The tick driver `28d400` is REPLACED, not reconstructed.
+**FIRST BUILD INCREMENT (lowest-risk, validatable now) = I4 ITERATION-SET CAPTURE:** an observe hook on `387010`
+that records the per-tick HardPoint work-list (count, order, owning object id `+0x50`, GOM index) — the
+`ShardScheduler` `WorkItem{object_id, rank}` stream, captured live (DTSCAN/DIFFTRACE-shaped, observe-only). Gates:
+the set is stable/enumerable, rank order matches the serial visitation (the canonical drain key I4), and the
+object→hardpoint ownership is clean (shard-by-object splits no object's hardpoints). Then I5 wires the scheduler +
+the extended create/emit drain. NEXT = build the I4 iteration-set capture.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
