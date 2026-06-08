@@ -1363,7 +1363,12 @@ global LCG is no longer advanced by the scan (`lmiss>0` BY DESIGN — the I2 ret
 default takeover's bit-transparent `lmiss=0`). This is stronger than §8.27's `lmiss=0` (which only showed the reimpl
 matches the binary's global draws): it shows a DIFFERENT draw sequence yields the IDENTICAL winner ⇒ the scan's
 RNG is genuinely selection-irrelevant, so substreaming it (the whole Fork-B/I2 retrofit) is safe. Default OFF keeps
-the global draws so the dual-run takeover stays transparent. NEXT = step 4 (thread-pool the candidate walk + the
+the global draws so the dual-run takeover stays transparent. **PASS (live battle, substream armed): `evals=4,934,397
+obs_match=4,860,045 obs_wmiss=0 obs_smiss=0 obs_lmiss=74,352`, no crash; EVERY DTSCANOBS detail row has matching
+`bin_w/re_w` AND `bin_s/re_s` — all divergences are LCG-ONLY** (`lmiss` ≈ 1.5% of evals = the fraction where
+`383f70` reaches its `:121` draw). ⇒ the per-candidate substream yields the bit-identical winner+score while the
+global LCG is bypassed — the I2 retrofit is selection-safe, empirically confirmed. NEXT = step 4 (thread-pool the
+candidate walk + the
 thread-local `1ffb40` redirect; residual leaf decodes `397060`/`373670`/`396cb0`/`264b8b0` owed first) + step 5
 (deterministic reduction replicating the `score==1.0` early-exit; confirm 1.0 is the global-min score).
 
