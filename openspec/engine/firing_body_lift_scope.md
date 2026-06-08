@@ -1449,6 +1449,35 @@ fire-control scan/decision, already concurrent-safe via Fork B steps 1-3) + exte
 (EAW_PFIRE A4.1 deferral) to the full `387010` body; validate via the DIFFTRACE position fingerprint + DTSCANOBS
 parity under N-shard.**
 
+### 8.37 B3.5.0 — I5 SCOPING: full `387010` Phase-A/B write-set audit + the in-game blocker (2026-06-08)
+Audited the NON-scan parts of `387010` (decoded `381ff0`/`387170`/`385cf0`/`12d430`) to complete the write-set for
+the whole per-object fire-control body (not just the scan Fork B already covered). **Findings (all grep-clean of
+global/heap writes):**
+- `12d430` writes a bone-USED flag on the SHARED model (`*(*(model+0xe8)+0x10)+bone` RMW `&0xfd|flag*2`) but ONLY
+  on first-time bone resolution (`cached_bone_idx<0`), idempotent ⇒ same PRE-WARM class as the skeleton (step 2) —
+  extend the pre-warm to resolve bone indices serially first.
+- `381ff0` (turret aim-servo) writes the HardPoint's OWN angle state (`+0xa0/+0xa4/+0x94/+0x98`) and pushes the
+  turret rotation to the (per-instance) model via `12d480` — object-owned, safe under shard-by-object.
+- `387170`/`385cf0` = registry READS (`294bc0`) + own-state. No cross-object writes.
+- The ONLY cross-object Phase-B seam remains the FIRE create/emit: `3825b0`→`29f810` projectile (Class-2
+  `SpawnCommand`) + `382510`/`220ed0` orders (Class-2b `Command`) — exactly what the command system buffers.
+**⇒ FEASIBILITY PROVEN END-TO-END:** the whole per-object fire-control parallelizes with object-grain shards +
+{skeleton/bone pre-warm (steps 2 + this), FOG lock (step 1), RNG substream (step 3)} for Phase-A safety + the
+command-buffer drain (keyed by the I4-confirmed visitation RANK) for Phase-B. No un-mitigated hazard remains; the
+host `ShardScheduler`/`drain_parallel` is already determinism-gated (`sim/tests/shard_scheduler_test.cpp`).
+**⛔ BUT in-game I5 (actually threading the live tick) is BLOCKED on two things, NOT on the RE:** (1) the FAN-OUT
+mechanism — the hook would have to intercept the per-tick object walk (`3a76b0`←`28d400`), batch+dispatch across
+workers, and SUPPRESS the binary's serial calls (replacing the tick driver — invasive, the `sim_tick_decomp_program`
+I5 "assemble host tick"); (2) the VALIDATION HARNESS — the gold-standard serial-vs-parallel gate is the per-tick
+DIFFTRACE POSITION FINGERPRINT, which lives in the PROFILE build that CRASHES on battle load (perf-stability notes);
+DTSCANOBS covers only the scan selection, not full tick state. **So the remaining work is ENGINEERING + a harness,
+not reverse-engineering — the RE question ("can the fire-control tick be parallelized, and how") is now fully
+ANSWERED.** Decision (Rule 6): (a) build a lean per-tick STATE fingerprint in the stable ORACLE build (unblock the
+A/B gate) as the I5 prerequisite; (b) declare the parallelization feasibility study COMPLETE (work-list
+enumerable+partitionable [I4], Phase-A concurrent-safe [Fork B 1-3], Phase-B bufferable+rank-drained [cmd system +
+I4], host scheduler validated) and treat the in-game threaded tick as a separate engineering milestone gated on the
+harness; (c) attempt the in-game fan-out now despite the validation gap (high risk, weak gate).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
