@@ -5133,6 +5133,94 @@ static BOOL install_dtwa_spawn_hook(void) {
     return TRUE;
 }
 
+/* ── B3.1 (firing_body_lift_scope.md §8.25): host transcription of FUN_140385190, the per-team opportunity
+ * scan. Mirrors 385190 line-for-line — box → spatial query (20e780) → 12-clause gate walk → score → select —
+ * calling every binary leaf via g_dt_imgbase+RVA. Returns the winner candidate ptr (or 0) and updates *score
+ * in place (lower = better; DAT_140899780 = 1.0 perfect-early-out; DAT_140899788 = skip/uninit sentinel).
+ *
+ * SELECTION-BIT-EXACT (the §8.25 refinement): the only RNG draw reachable from here is INSIDE 383f70 (:121, a
+ * random bone-START for its sub-bone loop), and it perturbs ONLY the discarded scan-aim point — 385190 reads
+ * just 383f70's HIT flag (deterministic = "any bone reaches"), never the aim. So this reimpl returns the SAME
+ * winner+score as the binary; the observe (DTSCANOBS diff) gates on exact winner-ptr + score match. The genuine
+ * RNG seam is the 387400:250 random TEAM-start (the DISPATCHER, not this leaf). This is the serial 1-shard
+ * transcription — it calls 20e780 directly and lets 383f70 draw the global LCG; the SpatialQueryGuard (H1) +
+ * 383f70 substream (H2) + FOG scratch lock (H3) wrappers are deferred to B3.3 (the N-shard step). */
+typedef int64_t (*R1_2acb60Fn)(int64_t, int32_t);    /* FUN_1402acb60(index, team_id) → frozen team grid */
+typedef void    (*R1_20e780Fn)(int64_t, void*);      /* FUN_14020e780(grid, &box) → intrusive result list */
+typedef char    (*R1_397060Fn)(int64_t*);            /* FUN_140397060(cand) gate predicate */
+typedef float   (*R1_Vfunc118Fn)(int64_t*, int64_t); /* (*(*owner+0x118))(owner, tgt_id) → priority score */
+
+static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
+    if (!g_dt_imgbase) return 0;
+    const float WIN  = *(float *)(g_dt_imgbase + 0x899780);   /* DAT_140899780 = 1.0 (perfect winner) */
+    const float SKIP = *(float *)(g_dt_imgbase + 0x899788);   /* DAT_140899788 = skip/uninit sentinel */
+    if (*score == WIN || team == 0) return 0;                 /* :29 early-out */
+
+    int64_t owner      = *(int64_t *)(p1 + 0x10);
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+    int64_t grid = ((R1_2acb60Fn)(g_dt_imgbase + 0x2acb60))(  /* :32 frozen team grid */
+                       *(int64_t *)(owner + 0x2b8), *(int32_t *)(team + 0x4c));
+    float half = ((R1_3857d0Fn)(g_dt_imgbase + 0x3857d0))(p1) * *(float *)(g_dt_imgbase + 0x819b38); /* :34-35 */
+    const float H = *(float *)(g_dt_imgbase + 0x8007c0);      /* DAT_1408007c0 = 0.5 */
+    float ox = *(float *)(owner + 0x78), oy = *(float *)(owner + 0x7c), oz = *(float *)(owner + 0x80); /* :37-42 */
+    float xlo = ox - half, xhi = ox + half;
+    float zlo = oz - half, zhi = oz + half;
+    float ylo = oy - half, yhi = oy + half;
+    float box[6];                                             /* {cx,cy,cz,hx,hy,hz} (:43-49) */
+    box[0] = (xlo + xhi) * H;
+    box[1] = (ylo + yhi) * H;
+    box[2] = (zlo + zhi) * H;
+    box[3] = fabsf(xhi - xlo) * H;
+    box[4] = fabsf(yhi - ylo) * H;
+    box[5] = fabsf(zhi - zlo) * H;
+    ((R1_20e780Fn)(g_dt_imgbase + 0x20e780))(grid, box);     /* :50 query → intrusive list */
+
+    int64_t b15418 = *(int64_t *)(g_dt_imgbase + 0xb15418);
+    int64_t winner = 0;
+    for (int64_t node = *(int64_t *)(grid + 8); node != 0; node = *(int64_t *)(node + 0x18)) {  /* :51-99 walk */
+        int64_t rec = *(int64_t *)(node + 8);
+        if (rec == 0) continue;                              /* :59-62 skip null entries */
+        int64_t *c = (int64_t *)(rec - 0x28);                /* :58 candidate */
+        /* gate predicate (:63-78) — same read leaves pfire gate1 validated */
+        if (c[0x54] == 0) continue;                                                   /* A alive */
+        if (*(char *)(c[0x53] + 0x6b) == 0) continue;                                 /* B type flag */
+        if (*(char *)((int64_t)c + 0x3a7) == 1) continue;                             /* C */
+        if ((*(uint8_t *)((int64_t)c + 0x3a0) & 0x40) != 0) continue;                 /* D (c+0x74 idx) */
+        if (((R1_39b140Fn)(g_dt_imgbase + 0x39b140))(c) != 0 &&
+            *(char *)(*(int64_t *)(owner + 0x298) + 0xa4) == 0) continue;             /* E cloak */
+        if ((*(R1_VfuncFn *)(*c + 0x10))(c, 0x11) != 0) continue;                     /* F vfunc_2(0x11) */
+        if (!((*(char *)(owner + 0x3b4) != 1 && *(char *)((int64_t)c + 0x3b4) != 1) ||
+              ((R1_39a540Fn)(g_dt_imgbase + 0x39a540))(owner, c) != 0)) continue;     /* G */
+        if (((R1_397060Fn)(g_dt_imgbase + 0x397060))(c) != 0) continue;              /* H */
+        if (((R1_35f470Fn)(g_dt_imgbase + 0x35f470))(b15418, *(int32_t *)(owner + 0x58), c, 1) == 1)
+            continue;                                                                 /* I FOG */
+        if (!(*(char *)(owner_type + 0x4e) != 1 ||
+              ((R1_383ba0Fn)(g_dt_imgbase + 0x383ba0))(p1, (float *)((int64_t)c + 0x78)) != 0))
+            continue;                                                                 /* J */
+        if (*(char *)(c[0x53] + 0x41) != 1) continue;                                 /* K */
+        if (((R1_540140Fn)(g_dt_imgbase + 0x540140))(owner_type, c) != 0) continue;   /* L */
+
+        /* score (:79-86): priority via vfunc_0x118, default 1.0 */
+        int64_t id = ((R1_3973b0Fn)(g_dt_imgbase + 0x3973b0))(c);
+        float sc = WIN;
+        if (*(char *)(owner + 0x33b) != -1) {
+            int64_t *so = (int64_t *)(*(R1_VfuncFn *)(*(int64_t *)owner + 0x10))((int64_t *)owner, 9);
+            sc = WIN;
+            if (so != 0) sc = (*(R1_Vfunc118Fn *)(*so + 0x118))(so, id);
+        }
+        if (sc == SKIP) continue;                            /* :87 */
+        /* reach (:88-89): 383f70 sets the hit flag; the aim out is discarded by 385190 */
+        int8_t hit = 0; float aim[4] = {0,0,0,0};
+        ((R1_383f70Fn)(g_dt_imgbase + 0x383f70))(p1, aim, (int64_t)c, &hit);
+        if (hit == 1 && (sc < *score || *score == SKIP) &&
+            (*(uint8_t *)((int64_t)c + 0x3a1) & 0x10) == 0) {                          /* :90-92 */
+            *score = sc; winner = (int64_t)c;                                          /* :93 */
+            if (sc == WIN) return (int64_t)c;                                          /* :93-94 perfect, early out */
+        }
+    }
+    return winner;
+}
+
 /* ── DTSCAN (firing_body_lift_scope.md §8.17 / A4 B2): characterize the opportunity-scan's expensive leaf.
  * FUN_140385190 is the per-candidate spatial-eval + full gate-predicate; it is CALLED ONLY by the opp-scan in
  * FUN_140387400 (scan-exclusive, confirmed across decomp/), so a single entry-detour directly measures the
@@ -5150,8 +5238,23 @@ static Eval385190Fn g_dtscan_385190_trampoline = NULL;
 static uint64_t g_dtscan_evals = 0, g_dtscan_hit = 0, g_dtscan_winner = 0;
 static int64_t  g_dtscan_eval_qpc = 0;
 static uint32_t g_dtscan_last = 0xFFFFFFFFu;
+/* B3.1 selection-bit-exact observe (EAW_DTSCAN_OBS=1, default OFF — it DOUBLES the scan cost). */
+static int      g_dtscan_obs_enabled = -1;
+static uint64_t g_dtscan_obs_n = 0, g_dtscan_obs_match = 0, g_dtscan_obs_wmiss = 0, g_dtscan_obs_smiss = 0;
+static uint32_t g_dtscan_obs_detail = 0;
+static int dtscan_obs_on(void) {
+    if (g_dtscan_obs_enabled < 0) {
+        const char *e = getenv("EAW_DTSCAN_OBS");
+        g_dtscan_obs_enabled = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_dtscan_obs_enabled
+            ? "[eaw-mt] DTSCANOBS: 385190 selection-bit-exact reimpl diff ARMED (EAW_DTSCAN_OBS=1, ~2x scan cost)\n"
+            : "[eaw-mt] DTSCANOBS: off (set EAW_DTSCAN_OBS=1 to diff the reimpl winner+score)\n");
+    }
+    return g_dtscan_obs_enabled;
+}
 
 static int64_t dtscan_385190_hook(int64_t p1, int64_t cand, float *score) {
+    float score_in = (score && g_dt_imgbase) ? *score : 0.0f;   /* capture INPUT best-score before the binary mutates it */
     LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
     int64_t ret = g_dtscan_385190_trampoline(p1, cand, score);
     LARGE_INTEGER t1; QueryPerformanceCounter(&t1);
@@ -5161,18 +5264,44 @@ static int64_t dtscan_385190_hook(int64_t p1, int64_t cand, float *score) {
         g_dtscan_hit++;
         if (score && g_dt_imgbase && *score == *(float *)(g_dt_imgbase + 0x899780)) g_dtscan_winner++;  /* ==1.0 sentinel */
     }
+    /* B3.1: re-run the host reimpl on the binary's INPUT state, LCG-rewound, and diff winner ptr + score.
+     * §8.25: selection is RNG-independent ⇒ an EXACT match is expected (wmiss=0, smiss=0 is the gate). */
+    if (dtscan_obs_on() && score && g_dt_imgbase) {
+        uint32_t *LCG = (uint32_t *)(g_dt_imgbase + 0xa13e24);
+        uint32_t lcg_save = *LCG;                            /* the binary's post-scan LCG (its 383f70 draws applied) */
+        float my_score = score_in;
+        int64_t my_winner = pfire_opp_scan_reimpl(p1, cand, &my_score);
+        *LCG = lcg_save;                                     /* restore → the reimpl's 383f70 draws don't perturb the game */
+        g_dtscan_obs_n++;
+        int wmatch = (my_winner == ret), smatch = (my_score == *score);
+        if (wmatch && smatch) g_dtscan_obs_match++;
+        else {
+            if (!wmatch) g_dtscan_obs_wmiss++;
+            if (!smatch) g_dtscan_obs_smiss++;
+            if (g_dtscan_obs_detail < 32) {
+                char db[224];
+                snprintf(db, sizeof db,
+                    "DTSCANOBS\tbin_w=%p\tre_w=%p\tbin_s=%.5f\tre_s=%.5f\tin_s=%.5f\n",
+                    (void *)ret, (void *)my_winner, *score, my_score, score_in);
+                log_write(db); g_dtscan_obs_detail++;
+            }
+        }
+    }
     if (dt_on()) {
         uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
         if (tk != g_dtscan_last && (tk & 0x3ffu) == 0) {     /* every 1024 ticks */
             g_dtscan_last = tk;
             LARGE_INTEGER qpf; QueryPerformanceFrequency(&qpf);
             double ms = qpf.QuadPart ? (double)g_dtscan_eval_qpc * 1000.0 / (double)qpf.QuadPart : 0.0;
-            char sb[224];
+            char sb[320];
             snprintf(sb, sizeof sb,
-                "DTSCAN\ttick=%u\tevals=%llu\thit=%llu\twinner=%llu\teval_ms=%.1f\tavg_us=%.3f\n",
+                "DTSCAN\ttick=%u\tevals=%llu\thit=%llu\twinner=%llu\teval_ms=%.1f\tavg_us=%.3f"
+                "\tobs_n=%llu\tobs_match=%llu\tobs_wmiss=%llu\tobs_smiss=%llu\n",
                 tk, (unsigned long long)g_dtscan_evals, (unsigned long long)g_dtscan_hit,
                 (unsigned long long)g_dtscan_winner, ms,
-                g_dtscan_evals ? ms * 1000.0 / (double)g_dtscan_evals : 0.0);
+                g_dtscan_evals ? ms * 1000.0 / (double)g_dtscan_evals : 0.0,
+                (unsigned long long)g_dtscan_obs_n, (unsigned long long)g_dtscan_obs_match,
+                (unsigned long long)g_dtscan_obs_wmiss, (unsigned long long)g_dtscan_obs_smiss);
             log_write(sb);
         }
     }
