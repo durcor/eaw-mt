@@ -1240,6 +1240,37 @@ piece was validated (host gate, in-game deferred to the unbuilt scheduler), and 
 serial tick driver anyway (you'd speed one hardpoint's scan while the loop still visits hardpoints serially). This
 session = B3.3.0 (audit) pending the fork decision.
 
+### 8.29 B3.3.1 — FORK B chosen; LEAF CONCURRENT-CALL SAFETY AUDIT (2026-06-08)
+User picked Fork B (in-game intra-`385190` threading). First increment per methodology #23 = audit every function
+the per-candidate eval calls for concurrent-call safety (static/global/heap writes, re-entrancy) BEFORE any thread
+code. Scanned `decomp/` for each leaf (write-signature grep + body read). **Verdict:**
+- **CLEAN (pure reads of the frozen world — concurrent-safe):** `39b140`, `39a540`†, `540140`, `3973b0`, `398440`,
+  `3858b0`, `397780`, `2648b0`, `3857d0`, `383ba0`, `776d48`(=sqrt), and `383f70`'s body MINUS its draws/transforms.
+  Zero `DAT_ =`/`Heap`/`malloc`/TLS writes in each. († `39a540` calls vfunc `0x210` on the global shroud mgr
+  `DAT_140b15418` — needs a read-vs-write confirm on that one vfunc, but the C body has no direct writes.)
+- **H2 (LCG draw) — `1ffb40`** via `383f70:121`: writes the global LCG seed `DAT_140a13e24` through its param ptr.
+  Mitigation = pass a PER-THREAD `SimRng` substream pointer (built). Per §8.27 the serial draw-stream already
+  matches the binary, so the substream only changes the (discarded) scan-aim, never the selection.
+- **H3 (FOG) — `35f470`: CONFIRMED HAZARD.** `GetProcessHeap`/`HeapFree`+realloc of the SHARED global scratch
+  `DAT_140a28538` (count `+0x40`, flags `+0x44`) on every call, behind a `_Init_thread_header(&DAT_140b2c228)`
+  magic-static guard. Concurrent calls = use-after-free. **Must LIFT `35f470` with per-thread scratch** (the buffer
+  is rebuilt per call from read-only fog inputs ⇒ a faithful transcription with a thread-local vector is feasible).
+- **⚠️ PIVOTAL OPEN QUESTION — `12d2c0` (per-bone matrix fetch, called heavily in `383f70`) invokes vfunc `0x78` on
+  the shared shooter/candidate object BEFORE reading its bone array** (`param_1[0x1d]+0x28`, stride 0x30 = a 3×4
+  matrix). If vfunc `0x78` LAZILY REBUILDS the skeleton/world-transforms (vs no-op on an already-resolved, dirty-
+  flag-clean cache), concurrent candidate-evals racing on the SAME shooter's bone cache is a hazard — and the fix
+  would be lifting/snapshotting the skeleton resolution (a large lift), NOT just per-thread scratch. This is the
+  SAME "frozen during Pass-A?" invariant `SpatialQueryGuard` (§8.6) relies on, extended to the bone cache.
+  **Fork B feasibility GATES on decoding vfunc `0x78`** (resolve the concrete vtable of `383f70`'s `3858b0`-returned
+  render object) + confirming the bone cache is resolved before the fire-pass. NEXT.
+- **RESIDUAL DECODES (not yet read, all flagged for the same write-scan):** `397060` (gate clause H), `373670`,
+  `396cb0`, `264b8b0` (`383f70` callees). `776d48` confirmed = sqrt.
+**NET so far:** the per-candidate hazard surface is SMALL — one definite lift (`35f470`), one substream (`1ffb40`),
+one pivotal skeleton-freeze question (vfunc `0x78`), 13 leaves already clean. If vfunc `0x78` proves frozen/idempotent
+during the scan, Fork B reduces to {lift `35f470` per-thread + substream `383f70` + thread-pool the candidate walk +
+deterministic reduction (replicating the §8.28 early-exit semantics)}. If not, Fork B needs the skeleton snapshot
+first. B3.3.1 = leaf audit; vfunc `0x78` decode is the next increment.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
