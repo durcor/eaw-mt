@@ -1557,11 +1557,13 @@ seeded menu cycle and vary — match BY SEED, not by tick):**
    the inline `EAW_PFIRE=4` baseline BIT-IDENTICALLY ⇒ moving create-timing PhaseB→PhaseC (canonical drain) is
    DTWORLD-NEUTRAL (the create `29f810` does not perturb the fire-control LCG order). The §8.40 baseline `h` is
    reproduced exactly, confirming both `h`s as the stable pin.
-2. **Shard-merge gate** — `EAW_PFIRE_SHARDS=4` with the buffer LIVE (`shard_maxfill=65` ⇒ real content merged, not an
-   empty no-op): per-shard partition (`shard = object_id % N`) → concat the shard-grouped (NON-canonical) buffers →
-   stable-sort by `(rank,seq)` → drain, reproduces the 1-shard baseline BIT-IDENTICALLY. Independent corroboration: the
-   `DTDRAIN` rank oracle (now actually evaluated — buffer live) shows `rank_down=0` at ticks 1024/2048 (`rank_up==trans`,
-   `id_down==trans` ⇒ strictly descending object_id visitation, the I4 canonical order, zero inversions).
+2. **Shard-merge gate** — `EAW_PFIRE_SHARDS=4` AND `=8` with the buffer LIVE (`shard_maxfill=65` both ⇒ real content
+   merged, not an empty no-op): per-shard partition (`shard = object_id % N`) → concat the shard-grouped (NON-canonical)
+   buffers → stable-sort by `(rank,seq)` → drain, reproduces the 1-shard baseline BIT-IDENTICALLY at BOTH N (the merge is
+   N-invariant by construction; N=8 over the ~8-obj battle = ~1 obj/shard = maximal partition + the `PFIRE_MAX_SHARDS`
+   clamp path). Independent corroboration: the `DTDRAIN` rank oracle (now actually evaluated — buffer live) shows
+   `rank_down=0` at ticks 1024/2048 (`rank_up==trans`, `id_down==trans` ⇒ strictly descending object_id visitation, the
+   I4 canonical order, zero inversions).
 **Mechanics:** `seq` added to `PfireSpawnRec` = per-firing-ship emission counter; `(rank,seq)` is globally unique (one
 rank == one ship == one shard) ⇒ the merge is a TOTAL deterministic sort, independent of shard execution order. The
 scaffold replays `a76b0` in WALK ORDER (serial) — preserving the global-LCG draw sequence — so it isolates and validates
