@@ -1090,6 +1090,22 @@ Fixed a cosmetic `PFIREDBG` funnel underflow (`fb_p3` is now a LIFTED sub-path, 
 `p3eq0(lifted)`, removed from the reject math). **NEXT A4 increment = the opp-scan `387400`+`385190` lift
 (~80% of PhaseB time, the real threading ceiling), then create-deferral on full coverage, then N-shard.**
 
+### 8.24 A4 B2 — DTSCAN: the opp-scan cost IS `385190` (2026-06-07, 5ddd6a3)
+Entry-detour on `385190` (scan-exclusive — only `387400` calls it). Battle result (cumulative, ~tick 110k):
+`evals=2,810,132 hit=12,900 winner=5,952 eval_ms≈13,529 avg_us=1.1→4.8`. **`385190`'s `eval_ms` (~13.5s) is on
+par with PFIRESPLIT's whole `scan_ms` (~10s) ⇒ `385190` is essentially the ENTIRE opp-scan cost; the `387400`
+orchestration is cheap.** The scan does ~2.8M per-candidate spatial-evals, only ~0.46% return a candidate and
+~0.2% a winner (the random-start linear walk burns most evals on non-qualifying candidates). Each eval =
+spatial query `20e780` + full gate-predicate + a `383f70` aim — near-read-only and independent ⇒ the
+embarrassingly-parallel profile A4 targets. (Caveat: 2×2.8M `QueryPerformanceCounter` calls inflate `eval_ms`;
+the COUNTS are solid, timing approximate.) Takeover stayed clean alongside (`DTB3SUM 58312/0`, no crash).
+**Reframe confirmed:** the scan is RNG-retrofit (substream the `:250` start + per-candidate `383f70`) ⇒ the
+lift is NOT bit-exact vs the global-LCG binary; the gate is this structural load/cost/selection distribution.
+**⇒ B3 = LIFT `385190`** (the dominant cost), not the dispatcher. Hazards to inject (all buried inside the
+binary leaf ⇒ require transcription): `20e780` spatial query → `SpatialQueryGuard` (§8.6/§8.10 built); the
+`:89` `383f70` per-candidate draw → `SimRng::substream`; `35f470` FOG → §8.12 scratch LOCK; the rest of the
+gate-predicate (`39b140`/`39a540`/`540140`/`383ba0`/`vfunc_2(0x11)`) are the already-validated read leaves.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
