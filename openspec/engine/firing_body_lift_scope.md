@@ -1106,6 +1106,55 @@ binary leaf ⇒ require transcription): `20e780` spatial query → `SpatialQuery
 `:89` `383f70` per-candidate draw → `SimRng::substream`; `35f470` FOG → §8.12 scratch LOCK; the rest of the
 gate-predicate (`39b140`/`39a540`/`540140`/`383ba0`/`vfunc_2(0x11)`) are the already-validated read leaves.
 
+### 8.25 B3 INCREMENT 0 — `385190` DECODE + the SELECTION-DETERMINISM refinement (2026-06-08)
+Full read of `385190` (the per-team opp-scan, decode against `decomp/385190.c`) + its caller `387400:236-289` and
+its aim callee `383f70`. **Structure of `385190(param_1=fire-ctx, param_2=ENEMY TEAM, param_3=&best_score)`:**
+1. **early-out** `:29`: `*param_3==1.0` (a perfect winner already found by a prior team) **or** `param_2==0` → return 0.
+2. **query box** `:32-50`: `2acb60(index, team+0x4c)` gets the team's frozen spatial grid; build an AABB around the
+   owner pos (`owner+0x78/+0x7c/+0x80`) ± radius `3857d0(p1)*DAT_140819b38`, center via `*DAT_1408007c0`(=0.5);
+   `20e780(grid, &box)` runs the query into the grid's INTRUSIVE result list (head `*(grid+8)`, threaded through
+   each result's `+0x18`, plus the benign global counter `DAT_140a7c66c++`).
+3. **walk + gate** `:53-99`: for each result `plVar6`, a 12-clause gate predicate (alive `[0x54]!=0`; type flag
+   `[0x53]+0x6b`; `+0x3a7!=1`; self-flag `+0x3a0&0x40`; `39b140` cloak OR owner+0x298+0xa4; `vfunc_2(0x11)`==0;
+   the `+0x3b4` pair OR `39a540`; `397060`==0; `35f470` FOG !=1; `owner_type+0x4e!=1` OR `383ba0(p1,plVar6+0xf)`;
+   `[0x53]+0x41==1`; `540140(owner_type,plVar6)`==0). These are the SAME read leaves pfire gate1 already validated.
+4. **score** `:79-86`: `id=3973b0(plVar6)`; if `owner+0x33b!=-1` and `vfunc(owner,9)!=0` → `score=vfunc_0x118(that,id)`
+   (the weapon-vs-target priority), else `score=1.0`. Lower = better; `1.0` = perfect; `DAT_140899788` = skip sentinel.
+5. **reach + select** `:87-96`: if `score!=skip` → `383f70(p1, &aim, plVar6, &hit)`; if `hit && (score<*best ||
+   *best==skip) && !(plVar6+0x3a1&0x10)` → `*best=score; winner=plVar6`; if `score==1.0` **return winner immediately**.
+
+**THE REFINEMENT (stronger than §8.24's "distribution-only" gate):** `385190`'s returned winner+score is
+**RNG-INDEPENDENT**, so the B3 lift can be **SELECTION-BIT-EXACT**, not merely distribution-matching.
+- `383f70`'s ONLY RNG draw is `:121` `FUN_1401ffb40(&DAT_140a13e24,…)` — a random START for its `+0x2d0` candidate-
+  bone loop. That loop checks EVERY bone exactly once (modulo-wrap, `iVar10 < iVar9`) and returns on the first
+  reachable one ⇒ the **hit boolean is deterministic** (≡ "any bone reaches"); the random start only changes WHICH
+  bone's aim point is returned.
+- `385190` **discards that aim point** (`local_98` is written at `:89`, never read again — only `local_res18[0]`,
+  the hit flag, is consumed `:90`). The scan-aim is throwaway; `3825b0` re-aims at fire time anyway.
+- The score (`vfunc_0x118` on a deterministic target id), the gate, and the spatial-query ORDER (frozen grid) are
+  all RNG-independent; the tie-break is strict-`<` (first in query order wins). ⇒ **winner + `*best` are deterministic.**
+- The genuine RNG-retrofit seam is in the **DISPATCHER** `387400:250` (`FUN_1401ffb40` random TEAM-start) + `:274`
+  break-on-perfect — which team's 1.0-target is taken when several teams hold one. That is NOT in `385190`; it is
+  handled at the 387400 level (fork B keeps it serial; fork A substreams the team-start). **B3 lifts `385190` only.**
+
+**HAZARD MAP (confirmed against decomp, for the host transcription):** H1 `20e780` intrusive list + counter →
+`SpatialQueryGuard` (lock query+collect, copy result ptrs out; built §8.6/§8.10). H2 `383f70:121` LCG draw →
+`SimRng::substream` — but per the refinement this is OBSERVABLY INERT to selection (it only perturbs the discarded
+scan-aim), so the substream is a determinism-hygiene retrofit, not a behavior change. H3 `35f470` FOG → §8.12
+scratch LOCK. All other leaves (`2acb60`/`3857d0`/`39b140`/`vfunc_2(0x11)`/`39a540`/`397060`/`383ba0`/`540140`/
+`3973b0`/`vfunc(9)`/`vfunc_0x118`/`383f70`'s `12d2c0`/`3858b0`/`383ba0`) are near-read-only — call via trampoline.
+
+**ORACLE DESIGN (next increment, methodology #27 / DTSCAN-shaped):** entry-detour `385190`; per call run the binary
+(trampoline) AND the host reimpl on the same `(param_1, team, &best_copy)`; assert IDENTICAL returned winner ptr +
+IDENTICAL post-`*best` score. Gate = `mismatch=0` over a full battle (selection-bit-exact), STRICTER than §8.24's
+load/cost distribution. The reimpl is a `pfire_opp_scan_reimpl` mirroring `385190` (box→guarded query→gate walk→
+score→select), calling every leaf via its trampoline; then the takeover repoints `387400:273`'s `385190` call site.
+
+**INCREMENT PLAN:** (B3.1) build `pfire_opp_scan_reimpl` + the observe oracle → selection-bit-exact PASS in a live
+battle; (B3.2) wire the takeover at `387400:273` (1-shard, default-OFF env gate) → in-game PASS; (B3.3) wrap the
+query in `SpatialQueryGuard` + per-team `SimRng::substream` and parallelize the gate walk (N-shard); (B3.4)
+fork-A: thread the `387400` team-walk with the `:250` team-start substreamed. This session = B3.0 (decode) only.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
