@@ -1263,6 +1263,13 @@ code. Scanned `decomp/` for each leaf (write-signature grep + body read). **Verd
   SAME "frozen during Pass-A?" invariant `SpatialQueryGuard` (§8.6) relies on, extended to the bone cache.
   **Fork B feasibility GATES on decoding vfunc `0x78`** (resolve the concrete vtable of `383f70`'s `3858b0`-returned
   render object) + confirming the bone cache is resolved before the fire-pass. NEXT.
+  **REFINEMENT (traced `3858b0`+`2648b0`):** the object `12d2c0` operates on is a SHARED MODEL RESOURCE, not a
+  per-GameObject transform — `3858b0` resolves it via the model manager (`2648b0` RTTI-walk for `DAT_140a12370`)
+  → model lookup `12d6f0(mgr, name_hash)` → bone-index validate `12d2a0`; the bone table read is a static-looking
+  bind-pose matrix array (stride 0x30 at `model+0x1d…+0x28`). So a race would be on a SHARED ASSET across all
+  GameObjects of that type (worse than per-object), making the vfunc-`0x78` verdict more important: if it's an
+  idempotent load/residency guard → read-only-once-loaded → safe; if it evaluates an animation pose INTO the shared
+  model buffer per call → cross-object hazard. Decode `0x78` via Ghidra (model-resource vtable slot) = the gate.
 - **RESIDUAL DECODES (not yet read, all flagged for the same write-scan):** `397060` (gate clause H), `373670`,
   `396cb0`, `264b8b0` (`383f70` callees). `776d48` confirmed = sqrt.
 **NET so far:** the per-candidate hazard surface is SMALL — one definite lift (`35f470`), one substream (`1ffb40`),
