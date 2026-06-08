@@ -5149,6 +5149,9 @@ typedef int64_t (*R1_2acb60Fn)(int64_t, int32_t);    /* FUN_1402acb60(index, tea
 typedef void    (*R1_20e780Fn)(int64_t, void*);      /* FUN_14020e780(grid, &box) → intrusive result list */
 typedef char    (*R1_397060Fn)(int64_t*);            /* FUN_140397060(cand) gate predicate */
 typedef float   (*R1_Vfunc118Fn)(int64_t*, int64_t); /* (*(*owner+0x118))(owner, tgt_id) → priority score */
+typedef int64_t (*R1_3858b0Fn)(int64_t);             /* FUN_1403858b0(p1) → shooter alHModel (lazy-caches bone idx @p1+0x90) */
+typedef int64_t (*R1_2648b0Fn)(int64_t);             /* FUN_1402648b0(render_obj) → that object's alHModel (pure RTTI walk) */
+typedef void    (*ModelVf15Fn)(int64_t);             /* alHModel::vfunc_15 (vtable+0x78): dirty-flag-guarded pose eval (§8.30) */
 
 /* ── Fork B STEP 1 (firing_body_lift_scope.md §8.31): FOG `35f470` made concurrent-call-safe. `35f470`'s only
  * shared mutable state is the global silhouette DynamicVectorClass at DAT_140a28530 (buf+8/count+0x10/cap+0x14),
@@ -5163,6 +5166,31 @@ static int pfire_fog_occluded(int64_t b15418, int32_t team, int64_t cand) {
     int r = ((R1_35f470Fn)(g_dt_imgbase + 0x35f470))(b15418, team, (int64_t *)cand, 1);
     LeaveCriticalSection(&g_fog_cs);
     return r;
+}
+
+/* ── Fork B STEP 2 (firing_body_lift_scope.md §8.30/§8.32): serial SKELETON PRE-WARM. `383f70`'s reach calc
+ * reads bones via `12d2c0`, which calls `alHModel::vfunc_15` (vtable+0x78) — a dirty-flag-guarded MUTATING pose
+ * eval — on the shooter model (`3858b0(p1)`, SHARED across all candidate iterations = the race target) and each
+ * candidate model (`2648b0(cand+0x2a0)`). `3858b0` ALSO lazily writes a bone-index cache at `p1+0x90`. Calling
+ * vfunc_15 once per model up front (serially) evaluates+clears each dirty bit and resolves `p1+0x90`, so the
+ * (future step-4 parallel) walk's vfunc_15 calls find the bit CLEAR → no-op → concurrent bone reads are pure.
+ * vfunc_15 is idempotent (eager warm ≡ the binary's lazy warm: same pose, same inputs) ⇒ behavior-preserving;
+ * the candidate-model warming is conservative (covers per-instance OR shared-asset model instancing). */
+static void pfire_model_warm(int64_t model) {
+    if (model == 0) return;
+    ModelVf15Fn f = *(ModelVf15Fn *)(*(int64_t *)model + 0x78);    /* 12d2c0's `(**(*model+0x78))(model)` */
+    f(model);
+}
+static void pfire_skeleton_prewarm(int64_t p1, int64_t grid) {
+    if (!g_dt_imgbase) return;
+    pfire_model_warm(((R1_3858b0Fn)(g_dt_imgbase + 0x3858b0))(p1));   /* shooter: warm pose + resolve p1+0x90 */
+    R1_2648b0Fn f2648 = (R1_2648b0Fn)(g_dt_imgbase + 0x2648b0);
+    for (int64_t node = *(int64_t *)(grid + 8); node != 0; node = *(int64_t *)(node + 0x18)) {
+        int64_t rec = *(int64_t *)(node + 8);
+        if (rec == 0) continue;
+        int64_t rend = *(int64_t *)((rec - 0x28) + 0x2a0);           /* candidate render_anim_obj */
+        if (rend) pfire_model_warm(f2648(rend));                     /* candidate: warm its alHModel pose */
+    }
 }
 
 static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
@@ -5189,6 +5217,11 @@ static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
     box[4] = fabsf(yhi - ylo) * H;
     box[5] = fabsf(zhi - zlo) * H;
     ((R1_20e780Fn)(g_dt_imgbase + 0x20e780))(grid, box);     /* :50 query → intrusive list */
+
+    /* Fork B step 2 (§8.30): serial skeleton pre-warm over shooter + candidates so the (future) parallel
+     * candidate walk's vfunc_15/3858b0 lazy mutations are already settled → concurrent bone reads are pure.
+     * Idempotent ⇒ behavior-preserving in this serial reimpl (validated by DTSCANOBS no-regression). */
+    pfire_skeleton_prewarm(p1, grid);
 
     int64_t b15418 = *(int64_t *)(g_dt_imgbase + 0xb15418);
     int64_t winner = 0;

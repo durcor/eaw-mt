@@ -1330,6 +1330,24 @@ during the scan, Fork B reduces to {lift `35f470` per-thread + substream `383f70
 deterministic reduction (replicating the §8.28 early-exit semantics)}. If not, Fork B needs the skeleton snapshot
 first. B3.3.1 = leaf audit; vfunc `0x78` decode is the next increment.
 
+### 8.32 B3.3.4 — FORK B STEP 2: serial SKELETON PRE-WARM built (2026-06-08)
+Built `pfire_skeleton_prewarm(p1, grid)` + `pfire_model_warm` (winmm_proxy.c), called in `pfire_opp_scan_reimpl`
+right after the spatial query, before the candidate walk. It calls `alHModel::vfunc_15` (vtable+0x78, the §8.30
+dirty-flag-guarded pose eval) once per model — the shooter (`3858b0(p1)`) and each candidate (`2648b0(cand+0x2a0)`)
+— so the (future step-4 parallel) walk's `12d2c0`→vfunc_15 calls find the dirty bit CLEAR → no-op → concurrent bone
+reads are pure. **Two lazy mutations neutralized (refinement from re-reading `383f70`):** (1) the shooter model's
+pose — SHARED across all candidate iterations (`3858b0(p1)` returns the same model each time) = the actual race
+target; (2) `3858b0` ALSO lazily writes a resolved bone-index cache at `p1+0x90` (only when `<0`), so warming the
+shooter once resolves it → the parallel calls find it cached → no write. Candidate models are each touched by only
+one worker (distinct per object), but warming them too is conservative (covers shared-asset model instancing as
+well as per-instance). vfunc_15 is idempotent ⇒ eager warm ≡ the binary's lazy warm (same pose, same inputs) ⇒
+behavior-preserving; it touches only the model (no LCG/FOG-scratch perturbation). **Validation note:** in the
+dual-run observe/takeover the binary `385190` runs first and already warms every model it reads, so the reimpl's
+pre-warm is a NO-OP there — the no-regression launch confirms the model-fetch offsets (`3858b0(p1)`,
+`2648b0(cand+0x2a0)`, vtable+0x78) are correct and crash-free + no selection/LCG perturbation; the pre-warm's
+actual NECESSITY only manifests once the binary is dropped (step 4). NEXT = step 3 (per-thread `SimRng` substream
+for `383f70`'s `:121` draw).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
