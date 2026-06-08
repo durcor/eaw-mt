@@ -1350,6 +1350,23 @@ active under takeover): `mode=TAKEOVER evals=3,653,134 obs_match=3,653,134 obs_w
 0 divergence lines, no crash** — warming every candidate model via vfunc_15 is crash-free and behavior-preserving.
 NEXT = step 3 (per-thread `SimRng` substream for `383f70`'s `:121` draw).
 
+### 8.33 B3.3.5 — FORK B STEP 3: per-candidate RNG SUBSTREAM for `383f70`'s draw (H2) (2026-06-08)
+Built the H2 substream (winmm_proxy.c): `383f70`'s only shared-state write is `FUN_1401ffb40(&DAT_140a13e24,…)`
+at `:121` (a random bone-START), and per §8.25/§8.27 it perturbs ONLY the discarded scan-aim, never the hit
+boolean / winner. So each candidate's draw is redirected to a per-candidate substream seeded `splitmix32(object_id
+@c+0x50, tick)` — stable ⇒ reproducible regardless of thread/order. **ARM `EAW_PFIRE_SCAN_SS=1` (`just
+pfirescanss=1`, default OFF):** in the serial reimpl this is realized as a save/set/restore of the global LCG word
+around the engine `383f70` call (serial-safe; the actual parallel walk will use a thread-local `1ffb40` redirect at
+step 4 so N workers don't race the global word). **It directly VALIDATES the RNG-retrofit-safety claim:** with the
+draw coming from a SUBSTREAM instead of the global LCG, the selection must be UNCHANGED (`wmiss=smiss=0`) while the
+global LCG is no longer advanced by the scan (`lmiss>0` BY DESIGN — the I2 retrofit signature, distinct from the
+default takeover's bit-transparent `lmiss=0`). This is stronger than §8.27's `lmiss=0` (which only showed the reimpl
+matches the binary's global draws): it shows a DIFFERENT draw sequence yields the IDENTICAL winner ⇒ the scan's
+RNG is genuinely selection-irrelevant, so substreaming it (the whole Fork-B/I2 retrofit) is safe. Default OFF keeps
+the global draws so the dual-run takeover stays transparent. NEXT = step 4 (thread-pool the candidate walk + the
+thread-local `1ffb40` redirect; residual leaf decodes `397060`/`373670`/`396cb0`/`264b8b0` owed first) + step 5
+(deterministic reduction replicating the `score==1.0` early-exit; confirm 1.0 is the global-min score).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

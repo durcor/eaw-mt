@@ -5193,6 +5193,34 @@ static void pfire_skeleton_prewarm(int64_t p1, int64_t grid) {
     }
 }
 
+/* ── Fork B STEP 3 (firing_body_lift_scope.md §8.33): per-candidate RNG SUBSTREAM for 383f70's :121 draw (H2).
+ * 383f70's ONLY shared-state write is FUN_1401ffb40(&DAT_140a13e24,…) — a random bone-START for its sub-bone
+ * loop — and per §8.25/§8.27 that draw perturbs ONLY the DISCARDED scan-aim, never the hit boolean or the winner.
+ * In the parallel walk concurrent workers must not race the global LCG word, so each candidate's 383f70 draw is
+ * redirected to a per-candidate substream seeded by (object_id, tick) — stable ⇒ reproducible regardless of which
+ * thread/order processes the candidate. ARM (EAW_PFIRE_SCAN_SS=1, default OFF): in the serial reimpl this is
+ * realized as a save/set/restore of the global LCG word around the engine 383f70 call (serial-safe; the actual
+ * parallel walk uses a thread-local 1ffb40 redirect at step 4). It VALIDATES the retrofit-safety claim directly:
+ * with the draw coming from a SUBSTREAM (not the global LCG) the selection must be UNCHANGED (wmiss=smiss=0), while
+ * the global LCG is no longer advanced by the scan (lmiss>0 BY DESIGN — the I2 retrofit signature). Default OFF
+ * keeps the global draws so the dual-run takeover stays bit-transparent (lmiss=0). */
+static int g_scan_ss_on = -1;
+static int scan_ss_on(void) {
+    if (g_scan_ss_on < 0) {
+        const char *e = getenv("EAW_PFIRE_SCAN_SS");
+        g_scan_ss_on = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_scan_ss_on
+            ? "[eaw-mt] PFIRESCANSS: 383f70 draw redirected to a per-candidate substream (EAW_PFIRE_SCAN_SS=1; expect lmiss>0 by design)\n"
+            : "[eaw-mt] PFIRESCANSS: off (383f70 draws the global LCG; set EAW_PFIRE_SCAN_SS=1 to substream it)\n");
+    }
+    return g_scan_ss_on;
+}
+static uint32_t scan_substream_seed(uint32_t object_id, uint32_t tick) {   /* splitmix32(object_id, tick) */
+    uint32_t x = object_id ^ (tick * 0x9e3779b9u);
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+
 static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
     if (!g_dt_imgbase) return 0;
     const float WIN  = *(float *)(g_dt_imgbase + 0x899780);   /* DAT_140899780 = 1.0 (perfect winner) */
@@ -5259,7 +5287,16 @@ static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
         if (sc == SKIP) continue;                            /* :87 */
         /* reach (:88-89): 383f70 sets the hit flag; the aim out is discarded by 385190 */
         int8_t hit = 0; float aim[4] = {0,0,0,0};
-        ((R1_383f70Fn)(g_dt_imgbase + 0x383f70))(p1, aim, (int64_t)c, &hit);
+        if (scan_ss_on()) {                                  /* §8.33 H2: draw from a per-candidate substream */
+            uint32_t *LCGg = (uint32_t *)(g_dt_imgbase + 0xa13e24);
+            uint32_t saved = *LCGg;
+            uint32_t tick  = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
+            *LCGg = scan_substream_seed(*(uint32_t *)((int64_t)c + 0x50), tick);   /* object_id @c+0x50 */
+            ((R1_383f70Fn)(g_dt_imgbase + 0x383f70))(p1, aim, (int64_t)c, &hit);
+            *LCGg = saved;                                    /* restore → the scan does not advance the global LCG */
+        } else {
+            ((R1_383f70Fn)(g_dt_imgbase + 0x383f70))(p1, aim, (int64_t)c, &hit);
+        }
         if (hit == 1 && (sc < *score || *score == SKIP) &&
             (*(uint8_t *)((int64_t)c + 0x3a1) & 0x10) == 0) {                          /* :90-92 */
             *score = sc; winner = (int64_t)c;                                          /* :93 */
