@@ -1026,6 +1026,29 @@ selects mat2 only when `+0x3c>=0`). The pf==2 observe will show, per origin-spaw
 selected/blended a zeroed mat2 the binary wouldn't — the precise create-geometry trap. **Built + oracle-
 deployed; NEEDS A BATTLE RUN to collect PFOBS data (`just pfire=2 difftrace=1 launch-foc-desktop`).**
 
+**RESULT (battle run) — the observe NAILED it in one pass, and it was NOT the mat2-unfilled theory:** PFOBS
+`n=188035 match=54361 mismatch=133674 origin=133674 nofire=1.8M`. EVERY mismatch had **`mat1==mat2==bin`**
+(both matrices correctly = the real muzzle), **`spread=1`, `p3c_neg=0`**, `obs=0,0,0`. So non-spread weapons
+matched (deterministic mat-column select) and 100% of the origin-spawns were SPREAD weapons whose `ffbb0`
+cone-draw returned 0 from CORRECT, equal bounds. `ffbb0_range(LCG,408,408)` must = 408 yet gave 0 ⇒
+calling-convention bug, confirmed by `objdump 0x1ffbb0`:
+```
+comiss xmm1,xmm2     ; lo=XMM1, hi=XMM2  (FLOAT args, not RDX/R8)
+imul eax,[rcx],...   ; lcg ptr = RCX
+... movaps xmm0,xmm2 ; ret in XMM0  (not RAX)
+```
+**`ffbb0` is `float ffbb0(uint *lcg, float lo, float hi)`.** The prior "dropped-args" fix (909e4b8) was
+HALF-right (the args WERE dropped) but WRONG on the convention — it passed bounds in GP regs (RDX/R8,
+ignored) and read RAX (garbage); XMM1/XMM2≈0 ⇒ `(0-0)*r+0=0`. **FIX: typedef → `float(*)(uint32_t*,float,
+float)`, call directly (no bit-packing).** This is the THIRD trap of the §8.20 class (void-float-return,
+dropped-args, AND now **float-args-in-XMM mistyped as GP**) — all invisible at the Ghidra call site.
+
+**Methodology #28:** when a leaf's args are FLOATS, Ghidra may mistype them as `undefined8` GP-register
+params (and the return as RAX). On Win64 floats ride XMM0-3 by position and float returns come back in XMM0.
+A GP-typed function pointer then passes/reads the wrong registers — and the symptom is a CLEAN ZERO (the
+unset XMM reg), not garbage, so it can masquerade as a logic bug. **Disassemble any RNG/math leaf before
+transcribing its signature** (`comiss/movss/cvtsi2ss xmmN` on the arg = it's an XMM float param).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

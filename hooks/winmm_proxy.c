@@ -4299,11 +4299,14 @@ static uint32_t g_r1_g3_ok=0, g_r1_g3_bug=0, g_r1_g3_nofire=0, g_r1_g3_skip=0;
  * S[8..10]=local_2b8/uStack_2b4/local_2b0 (=create pos), S[12..14]=local_2a8/2a4/2a0, S[42..44]=local_230/
  * 22c/228 (=create orient). Caller passes aim in S[0..2] + dist + the 385e70 matrices (mat1/mat2). Returns
  * 1 (fire → create with pos=&S[8], orient=&S[42]) / 0 (no fire). */
-/* ⚠️ FUN_1401ffbb0 really takes (LCG, lo, hi) and returns a uniform random FLOAT in [lo,hi] (ret in RAX
- * low32). Ghidra dropped the lo/hi args (showed `ffbb0(&LCG)`); in the binary they are leftover GP regs
- * (RDX/R8) holding the two muzzle-matrix bounds (mat1[k],mat2[k]) — the spread cone. Passing without them
- * ⇒ garbage range ⇒ spread-weapon projectiles spawn at the origin. lo/hi are float-bits in GP regs. */
-typedef int64_t (*R1_ffbb0Fn)(uint32_t*, int64_t, int64_t); /* (LCG, lo_bits, hi_bits) → float in RAX low32 */
+/* ⚠️ FUN_1401ffbb0 is `float ffbb0(uint *lcg, float lo, float hi)` → uniform random FLOAT in [lo,hi].
+ * objdump (0x1ffbb0): `comiss xmm1,xmm2` (lo=XMM1, hi=XMM2 — FLOAT args, NOT GP regs) and the result is
+ * returned in XMM0 (NOT RAX). Ghidra dropped the lo/hi args AND mistyped them as undefined8 GP regs; the
+ * int64-typedef passed bounds in RDX/R8 (ignored) and read RAX (garbage) ⇒ XMM1/XMM2≈0 ⇒ (0-0)*r+0=0 ⇒
+ * EVERY spread-weapon projectile spawned at the origin (confirmed by the pf==2 PFOBS observe: spread=1
+ * fires all obs=0,0,0 with mat1==mat2==real). The bounds are the two muzzle-matrix translation columns
+ * (mat1[k],mat2[k]) — the spread cone. */
+typedef float (*R1_ffbb0Fn)(uint32_t*, float, float);     /* (LCG, lo, hi) → uniform float in [lo,hi] (XMM0) */
 typedef char    (*R1_ffdb0Fn)(uint32_t*, int32_t);        /* FUN_1401ffdb0(&LCG, pct) prob roll */
 /* ⚠️ 370f00 is Ghidra-typed `void`/undefined4 but actually RETURNS A FLOAT (the projectile speed) in XMM0 —
  * 3825b0:230 `uVar16 = 370f00(...)` then feeds 399450's param_6, which 399450 uses as a FLOAT multiplier
@@ -4335,12 +4338,10 @@ static int pfire_spawn_buf_append(int64_t p1, int64_t p2, int64_t p3, int64_t lV
     return 1;
 }
 
-/* call FUN_1401ffbb0(LCG, lo, hi) → uniform random float in [lo,hi]. lo/hi pass as float-bits in GP regs;
- * the result float is in RAX's low 32 bits. */
+/* FUN_1401ffbb0(LCG, lo, hi) → uniform random float in [lo,hi]. lo/hi are FLOAT args (XMM1/XMM2), result
+ * in XMM0 — call it directly through the float-typed pointer (no GP-reg bit-packing). */
 static inline float pfire_ffbb0_range(R1_ffbb0Fn f, uint32_t *lcg, float lo, float hi) {
-    int64_t lob = 0, hib = 0; memcpy(&lob, &lo, 4); memcpy(&hib, &hi, 4);
-    int64_t r = f(lcg, lob, hib);
-    float out; memcpy(&out, &r, 4); return out;
+    return f(lcg, lo, hi);
 }
 
 static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, float dist,
