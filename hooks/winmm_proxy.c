@@ -4283,6 +4283,12 @@ static int pfire_r1_gate2a(int64_t p1, int64_t *p2, int64_t p3) {
  * (dy² first, then +dx²). */
 typedef void*   (*R1_385c70Fn)(int64_t, void*);                       /* FUN_140385c70(param_3, &vec) aim */
 typedef char    (*R1_385e70Fn)(int64_t, float*, void*, void*);        /* FUN_140385e70(p1,&pos,&m1,&m2) LOS */
+/* param_3==0 RNG-aim leaves (3825b0:164-181). Both 405870 + 383f70 draw the global LCG (1ffb40) but write
+ * NO shared state (405870 reads-only+returns a redirected target; 383f70 writes only its out-aim+flag args)
+ * ⇒ observe-safe under the pf==2 LCG save/restore. 398440(p2,&scratch) at :165 is pure & its output is dead
+ * (the subsequent 383f70/local_res8 don't read it) — reuse R1_398440Fn. The decomps confirm all 3. */
+typedef int64_t (*R1_405870Fn)(int64_t);                              /* UnitAI redirect: 405870(vfunc16(p2)) → target ptr / 0 (1 LCG draw) */
+typedef float*  (*R1_383f70Fn)(int64_t, float*, int64_t, int8_t*);   /* aim: 383f70(p1,&aim_out,target,&flag) → &aim_out (0/1 LCG draw) */
 typedef float   (*R1_3857d0Fn)(int64_t);                              /* FUN_1403857d0(p1) max-range delta */
 typedef float   (*R1_397780Fn)(int64_t*);                             /* FUN_140397780(p2) target extent */
 typedef float   (*R1_SqrtFn)(float);                                  /* FUN_140776d48 engine sqrt */
@@ -4693,14 +4699,16 @@ static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
 #define PFIRE_FALLBACK 2
 /* SHARED geometry core (3825b0:60-260): R1 gates + gate2a + gate2b aim/LOS/range + R1c spread/lead/
  * dispersion/Euler. Fills S[48] (create pos=&S[8], orient=&S[42]) and outputs lVar7 (weapon template),
- * local_238 (charge order-record), and the RESOLVED p3. Returns 1=fire (S valid) / 0=no-fire /
- * PFIRE_FALLBACK. out_mat1col/out_mat2col (NULL-skippable) report the two muzzle-matrix translation
- * columns for the position observe. RNG-neutral through gate2b (the gates draw no LCG); R1c draws the
- * spread/dispersion LCG. BOTH the takeover (pfire_fire_reimpl) and the pf==2 observe (pfire_observe_geom)
- * call this so the observed geometry is the SAME code the takeover would run. */
+ * local_238 (charge order-record), the RESOLVED p3, and the RESOLVED p2 (the param_3==0 path may redirect
+ * the target via 405870 — the lead solver + Class-2b listener + shot-register all use the redirected target).
+ * Returns 1=fire (S valid) / 0=no-fire / PFIRE_FALLBACK. out_mat1col/out_mat2col (NULL-skippable) report the
+ * two muzzle-matrix translation columns for the position observe. The param_3==0 RNG-aim path (405870/383f70)
+ * draws the LCG but writes no shared state ⇒ the pf==2 observe replays it under the LCG save/restore. BOTH the
+ * takeover (pfire_fire_reimpl) and the pf==2 observe (pfire_observe_geom) call this so the observed geometry
+ * is the SAME code the takeover would run. */
 static int pfire_compute_geom(int64_t p1, int64_t *p2arg, int64_t p3,
                               float *S, int64_t *out_lVar7, int64_t *out_local238, int64_t *out_p3,
-                              float *out_mat1col, float *out_mat2col) {
+                              int64_t *out_p2, float *out_mat1col, float *out_mat2col) {
     if (!g_dt_imgbase) return PFIRE_FALLBACK;
     g_pfdbg_entry++;
     int64_t p2 = (int64_t)p2arg;
@@ -4749,12 +4757,30 @@ static int pfire_compute_geom(int64_t p1, int64_t *p2arg, int64_t p3,
     }
 
     g_pfdbg_pass_g2a++;                                              /* DEBUG: passed gate2a */
-    /* ---- gate2b (164-209): param_3==0 RNG aim path → fallback; else 385c70 aim + 385e70 LOS + range ---- */
-    if (p3 == 0) { g_pfdbg_fb_p3++; return PFIRE_FALLBACK; }          /* RNG aim path → binary (rare) */
+    /* ---- gate2b (164-209): aim → 385e70 LOS → range. Two aim paths converge here:
+     *  p3!=0 (:183) 385c70(p3) ; p3==0 (:164-181) the RNG-aim path (398440 dead read + optional 405870 UnitAI
+     *  target-redirect + 383f70 aim). A4 lift (was a fallback): the redirect REASSIGNS the target for the rest
+     *  of the body (lead solver + Class-2b), so p2 is updated and exported via out_p2. */
     memset(S, 0, 48 * sizeof(float));
     float mat1[16], mat2[16];
-    float *pa = (float *)((R1_385c70Fn)(g_dt_imgbase + 0x385c70))(p3, &S[4]);  /* :183 aim */
-    S[0] = pa[0]; S[1] = pa[1]; S[2] = pa[2];
+    if (p3 != 0) {
+        float *pa = (float *)((R1_385c70Fn)(g_dt_imgbase + 0x385c70))(p3, &S[4]);  /* :183 aim */
+        S[0] = pa[0]; S[1] = pa[1]; S[2] = pa[2];
+    } else {
+        g_pfdbg_fb_p3++;                                             /* count: this fire took the RNG-aim path */
+        float scratch3[4] = {0,0,0,0};                              /* :165 398440(p2,&buf) — pure, output dead */
+        ((R1_398440Fn)(g_dt_imgbase + 0x398440))(p2, (uint32_t *)scratch3);
+        int8_t flag = 0;                                            /* :166 local_res8 low byte cleared */
+        if (*(int8_t *)(p2 + 0x348) != -1) {                        /* :167 param_2[0x69] low byte != -1 */
+            R1_VfuncFn vf2 = *(R1_VfuncFn *)(*(int64_t *)p2 + 0x10);
+            int64_t redir = ((R1_405870Fn)(g_dt_imgbase + 0x405870))(vf2((int64_t *)p2, 0x16));  /* :168-169 */
+            if (redir == 0) return 0;                               /* :170-172 */
+            p2 = redir;                                             /* redirect propagates to lead/Class-2b */
+        }
+        float *pa = ((R1_383f70Fn)(g_dt_imgbase + 0x383f70))(p1, &S[4], p2, &flag);  /* :174 aim (writes &S[4]) */
+        S[0] = pa[0]; S[1] = pa[1]; S[2] = pa[2];                   /* :175-177 local_2d8 = aim */
+        if (flag == 0) return 0;                                    /* :178 aim-fail gate */
+    }
     memcpy(mat1, (void *)(g_dt_imgbase + 0x800820), 48);              /* :188-200 */
     memcpy(mat2, (void *)(g_dt_imgbase + 0x800820), 48);
     S[4] = S[5] = S[6] = 0.0f;                                        /* :192 local_2c8 = 0 */
@@ -4774,7 +4800,8 @@ static int pfire_compute_geom(int64_t p1, int64_t *p2arg, int64_t p3,
     /* ---- R1c geometry (210-260): spread/lead/fire-gate/dispersion/Euler ---- */
     if (pfire_r1c_geom(p1, (int64_t *)p2, lVar7, S, dist, mat1, mat2) == 0) { g_pfdbg_r1cfail++; return 0; }  /* fire gate */
 
-    *out_lVar7 = lVar7; *out_local238 = local_238; if (out_p3) *out_p3 = p3;   /* p3 was resolved in gate2a */
+    *out_lVar7 = lVar7; *out_local238 = local_238; if (out_p3) *out_p3 = p3;   /* p3 resolved in gate2a */
+    if (out_p2) *out_p2 = p2;                                          /* p2 maybe redirected (405870) */
     return 1;
 }
 
@@ -4787,19 +4814,22 @@ static int pfire_compute_geom(int64_t p1, int64_t *p2arg, int64_t p3,
  * position observe (pfire_observe_geom), NOT bit-exact at takeover (§8.15). */
 static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     float S[48];
-    int64_t lVar7 = 0, local_238 = 0, p3r = p3;
-    int g = pfire_compute_geom(p1, p2arg, p3, S, &lVar7, &local_238, &p3r, NULL, NULL);
+    int64_t lVar7 = 0, local_238 = 0, p3r = p3, p2r = (int64_t)p2arg;
+    int g = pfire_compute_geom(p1, p2arg, p3, S, &lVar7, &local_238, &p3r, &p2r, NULL, NULL);
     if (g != 1) return g;                              /* 0 no-fire / PFIRE_FALLBACK propagated */
-    int64_t p2 = (int64_t)p2arg;
 
-    /* ---- R2 applier (261-402): create+init + Class-2b ---- A3.3 inline create (1-shard). */
+    /* ---- R2 applier (261-402): create+init + Class-2b ---- A3.3 inline create (1-shard).
+     * p2r = the RESOLVED target (the param_3==0 path may have redirected it via 405870) — the binary uses the
+     * redirected param_2 for the lead solver, the +0x38 listener, and the 3a06a0 shot-register. */
     g_pfdbg_reimpl_lvl = (uint32_t)g_pfire_level;     /* DEBUG: the level the reimpl actually sees */
     g_pfdbg_inline++;                                  /* DEBUG: reached R2 (= reimpl actually fires) */
-    int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2, lVar7, local_238, S);
-    pfire_r2b_emit(p1, proj, (int64_t *)p2, p3r, lVar7, S);
+    int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2r, lVar7, local_238, S);
+    pfire_r2b_emit(p1, proj, (int64_t *)p2r, p3r, lVar7, S);
 
-    /* ---- R3 cooldown + listener rebind (403-497) ---- self-write + Class-2b rebind (inline at 1-shard). */
-    pfire_r3_cooldown(p1, (int64_t *)p2);
+    /* ---- R3 cooldown + listener rebind (403-497) ---- self-write + Class-2b rebind (inline at 1-shard).
+     * Uses p2r: the binary reassigns param_2 IN PLACE at :169, so every later reference (incl. R3) sees the
+     * redirected target. */
+    pfire_r3_cooldown(p1, (int64_t *)p2r);
     return 1;
 }
 
@@ -4812,8 +4842,8 @@ static int pfire_observe_geom(int64_t p1, int64_t *p2arg, int64_t p3,
                               float out_pos[3], float out_mat1col[3], float out_mat2col[3],
                               uint32_t *out_flags) {
     float S[48];
-    int64_t lVar7 = 0, local_238 = 0, p3r = p3;
-    int g = pfire_compute_geom(p1, p2arg, p3, S, &lVar7, &local_238, &p3r, out_mat1col, out_mat2col);
+    int64_t lVar7 = 0, local_238 = 0, p3r = p3, p2r = (int64_t)p2arg;
+    int g = pfire_compute_geom(p1, p2arg, p3, S, &lVar7, &local_238, &p3r, &p2r, out_mat1col, out_mat2col);
     if (g != 1) return g;
     out_pos[0] = S[8]; out_pos[1] = S[9]; out_pos[2] = S[10];   /* create pos = &S[8] = (S8,S9,S10) */
     uint32_t f = 0;
