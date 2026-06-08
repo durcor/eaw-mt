@@ -1491,8 +1491,12 @@ parallel fire-control tick that stays deterministic reproduces this `DTWORLD` st
 desync (different targeting → different shots → divergent downstream motion) breaks the hash and STAYS broken.
 Compile-green, gated `EAW_DIFFTRACE=1`. **Coverage:** fire-control objects (ships with hardpoints) — the units the
 parallelization actually moves; projectiles/non-combat objects are a later completeness refinement (would need the
-full GOM/registry walk, not the fire-control work-list). NEXT = validate the harness (stock save-replay → identical
-`DTWORLD` stream across two runs = the determinism BASELINE), then it gates the in-game N-shard fan-out.
+full GOM/registry walk, not the fire-control work-list). **EMIT CONFIRMED (live menu battle):** `DTWORLD tick=1024
+obj=8 h=ea5f27913390cce2` / `tick=2048 obj=7 h=7f7fdaf6ca0fcbaa` — `obj` matches the I4 count, the hash EVOLVES
+across ticks (ships moving → positions change → hash changes), no crash. The fingerprint mechanism works. NEXT =
+validate it as a GATE: stock save-replay → IDENTICAL `DTWORLD` stream across two runs (the determinism BASELINE;
+needs a controlled replay — the menu battle evolves so it's not a clean A/B). Then it gates the in-game N-shard
+fan-out (serial vs parallel must reproduce the stream).
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
