@@ -5503,9 +5503,10 @@ static void i4_387010_hook(int64_t hp, int32_t tick) {
                     log_write(b);
                 }
                 if (dt_on() && (g_i4_tick & 0x3ffu) == 0 && g_i4_tick == g_i4_logged) {  /* I5 harness fingerprint */
-                    char wb[96];
-                    snprintf(wb, sizeof wb, "DTWORLD\ttick=%u\tobj=%u\th=%016llx\n",
-                             g_i4_tick, g_i4_wobj, (unsigned long long)g_i4_whash);
+                    uint32_t seed = g_dt_imgbase ? *(uint32_t *)(g_dt_imgbase + 0xa13e24) : 0;  /* global LCG state */
+                    char wb[128];
+                    snprintf(wb, sizeof wb, "DTWORLD\ttick=%u\tobj=%u\th=%016llx\tseed=%08x\n",
+                             g_i4_tick, g_i4_wobj, (unsigned long long)g_i4_whash, seed);
                     log_write(wb);
                 }
             }
