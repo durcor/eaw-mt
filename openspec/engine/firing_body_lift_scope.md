@@ -1049,6 +1049,29 @@ A GP-typed function pointer then passes/reads the wrong registers — and the sy
 unset XMM reg), not garbage, so it can masquerade as a logic bug. **Disassemble any RNG/math leaf before
 transcribing its signature** (`comiss/movss/cvtsi2ss xmmN` on the arg = it's an XMM float param).
 
+### 8.22 A3.3 TAKEOVER — REAL PASS (in-game, user-confirmed) (2026-06-07)
+After the ffbb0 XMM fix, re-validated in two stages:
+- **pf==2 position observe — BIT-EXACT:** `PFOBS-SUM n=25296 match=25296 mismatch=0 origin=0`. Every
+  spread+non-spread create-pos matches the binary's actual 29f810 pos arg on the replayed-LCG pre-state.
+- **pf==2 fire-rate parity — ZERO genuine under-fire:** the metric initially read `underfire=31873` but that
+  EXACTLY equalled `fb_p3=31873` (the deliberate `param_3==0` defer-to-binary). Split the counter
+  (`GENUINE_underfire` vs `fallback`) ⇒ genuine under-fire = 0. (Also fixed a stale `g_b3_args.have` that had
+  inflated the raw nofire — reset it per 3825b0 call.)
+- **pf==3 takeover — IN-GAME PASS:** `DTB3SUM TAKEOVER=reimpl firer/dmg/life all N/0`; `PFIREDBG
+  reachedR2=8278↑ lvl=3` (reimpl creates inline, not just falling back); `PFPOS` shows projectiles at the
+  firer's hull (the ex-origin firer `-1350,3449` now spawns `proj@408,3253`); no crashes; two-phase intact
+  (`deferred==fired`). **USER CONFIRMED on screen: capital ships deal/take damage, NR fires symmetrically,
+  turbolaser/ion fire from muzzles.** The earlier §8.16 "A3.3 PASS" was the FALSE pass; THIS is the real one
+  — the position observe (methodology #27) caught the ffbb0 bug the field oracle (DTB3SUM N/0) structurally
+  could not see. `tgt=N/35` (~0.2%) is the pre-existing target-died-mid-tick race (binary shows the same rate
+  at pf==2), NOT a takeover regression.
+
+**A4 RE-AIM (the threading ceiling):** at pf==3 `fb_p3≈298048` vs `reachedR2≈8278` — **~97% of fires take the
+`param_3==0` binary fallback**, so the lifted reimpl currently drives only ~3% of the create path. The A4
+speedup therefore lives in **lifting the `param_3==0` aim path** (`383f70` direct-aim + `405870` target
+redirect — the RNG-aim branch the reimpl defers), not in threading the already-lifted body. This supersedes
+the A4.0 "fire body is ~20% of fire-control" framing: of the body itself, the lifted slice is a further ~3%.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
