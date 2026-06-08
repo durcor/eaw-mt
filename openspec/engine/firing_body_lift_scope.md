@@ -1001,6 +1001,31 @@ orient OBSERVE oracle at pfire=2** (binary fires; recompute the reimpl's geometr
 compare to the binary's actual projectile transform) to surface ALL the remaining traps in one battle, instead
 of whack-a-mole one-per-launch. Then re-validate fire-rate≈binary per faction (methodology #26).
 
+### 8.21 BUILT the create-position OBSERVE oracle (pf==2, methodology #27) (2026-06-07)
+Refactored the takeover into a SHARED geometry core so the observe tests the EXACT code the takeover runs
+(no transcription drift between the two):
+- `pfire_compute_geom(p1,p2,p3, S, &lVar7,&local238,&p3, mat1col,mat2col)` = 3825b0:60-260 (R1 gates +
+  gate2a + gate2b aim/LOS/range + R1c spread/lead/dispersion/Euler). Returns 1=fire (S filled, create
+  pos=`&S[8]`=（S8,S9,S10)) / 0 / PFIRE_FALLBACK. Optional out: the two muzzle-matrix translation columns.
+- `pfire_fire_reimpl` = thin wrapper: compute_geom → R2a/R2b/R3 (takeover, unchanged behavior).
+- `pfire_observe_geom` = compute_geom → reports create-pos + mat cols + flags (bit0 spread, bit1 `p1+0x3c<0`
+  single-bone ⇒ 385e70 leaves mat2 UNFILLED, branch A).
+
+**Mechanism (RNG-faithful diff):** at **pf==2** the binary fires normally (STAGE B two-phase, gameplay-safe).
+The b3 hook snapshots the weapon LCG (`0xa13e24`, a single u32 — `ffbb0`/`ffdb0`/`381dc0` all step it)
+BEFORE the trampoline; after the binary fires (and the existing 29f810 piggyback captures the binary's
+actual create-pos in `g_b3_args.pos`), it **rewinds the LCG to the pre-state, runs the observe (replaying the
+binary's exact spread/dispersion draw sequence), then restores the LCG** so the live stream is untouched. A
+correct transcription ⇒ `obs==bin` bit-exact. Tally: `PFOBS-SUM n/match/mismatch/origin/nofire`; first 32
+mismatches dump `PFOBS obs=… bin=… mat1=… mat2=… spread=… p3c_neg=…`.
+
+**Root-cause confirmed in 385e70:** `decomp/385e70.c` has two branches on `*(int*)(param_1+0x3c)`: `<0`
+(single bone) fills param_2(pos)+param_3(mat1) and **leaves param_4(mat2) = the 0x800820 identity init
+(translation 0)**; `>=0` (two bones) fills both. The binary's spread-selection is internally consistent (it
+selects mat2 only when `+0x3c>=0`). The pf==2 observe will show, per origin-spawn, whether the reimpl
+selected/blended a zeroed mat2 the binary wouldn't — the precise create-geometry trap. **Built + oracle-
+deployed; NEEDS A BATTLE RUN to collect PFOBS data (`just pfire=2 difftrace=1 launch-foc-desktop`).**
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

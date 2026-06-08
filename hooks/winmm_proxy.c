@@ -2019,6 +2019,10 @@ static uint32_t g_pfdbg_entry = 0, g_pfdbg_fb_arc = 0, g_pfdbg_fb_p3 = 0, g_pfdb
 /* stage-pass counters (how far each call gets) + R1c internal rejects, to localize the under-fire bug. */
 static uint32_t g_pfdbg_pass_g1 = 0, g_pfdbg_pass_g2a = 0, g_pfdbg_pass_g2b = 0;
 static uint32_t g_pfdbg_r1c_lead0 = 0, g_pfdbg_r1c_aimgate = 0;
+/* pf==2 create-POSITION observe (methodology #27): per real binary fire, recompute the reimpl create-pos on
+ * the rewound-LCG pre-state and diff vs the binary's actual 29f810 pos arg. n=compared, match=within eps,
+ * origin=observe spawned at ~(0,0,0) while binary did not (the trap), nofire=binary fired but observe didn't. */
+static uint32_t g_pfobs_n = 0, g_pfobs_match = 0, g_pfobs_mismatch = 0, g_pfobs_origin = 0, g_pfobs_nofire = 0, g_pfobs_detail = 0;
 
 static int pfire_on(void) {
     if (g_pfire_level < 0) {
@@ -2095,7 +2099,7 @@ static void pfire_a62d0_intercept(int64_t mgr) {
                 g_pfire_level >= 4 ? "C" : (g_pfire_level >= 2 ? "B" : "A"), g_pfire_a6b80_calls, g_pfire_a62d0_calls,
                 g_pfire_tot_deferred, g_pfire_tot_fired, g_pfire_maxfill, g_pfire_overflow);
         log_write(m);
-        if (g_pfire_level >= 3) {        /* A4.1 reimpl-fire diagnostics (now visible at level 3 too) */
+        if (g_pfire_level >= 2) {        /* reimpl-fire diagnostics (pf>=3 takeover; pf==2 = the observe funnel) */
             char sm[384];
             sprintf(sm, "[eaw-mt] PFIREDBG entry=%u | passG1=%u passG2a=%u passG2b=%u reachedR2=%u | rej: g1=%u g2a=%u g2b=%u fb_arc=%u fb_p3=%u r1c(lead0=%u aim383ba0=%u) | lvl=%u\n",
                     g_pfdbg_entry,
@@ -2106,6 +2110,12 @@ static void pfire_a62d0_intercept(int64_t mgr) {
                     g_pfdbg_fb_arc, g_pfdbg_fb_p3, g_pfdbg_r1c_lead0, g_pfdbg_r1c_aimgate,
                     g_pfdbg_reimpl_lvl);
             log_write(sm);
+        }
+        if (g_pfire_level == 2) {        /* pf==2 create-POSITION observe vs the binary's actual spawn pos */
+            char om[224];
+            sprintf(om, "[eaw-mt] PFOBS-SUM n=%u match=%u mismatch=%u origin=%u nofire=%u\n",
+                    g_pfobs_n, g_pfobs_match, g_pfobs_mismatch, g_pfobs_origin, g_pfobs_nofire);
+            log_write(om);
         }
         /* A4.1 scan-vs-fire split (the A4.0 fork measurement) */
         if (g_pf_qpf.QuadPart > 0 && g_pf_a76b0_qpc > 0) {
@@ -4673,20 +4683,23 @@ static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
     return 0;
 }
 
-/* ── A3 ASSEMBLY: the unified takeover reimplementation of FUN_1403825b0 (firing_body_lift_scope.md §8.14).
- * Mirrors 3825b0:60-497 as ONE function (decision inline keeping locals → R1c geometry → R2a/R2b applier →
- * R3 cooldown). Returns 0 = no fire, 1 = fired, PFIRE_FALLBACK(2) = "I didn't handle this — run the binary".
- * SAFE-ROLLOUT design: the reimpl handles only the COMMON tactical path; rare/dead edges fall back to the
- * stock binary so the first takeover is minimal-risk:
- *   - arc gate owner_type+0x4e==1 (DEAD in tactical per I3) → fallback (avoids the dead render-arc dot-prod);
- *   - param_3==0 after resolution (the 383f70/405870 RNG aim path, g3_skip=0 in-game ⇒ never hit tactically)
- *     → fallback (those leaves draw the LCG; defer to binary rather than transcribe a never-taken path).
- * Calls each binary leaf exactly ONCE (like the binary) — so unlike the observe gate-functions it must NOT
- * reuse them (that would double-call). RNG-tainted from R1c on ⇒ validated at the takeover by structural
- * invariants + fire cadence, NOT bit-exact observe (§8.15). p2 may be NULL-redirected only inside the
- * fallback path, so the reimpl's p2 stays the caller's. */
+/* ── A3 ASSEMBLY (firing_body_lift_scope.md §8.14): the takeover reimplementation of FUN_1403825b0, split
+ * into a SHARED geometry core (pfire_compute_geom = 3825b0:60-260) + the takeover applier (pfire_fire_reimpl)
+ * + the position observe (pfire_observe_geom). SAFE-ROLLOUT: the reimpl handles only the COMMON tactical
+ * path; rare/dead edges fall back to the stock binary (arc gate owner_type+0x4e==1; param_3==0 RNG aim path).
+ * Each binary leaf is called exactly ONCE per fire (like the binary). p2 may be NULL-redirected only inside
+ * the fallback path, so the reimpl's p2 stays the caller's. */
 #define PFIRE_FALLBACK 2
-static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
+/* SHARED geometry core (3825b0:60-260): R1 gates + gate2a + gate2b aim/LOS/range + R1c spread/lead/
+ * dispersion/Euler. Fills S[48] (create pos=&S[8], orient=&S[42]) and outputs lVar7 (weapon template),
+ * local_238 (charge order-record), and the RESOLVED p3. Returns 1=fire (S valid) / 0=no-fire /
+ * PFIRE_FALLBACK. out_mat1col/out_mat2col (NULL-skippable) report the two muzzle-matrix translation
+ * columns for the position observe. RNG-neutral through gate2b (the gates draw no LCG); R1c draws the
+ * spread/dispersion LCG. BOTH the takeover (pfire_fire_reimpl) and the pf==2 observe (pfire_observe_geom)
+ * call this so the observed geometry is the SAME code the takeover would run. */
+static int pfire_compute_geom(int64_t p1, int64_t *p2arg, int64_t p3,
+                              float *S, int64_t *out_lVar7, int64_t *out_local238, int64_t *out_p3,
+                              float *out_mat1col, float *out_mat2col) {
     if (!g_dt_imgbase) return PFIRE_FALLBACK;
     g_pfdbg_entry++;
     int64_t p2 = (int64_t)p2arg;
@@ -4737,7 +4750,7 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     g_pfdbg_pass_g2a++;                                              /* DEBUG: passed gate2a */
     /* ---- gate2b (164-209): param_3==0 RNG aim path → fallback; else 385c70 aim + 385e70 LOS + range ---- */
     if (p3 == 0) { g_pfdbg_fb_p3++; return PFIRE_FALLBACK; }          /* RNG aim path → binary (rare) */
-    float S[48]; memset(S, 0, sizeof S);
+    memset(S, 0, 48 * sizeof(float));
     float mat1[16], mat2[16];
     float *pa = (float *)((R1_385c70Fn)(g_dt_imgbase + 0x385c70))(p3, &S[4]);  /* :183 aim */
     S[0] = pa[0]; S[1] = pa[1]; S[2] = pa[2];
@@ -4745,6 +4758,10 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     memcpy(mat2, (void *)(g_dt_imgbase + 0x800820), 48);
     S[4] = S[5] = S[6] = 0.0f;                                        /* :192 local_2c8 = 0 */
     if (((R1_385e70Fn)(g_dt_imgbase + 0x385e70))(p1, &S[4], mat1, mat2) == 0) return 0;  /* :201 LOS */
+    /* observe: the muzzle-matrix translation columns 385e70 just filled (mat2 stays the identity init when
+     * p1+0x3c<0 — single-bone — since 385e70's branch A leaves param_4 untouched). */
+    if (out_mat1col) { out_mat1col[0]=mat1[3]; out_mat1col[1]=mat1[7]; out_mat1col[2]=mat1[11]; }
+    if (out_mat2col) { out_mat2col[0]=mat2[3]; out_mat2col[1]=mat2[7]; out_mat2col[2]=mat2[11]; }
     R1_SqrtFn esqrt = (R1_SqrtFn)(g_dt_imgbase + 0x776d48);
     float dy = S[5] - S[1], dx = S[4] - S[0];                         /* :203-204 */
     float dist = esqrt(dy*dy + dx*dx);
@@ -4756,20 +4773,53 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
     /* ---- R1c geometry (210-260): spread/lead/fire-gate/dispersion/Euler ---- */
     if (pfire_r1c_geom(p1, (int64_t *)p2, lVar7, S, dist, mat1, mat2) == 0) { g_pfdbg_r1cfail++; return 0; }  /* fire gate */
 
-    /* ---- R2 applier (261-402): create+init + Class-2b ----
-     * A4.1: at level>=4 BUFFER the payload (deferred create — drained in canonical order at the flush) so N
-     * threads never call 29f810 concurrently; at level<4 (A3.3) create inline. Buffer-full falls back to
-     * inline (never drop a shot). The geometry S[] + lVar7 + p1/p2/p3 fully determine R2a/R2b. */
+    *out_lVar7 = lVar7; *out_local238 = local_238; if (out_p3) *out_p3 = p3;   /* p3 was resolved in gate2a */
+    return 1;
+}
+
+/* ── A3 ASSEMBLY: the unified takeover reimplementation of FUN_1403825b0 (firing_body_lift_scope.md §8.14).
+ * Mirrors 3825b0:60-497 (gates+geometry via the shared pfire_compute_geom → R2a/R2b applier → R3 cooldown).
+ * Returns 0 = no fire, 1 = fired, PFIRE_FALLBACK(2) = "I didn't handle this — run the binary":
+ *   - arc gate owner_type+0x4e==1 (DEAD in tactical per I3) → fallback;
+ *   - param_3==0 after resolution (the 383f70/405870 RNG aim path, never hit tactically) → fallback.
+ * RNG-tainted from R1c on ⇒ validated at the takeover by structural invariants + fire cadence + the pf==2
+ * position observe (pfire_observe_geom), NOT bit-exact at takeover (§8.15). */
+static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
+    float S[48];
+    int64_t lVar7 = 0, local_238 = 0, p3r = p3;
+    int g = pfire_compute_geom(p1, p2arg, p3, S, &lVar7, &local_238, &p3r, NULL, NULL);
+    if (g != 1) return g;                              /* 0 no-fire / PFIRE_FALLBACK propagated */
+    int64_t p2 = (int64_t)p2arg;
+
+    /* ---- R2 applier (261-402): create+init + Class-2b ---- A3.3 inline create (1-shard). */
     g_pfdbg_reimpl_lvl = (uint32_t)g_pfire_level;     /* DEBUG: the level the reimpl actually sees */
     g_pfdbg_inline++;                                  /* DEBUG: reached R2 (= reimpl actually fires) */
-    /* A4.1 create-deferral REVERTED (it was dormant — the real bug is upstream, reimpl never reaches here
-     * in the broken scenario). Back to A3.3 inline create; diagnostics kept to confirm the reimpl fires. */
     int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2, lVar7, local_238, S);
-    pfire_r2b_emit(p1, proj, (int64_t *)p2, p3, lVar7, S);
+    pfire_r2b_emit(p1, proj, (int64_t *)p2, p3r, lVar7, S);
 
-    /* ---- R3 cooldown + listener rebind (403-497) ---- self-write (object-granular) + Class-2b rebind;
-     * stays inline in Phase-A at 1-shard (A4.3 buffers the rebind for N-shard). */
+    /* ---- R3 cooldown + listener rebind (403-497) ---- self-write + Class-2b rebind (inline at 1-shard). */
     pfire_r3_cooldown(p1, (int64_t *)p2);
+    return 1;
+}
+
+/* pf==2 create-POSITION observe (methodology #27). Recomputes the reimpl create geometry via the SAME
+ * pfire_compute_geom the takeover runs — the caller rewinds the LCG to the binary's pre-fire state so the
+ * spread/dispersion draws replay the binary's exact sequence. Outputs the computed create-pos (S[8..10]),
+ * the two muzzle-matrix translation columns, and flags (bit0=spread weapon, bit1=p1+0x3c<0 single-bone =>
+ * 385e70 leaves mat2 unfilled). Returns 1=fire(pos valid)/0/PFIRE_FALLBACK. Drives NOTHING — pure compute. */
+static int pfire_observe_geom(int64_t p1, int64_t *p2arg, int64_t p3,
+                              float out_pos[3], float out_mat1col[3], float out_mat2col[3],
+                              uint32_t *out_flags) {
+    float S[48];
+    int64_t lVar7 = 0, local_238 = 0, p3r = p3;
+    int g = pfire_compute_geom(p1, p2arg, p3, S, &lVar7, &local_238, &p3r, out_mat1col, out_mat2col);
+    if (g != 1) return g;
+    out_pos[0] = S[8]; out_pos[1] = S[9]; out_pos[2] = S[10];   /* create pos = &S[8] = (S8,S9,S10) */
+    uint32_t f = 0;
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+    if (*(int8_t *)(owner_type + 0x4f) == 1) f |= 1;            /* spread weapon (ffbb0 cone draw) */
+    if (*(int32_t *)(p1 + 0x3c) < 0)         f |= 2;            /* single-bone => 385e70 mat2 unfilled */
+    *out_flags = f;
     return 1;
 }
 
@@ -5217,6 +5267,10 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
      * DTWA-SPAWN piggyback still captures g_b3_last_proj and dtwa_b3_check validates the reimpl's projectile
      * §3 fields (firer/tgt/dmg/life/sub/vis — all RNG-free) bit-exact for free. */
     int64_t r;
+    /* pf==2 POSITION OBSERVE — snapshot the weapon LCG BEFORE the binary fires, so the observe can rewind to
+     * this exact state and replay the binary's spread/dispersion draw sequence (methodology #27). */
+    uint32_t *LCGw = g_dt_imgbase ? (uint32_t *)(g_dt_imgbase + 0xa13e24) : NULL;
+    uint32_t lcg_pre = (pf == 2 && LCGw && armed && p1) ? *LCGw : 0;
     LARGE_INTEGER fb0; QueryPerformanceCounter(&fb0);   /* A4.1: fire-body span (the part that threads) */
     if (pf >= 3) {
         r = pfire_fire_reimpl(p1, (int64_t *)p2, p3);
@@ -5228,6 +5282,39 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
       g_pf_fire_qpc += (fb1.QuadPart - fb0.QuadPart); g_pf_fire_n++; }
     if (armed && p1) {
         g_b3_in_fire = 0;
+        /* pf==2 POSITION OBSERVE — rewind the LCG and recompute the reimpl create-pos on the binary's exact
+         * pre-fire draw state, then diff vs the binary's captured 29f810 pos arg (g_b3_args.pos). Surfaces
+         * the create-geometry traps (methodology #27) without driving the body — binary fires normally. */
+        if (pf == 2 && LCGw && g_b3_args.have && owner_type) {
+            uint32_t lcg_post = *LCGw;
+            *LCGw = lcg_pre;                              /* rewind → replay the binary's draw sequence */
+            float opos[3]={0,0,0}, m1[3]={0,0,0}, m2[3]={0,0,0}; uint32_t oflags=0;
+            int ofire = pfire_observe_geom(p1, (int64_t *)p2, p3, opos, m1, m2, &oflags);
+            *LCGw = lcg_post;                             /* restore → live RNG stream untouched */
+            if (ofire == 1) {
+                g_pfobs_n++;
+                float *bp = g_b3_args.pos;
+                float ex=opos[0]-bp[0], ey=opos[1]-bp[1], ez=opos[2]-bp[2];
+                float err2 = ex*ex + ey*ey + ez*ez;
+                int origin = (opos[0]*opos[0]+opos[1]*opos[1]+opos[2]*opos[2] < 1.0f) &&
+                             (bp[0]*bp[0]+bp[1]*bp[1]+bp[2]*bp[2] >= 1.0f);
+                if (err2 <= 0.25f) g_pfobs_match++;
+                else {
+                    g_pfobs_mismatch++;
+                    if (origin) g_pfobs_origin++;
+                    if (g_pfobs_detail < 32) {
+                        char ob[256];
+                        snprintf(ob, sizeof ob,
+                            "PFOBS\tobs=%.1f,%.1f,%.1f\tbin=%.1f,%.1f,%.1f\tmat1=%.1f,%.1f,%.1f\tmat2=%.1f,%.1f,%.1f\tspread=%d\tp3c_neg=%d\n",
+                            opos[0],opos[1],opos[2], bp[0],bp[1],bp[2], m1[0],m1[1],m1[2], m2[0],m2[1],m2[2],
+                            (oflags&1)?1:0, (oflags&2)?1:0);
+                        log_write(ob); g_pfobs_detail++;
+                    }
+                }
+            } else {
+                g_pfobs_nofire++;     /* binary created a projectile but the observe did not reach fire */
+            }
+        }
         if (pf < 3) {
             /* R1 gate-1: r==1 ⇒ gate1 must pass (g1_bug = impossible); g1==1 & r==0 = blocked later. */
             g_r1_g1_n++;
