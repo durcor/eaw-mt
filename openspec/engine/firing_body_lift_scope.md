@@ -1537,6 +1537,40 @@ rank order) + per-shard create/emit buffers + canonical merge-drain (extend A4.1
 de-risk by running the partition SERIALLY first (prove the merge reproduces the 1-shard baseline) before enabling
 real concurrency, then flip N≥2 and re-diff.
 
+### 8.41 B3.6.1 — FAN-OUT increment 2 (first half): create-deferral WIRED + serial-shard merge VALIDATED (2026-06-08)
+Built the serial-shard scaffold (`EAW_PFIRE_SHARDS=N`, justfile `pfireshards`). **First, a CORRECTION to §8.40:** the
+A4.1 "create-deferral (buffer+canonical drain)" labelled on `EAW_PFIRE=4` was DORMANT — `pfire_fire_reimpl` created
+projectiles INLINE (`pfire_r2a_create_init`/`29f810` during the PhaseB replay) and `pfire_spawn_buf_append` had ZERO
+callers, so `pfire_drain_spawns` always ran on an empty buffer (`shard_maxfill=0`, `reachedR2`=inline-fire count=65,677).
+The buffer/drain were live-looking but unfed scaffolding. (Caught by checking `shard_maxfill=0` after a "passing" diff —
+a sharded merge over an empty buffer matches the baseline TRIVIALLY, validating nothing.) This is the §0 inline-consume
+blocker still in place, NOT removed.
+**WIRED the deferral (the genuine increment-2 prerequisite):** at `level>=4` `pfire_fire_reimpl` now BUFFERS R2a+R2b
+(`pfire_spawn_buf_append`) and applies them at the canonical `2a62d0` drain; R3 cooldown stays inline (self-write,
+own-state, shard-safe). Inline `29f810` would allocate object-ids during the (eventually concurrent) replay = the I1
+append-order desync; one serial canonical drain pass keeps id-allocation in the serial sequence. The geometry RNG draws
+(spread/dispersion, `pfire_compute_geom`) already happen inline BEFORE the create, so only the create/emit defers.
+**Two gates, both PASS (autonomous menu A/B; the deterministic FIRST menu battle = `tick=1024 obj=8 h=4a4885ea924b35e4
+seed=68cf9c25` / `tick=2048 obj=7 h=8011fcf6ca8bf38d seed=19a45820`; the later obj=44/78 battles are the wall-clock-
+seeded menu cycle and vary — match BY SEED, not by tick):**
+1. **1-shard deferral gate** — buffered-deferral (`reachedR2=0` ⇒ EVERY create now routed through the buffer) reproduces
+   the inline `EAW_PFIRE=4` baseline BIT-IDENTICALLY ⇒ moving create-timing PhaseB→PhaseC (canonical drain) is
+   DTWORLD-NEUTRAL (the create `29f810` does not perturb the fire-control LCG order). The §8.40 baseline `h` is
+   reproduced exactly, confirming both `h`s as the stable pin.
+2. **Shard-merge gate** — `EAW_PFIRE_SHARDS=4` with the buffer LIVE (`shard_maxfill=65` ⇒ real content merged, not an
+   empty no-op): per-shard partition (`shard = object_id % N`) → concat the shard-grouped (NON-canonical) buffers →
+   stable-sort by `(rank,seq)` → drain, reproduces the 1-shard baseline BIT-IDENTICALLY. Independent corroboration: the
+   `DTDRAIN` rank oracle (now actually evaluated — buffer live) shows `rank_down=0` at ticks 1024/2048 (`rank_up==trans`,
+   `id_down==trans` ⇒ strictly descending object_id visitation, the I4 canonical order, zero inversions).
+**Mechanics:** `seq` added to `PfireSpawnRec` = per-firing-ship emission counter; `(rank,seq)` is globally unique (one
+rank == one ship == one shard) ⇒ the merge is a TOTAL deterministic sort, independent of shard execution order. The
+scaffold replays `a76b0` in WALK ORDER (serial) — preserving the global-LCG draw sequence — so it isolates and validates
+ONLY partition + canonical merge-drain. Legacy `EAW_PFIRE=4` 1-shard path is the same buffered+drain path with N=1 (no
+sort, insertion order == canonical). **NEXT = increment 2 SECOND half (the riskier one): make the replay CONCURRENT (the
+hook-owned worker pool) + per-entity `SimRng::substream` to remove invariant I2 (the geometry draws currently read the
+GLOBAL LCG in walk order — concurrent reorder would desync them); the `(rank,seq)` merge already absorbs the I1
+create-order reorder, so the substream is the remaining determinism piece. Re-diff under real concurrency vs this gate.**
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

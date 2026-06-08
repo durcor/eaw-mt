@@ -27,6 +27,11 @@ pfirescan := ""
 pfirescanss := ""
 # Milestone pfire (§8.10 step 4): gated in-game fire takeover at t2be640 (default OFF, 1-shard). =1 STAGE A identity passthrough, =2 STAGE B two-phase settle/fire split, =3 A3.3 reimpl body takeover, =4 A4.1 create-deferral (buffer+canonical drain, still 1-shard); =3/=4 need difftrace=1 for the DTWA-B3 gate. Override: just pfire=4 difftrace=1 launch-foc-desktop
 pfire := ""
+# B3.6.1 (§8.41) fan-out increment 2 — serial-shard scaffold: N (>=2) partitions the pfire=4 deferred-fire replay's
+# buffered creates into N per-shard buffers (shard=object_id%N) + canonical (rank,seq) merge-drain; replay stays
+# serial/walk-order (validates partition+merge only). Gate: DTWORLD must match pfire=4 baseline. Needs pfire=4 difftrace=1.
+# Override: just pfire=4 pfireshards=4 difftrace=1 launch-foc-desktop
+pfireshards := ""
 save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
@@ -238,6 +243,7 @@ launch-foc-desktop:
       EAW_PFIRE_SCAN={{pfirescan}} \
       EAW_PFIRE_SCAN_SS={{pfirescanss}} \
       EAW_PFIRE={{pfire}} \
+      EAW_PFIRE_SHARDS={{pfireshards}} \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \

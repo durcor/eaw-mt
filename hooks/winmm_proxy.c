@@ -2011,8 +2011,31 @@ static long g_pf_a76b0_n = 0, g_pf_fire_n = 0;
  * (nothing buffered, no drain). */
 #if defined(EAW_PROFILE) || defined(EAW_ORACLE)
 static void pfire_drain_spawns(void);
+static void pfire_sharded_flush(void);     /* B3.6.1 fan-out increment 2 — defined below (after the drain) */
 #endif
 static uint32_t g_pfire_spawn_drained = 0, g_pfire_spawn_overflow = 0, g_pfire_spawn_maxfill = 0;
+
+/* B3.6.1 (§8.41) fan-out increment 2 — SERIAL-SHARD SCAFFOLD. EAW_PFIRE_SHARDS=N (>=2) partitions the
+ * deferred-fire replay's buffered SPAWN commands into N per-shard buffers (shard = object_id % N), then merges
+ * them back in canonical (rank,seq) order before the drain. The a76b0 REPLAY itself still runs in WALK ORDER
+ * (serial) — preserving the global-LCG draw sequence + every serial side effect the reimpl depends on — so this
+ * validates ONLY the per-shard buffer split + canonical merge-drain against the 1-shard baseline (DTWORLD must
+ * match). The concurrent replay + per-entity RNG substream (the I2 removal) is the next, riskier half. Default
+ * 0/unset ⇒ legacy 1-shard path UNTOUCHED. Gate: diff(EAW_PFIRE=4 serial DTWORLD, +EAW_PFIRE_SHARDS=N) == 0. */
+#define PFIRE_MAX_SHARDS 8
+static int g_pfire_shards    = -1;   /* -1 unread / 0|1 = legacy 1-shard / >=2 = sharded scaffold */
+static int g_pfire_cur_shard = 0;    /* set before each a76b0 replay → routes that fire's spawns to a shard buf */
+static int g_pfire_sharded   = 0;    /* 1 while a sharded replay is routing spawns to the per-shard buffers */
+static uint32_t g_pfire_shard_maxfill = 0;
+static int pfire_shards(void) {
+    if (g_pfire_shards < 0) {
+        const char *e = getenv("EAW_PFIRE_SHARDS");
+        g_pfire_shards = (e && e[0]) ? atoi(e) : 0;
+        if (g_pfire_shards < 0) g_pfire_shards = 0;
+        if (g_pfire_shards > PFIRE_MAX_SHARDS) g_pfire_shards = PFIRE_MAX_SHARDS;
+    }
+    return g_pfire_shards;
+}
 /* A4.1 DEBUG (root-causing the drained=0 paradox): which R2 branch the reimpl takes + drain entry. */
 static uint32_t g_pfdbg_buf = 0, g_pfdbg_inline = 0, g_pfdbg_drainenter = 0, g_pfdbg_drain_maxn = 0, g_pfdbg_reimpl_lvl = 0;
 static uint32_t g_pfdbg_entry = 0, g_pfdbg_fb_arc = 0, g_pfdbg_fb_p3 = 0, g_pfdbg_r1cfail = 0;
@@ -2075,29 +2098,39 @@ static void pfire_a62d0_intercept(int64_t mgr) {
     if (g_pfire_level >= 2 && g_pfire_fire_count > 0) {
         int n = g_pfire_fire_count;
         if ((uint32_t)n > g_pfire_maxfill) g_pfire_maxfill = (uint32_t)n;
-        for (int i = 0; i < n; i++) {       /* PhaseB: walk-order replay of the binary fire body */
-            if (g_pfire_a76b0_real) {
-                LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
-                g_pfire_a76b0_real(g_pfire_fire_buf[i].ship, g_pfire_fire_buf[i].tick);
-                QueryPerformanceCounter(&tb);
-                g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
-            }
-            g_pfire_tot_fired++;
-        }
-        g_pfire_fire_count = 0;
-        g_pfire_flushes++;
-        /* A4.1 PhaseC: drain the buffered spawn commands (create+init+Class-2b) in canonical order. At
-         * level<4 nothing was buffered (the reimpl created inline during replay), so this is a no-op.
-         * Oracle-build-only: the buffering reimpl needs the DTWA-B3 hook (release ⇒ level>=4 == STAGE B). */
 #if defined(EAW_PROFILE) || defined(EAW_ORACLE)
-        if (g_pfire_level >= 4) pfire_drain_spawns();
+        if (g_pfire_level >= 4 && pfire_shards() >= 2) {
+            /* B3.6.1 (§8.41): serial-shard scaffold — per-shard buffer split + canonical (rank,seq) merge-drain.
+             * Owns the replay + fire_count reset + the level>=4 drain (validates partition+merge vs 1-shard). */
+            pfire_sharded_flush();
+        } else
 #endif
+        {
+            for (int i = 0; i < n; i++) {       /* PhaseB: walk-order replay of the binary fire body */
+                if (g_pfire_a76b0_real) {
+                    LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
+                    g_pfire_a76b0_real(g_pfire_fire_buf[i].ship, g_pfire_fire_buf[i].tick);
+                    QueryPerformanceCounter(&tb);
+                    g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
+                }
+                g_pfire_tot_fired++;
+            }
+            g_pfire_fire_count = 0;
+            /* A4.1 PhaseC: drain the buffered spawn commands (create+init+Class-2b) in canonical order. At
+             * level<4 nothing was buffered (the reimpl created inline during replay), so this is a no-op.
+             * Oracle-build-only: the buffering reimpl needs the DTWA-B3 hook (release ⇒ level>=4 == STAGE B). */
+#if defined(EAW_PROFILE) || defined(EAW_ORACLE)
+            if (g_pfire_level >= 4) pfire_drain_spawns();
+#endif
+        }
+        g_pfire_flushes++;
     }
     if ((c & 0xfff) == 1) {                  /* periodic live-evidence */
-        char m[192];
-        sprintf(m, "[eaw-mt] PFIRE-%s: live — walk=%ld flush=%ld deferred=%u fired=%u maxfill=%u overflow=%u\n",
+        char m[224];
+        sprintf(m, "[eaw-mt] PFIRE-%s: live — walk=%ld flush=%ld deferred=%u fired=%u maxfill=%u overflow=%u shards=%d shard_maxfill=%u\n",
                 g_pfire_level >= 4 ? "C" : (g_pfire_level >= 2 ? "B" : "A"), g_pfire_a6b80_calls, g_pfire_a62d0_calls,
-                g_pfire_tot_deferred, g_pfire_tot_fired, g_pfire_maxfill, g_pfire_overflow);
+                g_pfire_tot_deferred, g_pfire_tot_fired, g_pfire_maxfill, g_pfire_overflow,
+                pfire_shards(), g_pfire_shard_maxfill);
         log_write(m);
         if (g_pfire_level >= 2) {        /* reimpl-fire diagnostics (pf>=3 takeover; pf==2 = the observe funnel) */
             char sm[384];
@@ -4121,6 +4154,7 @@ static uint32_t g_drain_tick      = 0xFFFFFFFFu;
 static uint32_t g_drain_rank      = 0;     /* per-tick visitation counter (reset each tick) */
 static uint32_t g_drain_cur_rank  = 0;     /* visitation rank of the ship currently in 3a76b0 */
 static int32_t  g_drain_cur_objid = 0;     /* obj+0x50 of that ship */
+static uint32_t g_drain_cur_seq   = 0;     /* B3.6.1: per-ship emission counter (reset per a76b0 replay) */
 static int      g_drain_in_window = 0;     /* inside the 3a76b0 trampoline => a spawn is attributable */
 static int      g_drain_have_prev = 0;     /* per-tick: a prior distinct emitter has been recorded */
 static uint32_t g_drain_prev_rank = 0;
@@ -4329,19 +4363,35 @@ typedef void*   (*R1_20acd0Fn)(void*, float*, float*);    /* FUN_14020acd0 dir�
 /* A4.1 buffered spawn command: everything R2a (create+init) + R2b (Class-2b) need to APPLY one shot at the
  * canonical drain, captured by value in Phase-A. owner/owner_type/local_238 are re-derived from p1 at drain
  * time; rank/objid carry the DTDRAIN canonical key (g_drain_cur_* of the firing a76b0, set during replay). */
-typedef struct { int64_t p1, p2, p3, lVar7; float S[48]; uint32_t rank; int32_t objid; } PfireSpawnRec;
+/* seq (B3.6.1): per-firing-ship emission counter — the tie-break WITHIN a rank. (rank,seq) is globally
+ * unique (one rank == one ship == one shard), so the sharded merge is a total deterministic sort. */
+typedef struct { int64_t p1, p2, p3, lVar7; float S[48]; uint32_t rank; int32_t objid; uint32_t seq; } PfireSpawnRec;
 #define PFIRE_SPAWN_CAP 4096
-static PfireSpawnRec g_pfire_spawn_buf[PFIRE_SPAWN_CAP];
+static PfireSpawnRec g_pfire_spawn_buf[PFIRE_SPAWN_CAP];   /* the single canonical DRAIN buffer (post-merge) */
 static int g_pfire_spawn_count = 0;
+/* B3.6.1: per-shard Phase-A buffers — each shard's reimpl appends its created shots here; the serial flush
+ * merges them into g_pfire_spawn_buf in (rank,seq) order. Sized to PFIRE_SPAWN_CAP per shard so a fully
+ * load-imbalanced tick (all shots in one shard) still never drops a shot. */
+static PfireSpawnRec g_shard_spawn_buf[PFIRE_MAX_SHARDS][PFIRE_SPAWN_CAP];
+static int g_shard_spawn_count[PFIRE_MAX_SHARDS];
 
 /* append one shot's payload; returns 1 if buffered, 0 if the buffer is full (caller falls back to inline
- * create — never drop a shot). Captures the current firing a76b0's canonical (rank,objid). */
+ * create — never drop a shot). Captures the current firing a76b0's canonical (rank,objid,seq). In sharded
+ * mode the shot is routed to its owning shard's buffer (g_pfire_cur_shard, set by the flush per fire). */
 static int pfire_spawn_buf_append(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7, const float *S) {
-    if (g_pfire_spawn_count >= PFIRE_SPAWN_CAP) { g_pfire_spawn_overflow++; return 0; }
-    PfireSpawnRec *r = &g_pfire_spawn_buf[g_pfire_spawn_count++];
+    PfireSpawnRec *r;
+    if (g_pfire_sharded) {
+        int s = g_pfire_cur_shard;
+        if (g_shard_spawn_count[s] >= PFIRE_SPAWN_CAP) { g_pfire_spawn_overflow++; return 0; }
+        r = &g_shard_spawn_buf[s][g_shard_spawn_count[s]++];
+    } else {
+        if (g_pfire_spawn_count >= PFIRE_SPAWN_CAP) { g_pfire_spawn_overflow++; return 0; }
+        r = &g_pfire_spawn_buf[g_pfire_spawn_count++];
+    }
     r->p1 = p1; r->p2 = p2; r->p3 = p3; r->lVar7 = lVar7;
     memcpy(r->S, S, sizeof r->S);
     r->rank = g_drain_cur_rank; r->objid = g_drain_cur_objid;
+    r->seq  = g_drain_cur_seq++;
     return 1;
 }
 
@@ -4825,9 +4875,22 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
      * p2r = the RESOLVED target (the param_3==0 path may have redirected it via 405870) — the binary uses the
      * redirected param_2 for the lead solver, the +0x38 listener, and the 3a06a0 shot-register. */
     g_pfdbg_reimpl_lvl = (uint32_t)g_pfire_level;     /* DEBUG: the level the reimpl actually sees */
-    g_pfdbg_inline++;                                  /* DEBUG: reached R2 (= reimpl actually fires) */
-    int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2r, lVar7, local_238, S);
-    pfire_r2b_emit(p1, proj, (int64_t *)p2r, p3r, lVar7, S);
+    /* A4.1 create-deferral (B3.6.1, §8.41) — WIRED. At level>=4 BUFFER the create+init+Class-2b emit (R2a+R2b)
+     * and apply them at the canonical 2a62d0 drain (pfire_drain_spawns), instead of creating inline here. This
+     * is the structural prerequisite for the parallel replay: inline 29f810 allocates object-ids during the
+     * (eventually concurrent) replay = the I1 append-order desync. Deferring all creates to a single canonical
+     * drain pass keeps id-allocation in one serial sequence. R3 cooldown below is a self-write (own-state,
+     * shard-safe) so it stays inline. Buffer-full falls back to inline create (never drop a shot). The geometry
+     * RNG draws (spread/dispersion) already happened in pfire_compute_geom above, inline — only the create/emit
+     * defers. Gated at 1-shard first: buffered drain order == walk order == canonical (no sort), so DTWORLD must
+     * match the inline baseline; the sharded merge then reorders the per-shard buffers back to (rank,seq). */
+    if (g_pfire_level >= 4 && pfire_spawn_buf_append(p1, p2r, p3r, lVar7, S)) {
+        g_pfdbg_buf++;                                  /* DEBUG: create DEFERRED to the canonical drain */
+    } else {
+        g_pfdbg_inline++;                              /* DEBUG: reached R2 inline (level<4 or buffer full) */
+        int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2r, lVar7, local_238, S);
+        pfire_r2b_emit(p1, proj, (int64_t *)p2r, p3r, lVar7, S);
+    }
 
     /* ---- R3 cooldown + listener rebind (403-497) ---- self-write + Class-2b rebind (inline at 1-shard).
      * Uses p2r: the binary reassigns param_2 IN PLACE at :169, so every later reference (incl. R3) sees the
@@ -5693,6 +5756,74 @@ static void pfire_drain_spawns(void) {
             dtwa_b3_check(proj, owner, owner_type, p2, p3, local_238, order_pre);
     }
     g_pfire_spawn_count = 0;
+}
+
+/* B3.6.1 (§8.41) — stable insertion sort of the merged spawn buffer by the canonical key (rank,seq). n is
+ * small (shots fired this tick), and (rank,seq) is unique, so this is a total order; the sort restores the
+ * 1-shard serial drain order from the shard-grouped concatenation. Stable so the unique-key case is a true
+ * no-op (at N=1 the buffer arrives already sorted). */
+static void pfire_spawn_sort_canonical(int n) {
+    for (int i = 1; i < n; i++) {
+        PfireSpawnRec key = g_pfire_spawn_buf[i];
+        int j = i - 1;
+        while (j >= 0 && (g_pfire_spawn_buf[j].rank > key.rank ||
+                          (g_pfire_spawn_buf[j].rank == key.rank && g_pfire_spawn_buf[j].seq > key.seq))) {
+            g_pfire_spawn_buf[j + 1] = g_pfire_spawn_buf[j];
+            j--;
+        }
+        g_pfire_spawn_buf[j + 1] = key;
+    }
+}
+
+/* B3.6.1 (§8.41) fan-out increment 2 — SERIAL-SHARD FLUSH (replaces the inline replay + drain at level>=4 when
+ * EAW_PFIRE_SHARDS>=2). Replay every deferred fire in WALK ORDER (so the global LCG + all serial side effects
+ * are bit-identical to the 1-shard baseline), routing each fire's buffered creates to its OWN shard buffer
+ * (shard = object_id % N). Then concatenate the shard buffers — a deliberately NON-canonical, shard-grouped
+ * order — and stable-sort by (rank,seq) into the single drain buffer, then drain in canonical order. The
+ * concatenation is non-canonical on purpose: it exercises the merge, so a wrong key or unstable sort desyncs
+ * DTWORLD. At N=1 every fire lands in shard 0 ⇒ the buffer is already canonical ⇒ identical to the legacy path.
+ * This validates ONLY partition + merge-drain; concurrent replay + per-entity RNG substream is the next half.
+ * Mirrors the inline replay's a76b0 timing (PFIRESPLIT) + tot_fired accounting. */
+static void pfire_sharded_flush(void) {
+    int n = g_pfire_fire_count;
+    int N = g_pfire_shards; if (N < 1) N = 1; if (N > PFIRE_MAX_SHARDS) N = PFIRE_MAX_SHARDS;
+    for (int s = 0; s < N; s++) g_shard_spawn_count[s] = 0;
+
+    /* PhaseB: walk-order replay, each fire's creates routed to its shard buffer via pfire_spawn_buf_append. */
+    g_pfire_sharded = 1;
+    for (int i = 0; i < n; i++) {
+        int64_t ship = g_pfire_fire_buf[i].ship;
+        int32_t tick = g_pfire_fire_buf[i].tick;
+        int32_t objid = ship ? *(int32_t *)(ship + 0x50) : 0;
+        g_pfire_cur_shard = (int)(((uint32_t)objid) % (uint32_t)N);
+        /* walk rank == visitation rank == canonical key. b3a76b0_hook re-stamps g_drain_cur_rank to the same
+         * value in walk order (its per-tick counter == i here); set it explicitly anyway as the seam the
+         * concurrent half will own, and reset the per-ship emission seq. */
+        g_drain_cur_rank = (uint32_t)i; g_drain_cur_objid = objid; g_drain_cur_seq = 0;
+        if (g_pfire_a76b0_real) {
+            LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
+            g_pfire_a76b0_real(ship, tick);
+            QueryPerformanceCounter(&tb);
+            g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
+        }
+        g_pfire_tot_fired++;
+    }
+    g_pfire_sharded = 0;
+    g_pfire_fire_count = 0;
+
+    /* MERGE: concatenate the shard buffers (shard-grouped = non-canonical) then stable-sort by (rank,seq). */
+    int k = 0;
+    for (int s = 0; s < N; s++) {
+        int c = g_shard_spawn_count[s];
+        for (int j = 0; j < c && k < PFIRE_SPAWN_CAP; j++)
+            g_pfire_spawn_buf[k++] = g_shard_spawn_buf[s][j];
+    }
+    g_pfire_spawn_count = k;
+    if ((uint32_t)k > g_pfire_shard_maxfill) g_pfire_shard_maxfill = (uint32_t)k;
+    pfire_spawn_sort_canonical(k);
+
+    /* DRAIN in canonical order (the existing applier — iterates g_pfire_spawn_buf[0..count) in order). */
+    pfire_drain_spawns();
 }
 
 static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
