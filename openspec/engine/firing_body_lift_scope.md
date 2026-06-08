@@ -1498,6 +1498,26 @@ validate it as a GATE: stock save-replay → IDENTICAL `DTWORLD` stream across t
 needs a controlled replay — the menu battle evolves so it's not a clean A/B). Then it gates the in-game N-shard
 fan-out (serial vs parallel must reproduce the stream).
 
+### 8.39 B3.5.2 — DETERMINISM BASELINE established + PASS; stock sim is replay-deterministic (2026-06-08)
+Added the global LCG seed (`DAT_140a13e24`) to the `DTWORLD` line to diagnose replay-determinism, then ran an
+AUTONOMOUS A/B: two fully independent process launches of the (fixed) main-menu background battle, comparing the
+`DTWORLD` stream. **RESULT — BIT-IDENTICAL across both runs:** `tick=1024 obj=8 h=ea5f27913390cce2 seed=8f00da8b`
++ `tick=2048 obj=7 h=7f7fdaf6ca0fcbaa seed=cdb39e0c` in BOTH runs (`diff` of the two streams = empty). **Three
+foundational conclusions:**
+1. **The harness is a VALID determinism gate** — the per-tick world fingerprint is bit-reproducible across runs.
+2. **The stock sim is REPLAY-DETERMINISTIC** — the LCG `seed` matches at every sampled tick ⇒ the RNG is
+   FIXED-SEEDED at startup, NOT wall-clock-seeded. This empirically validates the lockstep-determinism premise the
+   ENTIRE parallel-rewrite plan rests on (`sim_parallel_command_schema.md`'s "fixed save+replay" assumption holds).
+3. **The main-menu battle is a CONTROLLED, AUTONOMOUS test scenario** — a fixed ~8-object fire-control sim that
+   reproduces exactly each launch, so the eventual serial-vs-parallel fan-out can be validated WITHOUT save-replay
+   or GUI interaction (launch stock → capture `DTWORLD`; launch N-shard → capture; `diff` must be empty).
+⇒ the I5 validation gate is now LIVE and unblocked. **This removes the §8.37 "validation harness" blocker:** the
+remaining work to thread the fire-control tick in-game is now (a) the fan-out mechanism + (b) extend the Phase-B
+drain — both gated by this DTWORLD A/B (which catches any desync as a hash divergence that persists). NEXT = the
+in-game N-shard fan-out, validated against this baseline. (Completeness refinement — fold projectiles/non-combat
+via a full GOM walk — would sharpen sensitivity but the fire-control-object fingerprint already moves under any
+targeting desync.)
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
