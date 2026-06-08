@@ -2022,7 +2022,7 @@ static uint32_t g_pfdbg_r1c_lead0 = 0, g_pfdbg_r1c_aimgate = 0;
 /* pf==2 create-POSITION observe (methodology #27): per real binary fire, recompute the reimpl create-pos on
  * the rewound-LCG pre-state and diff vs the binary's actual 29f810 pos arg. n=compared, match=within eps,
  * origin=observe spawned at ~(0,0,0) while binary did not (the trap), nofire=binary fired but observe didn't. */
-static uint32_t g_pfobs_n = 0, g_pfobs_match = 0, g_pfobs_mismatch = 0, g_pfobs_origin = 0, g_pfobs_nofire = 0, g_pfobs_detail = 0;
+static uint32_t g_pfobs_n = 0, g_pfobs_match = 0, g_pfobs_mismatch = 0, g_pfobs_origin = 0, g_pfobs_nofire = 0, g_pfobs_fallback = 0, g_pfobs_detail = 0;
 
 static int pfire_on(void) {
     if (g_pfire_level < 0) {
@@ -2113,8 +2113,8 @@ static void pfire_a62d0_intercept(int64_t mgr) {
         }
         if (g_pfire_level == 2) {        /* pf==2 create-POSITION observe vs the binary's actual spawn pos */
             char om[224];
-            sprintf(om, "[eaw-mt] PFOBS-SUM n=%u match=%u mismatch=%u origin=%u underfire=%u\n",
-                    g_pfobs_n, g_pfobs_match, g_pfobs_mismatch, g_pfobs_origin, g_pfobs_nofire);
+            sprintf(om, "[eaw-mt] PFOBS-SUM n=%u match=%u mismatch=%u origin=%u GENUINE_underfire=%u fallback=%u\n",
+                    g_pfobs_n, g_pfobs_match, g_pfobs_mismatch, g_pfobs_origin, g_pfobs_nofire, g_pfobs_fallback);
             log_write(om);
         }
         /* A4.1 scan-vs-fire split (the A4.0 fork measurement) */
@@ -5312,8 +5312,10 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                         log_write(ob); g_pfobs_detail++;
                     }
                 }
+            } else if (ofire == PFIRE_FALLBACK) {
+                g_pfobs_fallback++;   /* reimpl deferred (arc/param_3==0) → fires via the binary at takeover (OK) */
             } else {
-                g_pfobs_nofire++;     /* binary created a projectile but the observe did not reach fire */
+                g_pfobs_nofire++;     /* GENUINE under-fire: binary fired but the reimpl said no-fire (BAD) */
             }
         }
         if (pf < 3) {
