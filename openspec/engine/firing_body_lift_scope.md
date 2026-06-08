@@ -1518,6 +1518,25 @@ in-game N-shard fan-out, validated against this baseline. (Completeness refineme
 via a full GOM walk — would sharpen sensitivity but the fire-control-object fingerprint already moves under any
 targeting desync.)
 
+### 8.40 B3.6.0 — FAN-OUT increment 1: the PARALLEL-TARGET BASELINE (EAW_PFIRE=4) established (2026-06-08)
+Starting the in-game fan-out build. Increment 1 = pin the baseline the N-shard parallel must reproduce. The fan-out
+extends the EXISTING EAW_PFIRE 2-phase machinery: at level 2/4 `pfire_a76b0_intercept` DEFERS each object's fire
+(`a76b0`) during the settle walk and REPLAYS it at the `2a62d0` flush (1-shard, serial), A4.1 buffering the creates
+— so the fire reads the SETTLED world (a deliberate RETROFIT DELTA vs stock, §8.10). ⇒ the parallel target is the
+EAW_PFIRE=4 SERIAL `DTWORLD`, NOT the stock one. **Validated via the harness (autonomous menu A/B):**
+- EAW_PFIRE=4 is STABLE in the menu battle (armed, no crash; `PFIRESPLIT fc_ms=3973 fire_ms=1020 scan_ms=2902` ⇒
+  scan = 73% of fire-control — re-confirms the scan as the dominant cost Fork B targeted).
+- EAW_PFIRE=4 `DTWORLD` DIFFERS from stock (`tick=1024 h=4a4885ea924b35e4 seed=68cf9c25` vs stock `h=ea5f…
+  seed=8f00da8b`) — the 2-phase delta changes BOTH positions AND the LCG seed (settled-world fire reorders/changes
+  the RNG draws), exactly the documented retrofit (the harness is sensitive enough to catch it).
+- **EAW_PFIRE=4 is DETERMINISTIC run-to-run** (two independent launches → `DTWORLD` bit-identical, `diff` empty) ⇒
+  a VALID parallel-target baseline.
+⇒ the N-shard fan-out's correctness gate is now concrete: `diff(EAW_PFIRE=4 serial DTWORLD, N-shard DTWORLD) == 0`.
+NEXT = increment 2: the worker thread pool + per-shard partition of the deferred-fire replay (shard-by-object, I4
+rank order) + per-shard create/emit buffers + canonical merge-drain (extend A4.1's 1-shard `pfire_drain_spawns`);
+de-risk by running the partition SERIALLY first (prove the merge reproduces the 1-shard baseline) before enabling
+real concurrency, then flip N≥2 and re-diff.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
