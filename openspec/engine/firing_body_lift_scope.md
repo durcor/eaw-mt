@@ -1345,8 +1345,10 @@ behavior-preserving; it touches only the model (no LCG/FOG-scratch perturbation)
 dual-run observe/takeover the binary `385190` runs first and already warms every model it reads, so the reimpl's
 pre-warm is a NO-OP there — the no-regression launch confirms the model-fetch offsets (`3858b0(p1)`,
 `2648b0(cand+0x2a0)`, vtable+0x78) are correct and crash-free + no selection/LCG perturbation; the pre-warm's
-actual NECESSITY only manifests once the binary is dropped (step 4). NEXT = step 3 (per-thread `SimRng` substream
-for `383f70`'s `:121` draw).
+actual NECESSITY only manifests once the binary is dropped (step 4). **NO-REGRESSION PASS (live battle, pre-warm
+active under takeover): `mode=TAKEOVER evals=3,653,134 obs_match=3,653,134 obs_wmiss=0 obs_smiss=0 obs_lmiss=0`,
+0 divergence lines, no crash** — warming every candidate model via vfunc_15 is crash-free and behavior-preserving.
+NEXT = step 3 (per-thread `SimRng` substream for `383f70`'s `:121` draw).
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
