@@ -2113,7 +2113,7 @@ static void pfire_a62d0_intercept(int64_t mgr) {
         }
         if (g_pfire_level == 2) {        /* pf==2 create-POSITION observe vs the binary's actual spawn pos */
             char om[224];
-            sprintf(om, "[eaw-mt] PFOBS-SUM n=%u match=%u mismatch=%u origin=%u nofire=%u\n",
+            sprintf(om, "[eaw-mt] PFOBS-SUM n=%u match=%u mismatch=%u origin=%u underfire=%u\n",
                     g_pfobs_n, g_pfobs_match, g_pfobs_mismatch, g_pfobs_origin, g_pfobs_nofire);
             log_write(om);
         }
@@ -5257,7 +5257,7 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
             r1_g2a = r1_g1 ? pfire_r1_gate2a(p1, (int64_t *)p2, p3) : 0;
             r1_full = r1_g2a ? pfire_r1_gate2b(p1, (int64_t *)p2, p3) : 0;
         }
-        g_b3_in_fire = 1; g_b3_last_proj = 0;
+        g_b3_in_fire = 1; g_b3_last_proj = 0; g_b3_args.have = 0;  /* reset per call → have=1 ⟺ THIS call created */
     }
     /* ── A3.3 TAKEOVER (EAW_PFIRE=3) ── drive the firing body from the lifted reimpl instead of the binary.
      * Runs in PhaseB (a76b0 is deferred to the 2a62d0 flush at level>=2, so every 3825b0 call here is on the
