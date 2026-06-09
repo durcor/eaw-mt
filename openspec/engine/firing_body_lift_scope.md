@@ -1572,6 +1572,46 @@ sort, insertion order == canonical). **NEXT = increment 2 SECOND half (the riski
 hook-owned worker pool) + per-entity `SimRng::substream` to remove invariant I2 (the geometry draws currently read the
 GLOBAL LCG in walk order — concurrent reorder would desync them); the `(rank,seq)` merge already absorbs the I1
 create-order reorder, so the substream is the remaining determinism piece. Re-diff under real concurrency vs this gate.**
+*(DONE in §8.42 below: the per-entity substream is built + reorder-invariance gated serially; the worker pool is sub-step 2b.)*
+
+### 8.42 B3.6.2 — FAN-OUT increment 2 (second half, sub-step 2a): per-entity GEOMETRY RNG SUBSTREAM removes I2 (2026-06-08)
+Built the per-entity RNG substream that makes the deferred-fire replay REORDER-INVARIANT — the determinism prerequisite for
+the concurrent worker pool, validated WITHOUT threads via a serial reorder gate (`EAW_PFIRE_REORDER`). Two new knobs (release-
+compiled substream; oracle-only reorder gate, needs `pfire=4 pfireshards>=2 difftrace=1`):
+- `EAW_PFIRE_GEOM_SS=1` — each ship-fire's global-LCG draws are redirected to a per-`(object_id,tick)` substream
+  (`splitmix32`), realized — EXACTLY like the §8.33 scan substream (H2) — as a save/seed/restore of the global LCG word
+  `DAT_140a13e24`, scoped to the WHOLE `a76b0` fire body (`pfire_geom_ss_begin`/`_end` wrap the replay's `a76b0` call). That
+  scope covers ALL the fire body's draws: r1c spread (`1ffbb0`×3) / `1ffdb0` / dispersion `381dc0` (reads the slot internally)
+  AND the R3 cooldown's :410 `1ffb40` (burst-exhausted recompute, stays inline). Targeting/scan run earlier in the settle walk,
+  so the fire body is purely per-fire RNG that SHOULD be substreamed. A determinism RETROFIT, not stock-bit-exact: DTWORLD
+  shifts from the substream-off baseline (the geometry draws now come from substreams), but becomes reorder-invariant.
+- `EAW_PFIRE_REORDER=1` — replays the deferred fires SHARD-GROUPED (N passes, pass `s` fires only `shard==s`'s ships) instead
+  of walk order — a serial, deterministic stand-in for what a thread-per-shard pool reorders. The canonical RANK stays the
+  fire's WALK index (so the `(rank,seq)` merge restores canonical drain order regardless of replay order).
+
+**4-cell gate (autonomous menu A/B; deterministic first battle tick=1024/2048; the `seed=` field is the GLOBAL LCG word at the
+I4 tick boundary, `h=` the commutative FNV fold of settled ship positions):**
+| cell | geomss | reorder | h (1024 / 2048) | result |
+|---|---|---|---|---|
+| **B** (baseline) | 0 | 0 | `4a4885ea…` / `8011fcf6…` | zero-regression — IDENTICAL to §8.41 pins ⇒ the r1c refactor + (off) substream/reorder paths are no-ops |
+| **G3** | 0 | 1 | `4a4885ea…` / `8011fcf6…` | reorder alone (substream OFF): `seed=` DIVERGES (`0813d7a5/74f58b6f` vs B `68cf9c25/19a45820`), `fired=16265` vs `16272`, DTDRAIN `id_down=705` vs `1109` ⇒ **I2 is real** (reorder perturbs the global-LCG draw stream) |
+| **G1** | 1 | 0 | `29d24e28…` / `d4aa1af9…` | substream-on walk-order reference (new pin); `h` MOVED off B ⇒ the substream genuinely changes the geometry draws (not a no-op). G1b repeat = IDENTICAL incl. `seed` ⇒ config is run-to-run deterministic |
+| **G2** | 1 | 1 | `29d24e28…` / `d4aa1af9…` | **substream-on + reorder ⇒ `h` BIT-IDENTICAL to G1 at BOTH ticks ⇒ I2 REMOVED for the simulation state** |
+
+**PFLCG diagnostic (snapshots the global LCG word at replay-start / replay-end / post-drain inside `pfire_sharded_flush`):** in
+BOTH walk and reorder, every flush shows `replay_leak=0` (substream fully contains the fire bodies — the swap/restore is balanced,
+the global is untouched by the replay) AND `drain_adv=0` (the create-drain `29f810`+init+Class-2b is RNG-FREE, corroborating the
+§3 field map). The `lcg_start` is IDENTICAL between walk and reorder at flushes 1/1025/2049 (`cce99cf1`/`3ecab9db`/`b7332e6b`) ⇒
+the global LCG trajectory AT FLUSH BOUNDARIES is itself reorder-invariant. The residual: the `seed=` captured at the I4 boundary
+(a different instant than the flush) shows a reproducible reorder transient (`d7a989ff` walk vs `a890754c` reorder @1024) that
+does NOT accumulate — `h` is invariant over 2048 ticks — consistent with the engine washing out auxiliary inter-tick draws
+(`h` folds only ship positions; the transient lives in discarded/auxiliary RNG, the §8.25/§8.33 class). The lockstep-relevant
+fingerprint (sim state = `h`) is fully reorder-invariant.
+**NET:** the substream is the I2 removal. The replay can now be reordered (⇒ concurrently scheduled) without changing the
+simulated world. **NEXT = sub-step 2b: replace the serial shard-grouped reorder with the ACTUAL hook-owned worker pool (one
+thread per shard draining its ships), gated by `diff(serial substream walk-order [G1], concurrent substream) == 0` on `h` —
+exactly the invariant G2 just established serially. Open follow-up (not lockstep-blocking): localize + substream the auxiliary
+downstream draw behind the `seed=` transient if full global-RNG-stream bit-exactness is later required.**
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).

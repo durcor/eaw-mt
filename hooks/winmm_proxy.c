@@ -2036,6 +2036,81 @@ static int pfire_shards(void) {
     }
     return g_pfire_shards;
 }
+
+/* B3.6.2 (§8.42) fan-out increment 2 — SECOND half, sub-step 2a: per-entity GEOMETRY RNG SUBSTREAM (removes
+ * invariant I2). The fire body's spread/dispersion draws (pfire_r1c_geom: 1ffbb0/1ffdb0 + the 381dc0 dispersion
+ * that reads DAT_140a13e24 internally) currently advance the GLOBAL LCG in walk order, so a concurrent reorder
+ * of the deferred-fire replay would desync them — that's I2, the last order-dependence after the (rank,seq) merge
+ * absorbed I1. ALSO order-sensitive: the R3 cooldown's :410 1ffb40 draw (burst-exhausted recompute, stays inline).
+ * Fix: each ship-fire draws from a per-(object_id,tick) substream instead. Realized — EXACTLY as the §8.33 scan
+ * substream (H2) — as a save/set/restore of the global LCG word, scoped to the WHOLE a76b0 fire body (which is
+ * purely per-fire RNG: r1c spread/dispersion AND the R3 cooldown draw; targeting/scan run earlier in the settle
+ * walk): pfire_geom_ss_begin parks the real global + seeds the slot with splitmix32(objid,tick) so every draw the
+ * fire body makes advances the substream in place; pfire_geom_ss_end restores the real global — left UNADVANCED by
+ * the fire body. A determinism RETROFIT, NOT a stock-bit-exact lift: DTWORLD changes vs the substream-off
+ * baseline, but becomes REORDER-INVARIANT (the gate).
+ *   EAW_PFIRE_GEOM_SS=1  → arm the substream (default OFF ⇒ global-LCG draws, legacy path untouched).
+ *   EAW_PFIRE_REORDER=1  → replay the deferred fires SHARD-GROUPED instead of walk-order (a serial, deterministic
+ *                          stand-in for what a thread-per-shard pool reorders) — the gate vehicle: with the
+ *                          substream OFF, reorder must PERTURB DTWORLD (I2 is real); with it ON, DTWORLD must be
+ *                          BIT-IDENTICAL to the substream-on walk-order run (I2 removed). Needs EAW_PFIRE_SHARDS>=2.
+ * The canonical (rank,seq) merge already makes the spawn DRAIN order-invariant; this makes the RNG DRAWS so too. */
+/* splitmix32(object_id, tick) — per-entity RNG substream seed. Unconditional (both the §8.33 scan substream,
+ * oracle-only, and the §8.42 geom substream, release-compiled via the inline replay loop, seed from it). */
+static uint32_t scan_substream_seed(uint32_t object_id, uint32_t tick) {
+    uint32_t x = object_id ^ (tick * 0x9e3779b9u);
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+static uintptr_t g_dt_imgbase;   /* StarWarsG.exe base — tentative fwd decl for the ss helpers (def =0 below) */
+static int g_pfire_geom_ss     = -1;   /* -1 unread / 0 off / 1 = fire-body draws from per-entity substream */
+static int g_pfire_geom_ss_active = 0; /* 1 while a ship-fire's a76b0 draws are routed to the substream slot */
+static uint32_t g_pfire_geom_ss_seed = 0;     /* the per-ship substream seed (splitmix32(objid,tick)) */
+static uint32_t g_pfire_geom_ss_global = 0;   /* real global LCG saved across the ship's fire body, restored after */
+static int g_pfire_reorder     = -1;   /* -1 unread / 0 walk-order replay / 1 = shard-grouped reorder (gate) */
+static uint32_t g_pfire_geom_ss_fires = 0; /* DEBUG: ship-fires routed through the substream */
+static int pfire_geom_ss_on(void) {
+    if (g_pfire_geom_ss < 0) {
+        const char *e = getenv("EAW_PFIRE_GEOM_SS");
+        g_pfire_geom_ss = (e && e[0] && e[0] != '0') ? 1 : 0;
+        log_write(g_pfire_geom_ss
+            ? "[eaw-mt] PFIREGEOMSS: r1c spread/dispersion draws redirected to a per-entity substream (EAW_PFIRE_GEOM_SS=1; removes I2 — DTWORLD shifts from baseline by design, but is reorder-invariant)\n"
+            : "[eaw-mt] PFIREGEOMSS: off (r1c draws the global LCG in walk order; set EAW_PFIRE_GEOM_SS=1 to substream the geometry RNG)\n");
+    }
+    return g_pfire_geom_ss;
+}
+static int pfire_reorder_on(void) {
+    if (g_pfire_reorder < 0) {
+        const char *e = getenv("EAW_PFIRE_REORDER");
+        g_pfire_reorder = (e && e[0] && e[0] != '0') ? 1 : 0;
+        if (g_pfire_reorder)
+            log_write("[eaw-mt] PFIREREORDER: deferred-fire replay = SHARD-GROUPED (serial reorder gate; needs EAW_PFIRE_SHARDS>=2). DTWORLD must diverge with GEOM_SS off, match with it on.\n");
+    }
+    return g_pfire_reorder;
+}
+/* Wrap a ship's a76b0 fire body in its per-entity substream. begin: SAVE the real global LCG word, SEED the slot
+ * with splitmix32(objid,tick) — so every global-LCG draw the fire body makes (r1c spread/dispersion via 1ffbb0/
+ * 1ffdb0/381dc0 AND the R3 cooldown's :410 1ffb40, all of which read DAT_140a13e24) advances the SUBSTREAM in
+ * place, not the shared stream. end: RESTORE the real global — the fire body leaves the global LCG exactly as it
+ * found it, so a reordered replay can't perturb it (I2 removed). No-op (and disarmed) when the substream is off
+ * ⇒ the fire body draws the global LCG as before. a76b0 is purely the per-fire body (targeting/scan run earlier
+ * in the settle walk), so every draw it makes is per-fire RNG that SHOULD be substreamed. */
+static void pfire_geom_ss_begin(int64_t ship, int32_t tick) {
+    if (!pfire_geom_ss_on() || !ship || !g_dt_imgbase) { g_pfire_geom_ss_active = 0; return; }
+    uint32_t *gLCG = (uint32_t *)(g_dt_imgbase + 0xa13e24);
+    int32_t objid = *(int32_t *)(ship + 0x50);
+    g_pfire_geom_ss_global = *gLCG;                                       /* park the real global stream */
+    g_pfire_geom_ss_seed   = scan_substream_seed((uint32_t)objid, (uint32_t)tick);
+    *gLCG = g_pfire_geom_ss_seed;                                         /* fire body now draws the substream */
+    g_pfire_geom_ss_active = 1;
+    g_pfire_geom_ss_fires++;
+}
+static void pfire_geom_ss_end(void) {
+    if (g_pfire_geom_ss_active && g_dt_imgbase)
+        *(uint32_t *)(g_dt_imgbase + 0xa13e24) = g_pfire_geom_ss_global;  /* restore the real global stream */
+    g_pfire_geom_ss_active = 0;
+}
+
 /* A4.1 DEBUG (root-causing the drained=0 paradox): which R2 branch the reimpl takes + drain entry. */
 static uint32_t g_pfdbg_buf = 0, g_pfdbg_inline = 0, g_pfdbg_drainenter = 0, g_pfdbg_drain_maxn = 0, g_pfdbg_reimpl_lvl = 0;
 static uint32_t g_pfdbg_entry = 0, g_pfdbg_fb_arc = 0, g_pfdbg_fb_p3 = 0, g_pfdbg_r1cfail = 0;
@@ -2107,12 +2182,14 @@ static void pfire_a62d0_intercept(int64_t mgr) {
 #endif
         {
             for (int i = 0; i < n; i++) {       /* PhaseB: walk-order replay of the binary fire body */
+                pfire_geom_ss_begin(g_pfire_fire_buf[i].ship, g_pfire_fire_buf[i].tick);  /* §8.42 substream */
                 if (g_pfire_a76b0_real) {
                     LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
                     g_pfire_a76b0_real(g_pfire_fire_buf[i].ship, g_pfire_fire_buf[i].tick);
                     QueryPerformanceCounter(&tb);
                     g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
                 }
+                pfire_geom_ss_end();
                 g_pfire_tot_fired++;
             }
             g_pfire_fire_count = 0;
@@ -4401,6 +4478,9 @@ static inline float pfire_ffbb0_range(R1_ffbb0Fn f, uint32_t *lcg, float lo, flo
     return f(lcg, lo, hi);
 }
 
+/* :210-260 R1c geometry. RNG draws (1ffbb0 spread / 1ffdb0 / 381dc0 dispersion) read the global LCG slot
+ * DAT_140a13e24 — which, under EAW_PFIRE_GEOM_SS, the a76b0-scope substream swap (pfire_geom_ss_begin) has
+ * temporarily repointed to the per-ship substream, so no draw-site change is needed here (§8.42). */
 static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, float dist,
                           float *mat1, float *mat2) {
     int64_t owner      = *(int64_t *)(p1 + 0x10);
@@ -5278,11 +5358,6 @@ static int scan_ss_on(void) {
     }
     return g_scan_ss_on;
 }
-static uint32_t scan_substream_seed(uint32_t object_id, uint32_t tick) {   /* splitmix32(object_id, tick) */
-    uint32_t x = object_id ^ (tick * 0x9e3779b9u);
-    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
-    return x;
-}
 
 static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
     if (!g_dt_imgbase) return 0;
@@ -5789,27 +5864,45 @@ static void pfire_sharded_flush(void) {
     int N = g_pfire_shards; if (N < 1) N = 1; if (N > PFIRE_MAX_SHARDS) N = PFIRE_MAX_SHARDS;
     for (int s = 0; s < N; s++) g_shard_spawn_count[s] = 0;
 
-    /* PhaseB: walk-order replay, each fire's creates routed to its shard buffer via pfire_spawn_buf_append. */
+    /* PhaseB: replay each deferred fire, its creates routed to its shard buffer via pfire_spawn_buf_append.
+     * Replay ORDER: walk (canonical) by default; under EAW_PFIRE_REORDER, SHARD-GROUPED — N passes, pass s
+     * fires only shard==s's ships (in walk order) — a serial, deterministic stand-in for a thread-per-shard
+     * pool draining each shard back-to-back (§8.42). The canonical RANK is ALWAYS the fire's WALK index i (its
+     * slot in g_pfire_fire_buf, filled in walk order), NOT the replay sequence, so the (rank,seq) merge restores
+     * canonical drain order regardless of replay order. The per-entity geom substream (pfire_geom_ss_begin)
+     * makes each fire's RNG draws reorder-independent: with it ON the reordered DTWORLD matches walk-order
+     * (I2 removed); with it OFF reorder perturbs the global-LCG draw sequence and DTWORLD diverges (I2 is real). */
     g_pfire_sharded = 1;
-    for (int i = 0; i < n; i++) {
-        int64_t ship = g_pfire_fire_buf[i].ship;
-        int32_t tick = g_pfire_fire_buf[i].tick;
-        int32_t objid = ship ? *(int32_t *)(ship + 0x50) : 0;
-        g_pfire_cur_shard = (int)(((uint32_t)objid) % (uint32_t)N);
-        /* walk rank == visitation rank == canonical key. b3a76b0_hook re-stamps g_drain_cur_rank to the same
-         * value in walk order (its per-tick counter == i here); set it explicitly anyway as the seam the
-         * concurrent half will own, and reset the per-ship emission seq. */
-        g_drain_cur_rank = (uint32_t)i; g_drain_cur_objid = objid; g_drain_cur_seq = 0;
-        if (g_pfire_a76b0_real) {
-            LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
-            g_pfire_a76b0_real(ship, tick);
-            QueryPerformanceCounter(&tb);
-            g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
+    int reorder = pfire_reorder_on();
+    /* §8.42 DIAG: localize any residual reorder-dependent global-LCG draw. Snapshot the global word at
+     * replay-start / replay-end (post-substream restores) / post-drain. If lcg_start==lcg_mid the substream
+     * fully contained the fire bodies (no leak); a lcg_mid→lcg_post delta is the drain's create draws. */
+    uint32_t lcg_start = g_dt_imgbase ? *(uint32_t *)(g_dt_imgbase + 0xa13e24) : 0, lcg_mid = 0, lcg_post = 0;
+    for (int pass = 0; pass < (reorder ? N : 1); pass++) {
+        for (int i = 0; i < n; i++) {
+            int64_t ship = g_pfire_fire_buf[i].ship;
+            int32_t tick = g_pfire_fire_buf[i].tick;
+            int32_t objid = ship ? *(int32_t *)(ship + 0x50) : 0;
+            int shard = (int)(((uint32_t)objid) % (uint32_t)N);
+            if (reorder && shard != pass) continue;          /* this pass fires only its shard's ships */
+            g_pfire_cur_shard = shard;
+            /* g_drain_cur_rank = the fire's WALK index (canonical) — independent of replay order; b3a76b0_hook
+             * also stamps it in walk order, but we own it here as the seam the concurrent half will set. */
+            g_drain_cur_rank = (uint32_t)i; g_drain_cur_objid = objid; g_drain_cur_seq = 0;
+            pfire_geom_ss_begin(ship, tick);                 /* §8.42 per-entity geometry RNG substream */
+            if (g_pfire_a76b0_real) {
+                LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
+                g_pfire_a76b0_real(ship, tick);
+                QueryPerformanceCounter(&tb);
+                g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
+            }
+            pfire_geom_ss_end();
+            g_pfire_tot_fired++;
         }
-        g_pfire_tot_fired++;
     }
     g_pfire_sharded = 0;
     g_pfire_fire_count = 0;
+    lcg_mid = g_dt_imgbase ? *(uint32_t *)(g_dt_imgbase + 0xa13e24) : 0;   /* §8.42 DIAG: post-replay */
 
     /* MERGE: concatenate the shard buffers (shard-grouped = non-canonical) then stable-sort by (rank,seq). */
     int k = 0;
@@ -5824,6 +5917,14 @@ static void pfire_sharded_flush(void) {
 
     /* DRAIN in canonical order (the existing applier — iterates g_pfire_spawn_buf[0..count) in order). */
     pfire_drain_spawns();
+    lcg_post = g_dt_imgbase ? *(uint32_t *)(g_dt_imgbase + 0xa13e24) : 0;  /* §8.42 DIAG: post-drain */
+    { static uint32_t flushno = 0; flushno++;
+      if (dt_on() && (flushno & 0x3ffu) == 1) {     /* periodic — same cadence as the I4/DTWORLD log */
+        char b[192];
+        snprintf(b, sizeof b, "PFLCG\tflush=%u\tn=%d\treorder=%d\tss=%d\tlcg_start=%08x\tlcg_mid=%08x\tlcg_post=%08x\treplay_leak=%d\tdrain_adv=%d\n",
+                 flushno, n, reorder, g_pfire_geom_ss, lcg_start, lcg_mid, lcg_post,
+                 (lcg_mid != lcg_start), (lcg_post != lcg_mid));
+        log_write(b); } }
 }
 
 static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {

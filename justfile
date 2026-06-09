@@ -32,7 +32,15 @@ pfire := ""
 # serial/walk-order (validates partition+merge only). Gate: DTWORLD must match pfire=4 baseline. Needs pfire=4 difftrace=1.
 # Override: just pfire=4 pfireshards=4 difftrace=1 launch-foc-desktop
 pfireshards := ""
-save-dir  := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
+# B3.6.2 (§8.42) fan-out increment 2 — SECOND half (2a): per-entity GEOMETRY RNG substream — removes invariant I2 by
+# drawing each ship-fire's spread/dispersion from a per-(object_id,tick) substream instead of the global LCG walk stream.
+# Pair with pfirereorder to gate: substream OFF + reorder ⇒ DTWORLD diverges (I2 real); ON + reorder ⇒ matches walk-order.
+# Override: just pfire=4 pfireshards=4 pfiregeomss=1 pfirereorder=1 difftrace=1 launch-foc-desktop
+pfiregeomss := ""
+# B3.6.2 (§8.42) gate vehicle: replay the deferred fires SHARD-GROUPED (serial reorder, mimics a thread-per-shard pool)
+# instead of walk order. Needs pfireshards>=2. The substream's reorder-invariance is proven against this. Override: see above.
+pfirereorder := ""
+save-dir  :=env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
 
@@ -244,6 +252,8 @@ launch-foc-desktop:
       EAW_PFIRE_SCAN_SS={{pfirescanss}} \
       EAW_PFIRE={{pfire}} \
       EAW_PFIRE_SHARDS={{pfireshards}} \
+      EAW_PFIRE_GEOM_SS={{pfiregeomss}} \
+      EAW_PFIRE_REORDER={{pfirereorder}} \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \
