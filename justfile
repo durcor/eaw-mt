@@ -40,6 +40,11 @@ pfiregeomss := ""
 # B3.6.2 (§8.42) gate vehicle: replay the deferred fires SHARD-GROUPED (serial reorder, mimics a thread-per-shard pool)
 # instead of walk order. Needs pfireshards>=2. The substream's reorder-invariance is proven against this. Override: see above.
 pfirereorder := ""
+# B3.6.3 (§8.43) increment 2 SECOND half, sub-step 2b: run the deferred-fire replay on `pfireshards` real WORKER THREADS
+# (one shard/thread). Step-1 = each a76b0 CS-serialized (at most one engine call at a time). Gate: h must reproduce the
+# G1 substream baseline despite OS thread scheduling. Needs pfire=4 pfiregeomss=1 pfireshards>=2 difftrace=1.
+# Override: just pfire=4 pfireshards=4 pfiregeomss=1 pfirepool=1 difftrace=1 launch-foc-desktop
+pfirepool := ""
 save-dir  :=env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
@@ -254,6 +259,7 @@ launch-foc-desktop:
       EAW_PFIRE_SHARDS={{pfireshards}} \
       EAW_PFIRE_GEOM_SS={{pfiregeomss}} \
       EAW_PFIRE_REORDER={{pfirereorder}} \
+      EAW_PFIRE_POOL={{pfirepool}} \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \

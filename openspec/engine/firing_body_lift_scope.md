@@ -1612,6 +1612,33 @@ simulated world. **NEXT = sub-step 2b: replace the serial shard-grouped reorder 
 thread per shard draining its ships), gated by `diff(serial substream walk-order [G1], concurrent substream) == 0` on `h` —
 exactly the invariant G2 just established serially. Open follow-up (not lockstep-blocking): localize + substream the auxiliary
 downstream draw behind the `seed=` transient if full global-RNG-stream bit-exactness is later required.**
+*(DONE in §8.43 below: step-1 worker pool — real threads, CS-serialized — passes the gate.)*
+
+### 8.43 B3.6.3 — FAN-OUT increment 2 (second half, sub-step 2b STEP-1): the hook-owned WORKER POOL passes — engine fire bodies run on real threads, deterministically (2026-06-08)
+First real concurrency in the engine tick. `EAW_PFIRE_POOL=1` runs the deferred-fire replay on `pfireshards` real Win32 worker
+threads (`CreateThread`×N, `WaitForMultipleObjects(TRUE)` join), one shard per worker (`shard = object_id % N`), instead of the
+serial loop. Factored the per-fire body into `pfire_replay_one(i)` (sets shard routing + the canonical `(rank,seq)` key with
+rank = WALK index `i` + the §8.42 substream + runs `a76b0`), shared by the serial loop and the worker. **STEP-1 de-risk (mirrors
+the §8.10 1-shard identity scaffold): each `a76b0` runs under ONE `CRITICAL_SECTION` (`g_pfire_replay_cs`)** ⇒ at most one engine
+call executes at a time while the main thread blocks at the join — serial execution that HOPS ACROSS THREADS. This isolates the
+two highest-risk unknowns (does the binary fire body tolerate worker-thread execution at all; are the pool/barrier/merge
+mechanics deterministic under OS scheduling) from the separate question of reentrant concurrent overlap (STEP-2, needs the §8.31
+fog CS + lead/dispersion scratch lock + a TLS RNG slot). The merge + canonical drain stay on the main thread post-join, unchanged.
+**Gate (autonomous menu A/B, same pins):**
+- **P1** (`pfiregeomss=1 pfirepool=1`): `h` = `29d24e28…`/`d4aa1af9…` @ 1024/2048 — **BIT-IDENTICAL to the G1 serial substream
+  baseline at BOTH ticks**, and the game was ALIVE at capture (NO CRASH). `DTDRAIN id_up=429 id_down=648` (vs serial's strictly
+  descending `id_down=1077`) PROVES the OS-chosen worker interleave genuinely reordered the `a76b0` visitation — yet `h` matched,
+  `rank_down=0` held (canonical drain preserved), `fired=15932`/`shard_maxfill=65`/`overflow=0` unchanged. PFLCG: the flush is
+  still a global-LCG no-op (`replay_leak=0 drain_adv=0`, `lcg_start` = serial `cce99cf1`/`3ecab9db`/`b7332e6b`).
+- **P1b** (repeat): `h` reproduces P1 exactly ⇒ deterministic run-to-run despite non-deterministic thread scheduling.
+**NET — the parallelization premise is PROVEN in-engine:** real worker threads execute the engine fire bodies, the OS reorders
+their execution, and the simulated world (`h`, the lockstep fingerprint) is bit-identical to the serial baseline + reproducible.
+The §8.42 per-entity substream + the §8.41 `(rank,seq)` canonical merge together absorb all of the thread non-determinism that
+matters. The `seed=` transient tracks the reorder (same discarded/auxiliary class as §8.42), not the world. **NEXT = STEP-2:
+relax the single `a76b0` CS to per-scratch locks (the §8.31 fog CS already exists for `35f470`; add the `399450` lead /`381dc0`
+dispersion shared-scratch guard + a `__thread` RNG substream slot so the pointer-arg draws `1ffbb0`/`1ffdb0`/`1ffb40` use TLS and
+only `381dc0`'s internal global read stays under a lock) so non-hazardous fire-body work actually OVERLAPS — gated by
+`diff(step-1 CS-serialized, step-2 overlapped) == 0` on `h`, plus a perf delta to show real speedup.**
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).

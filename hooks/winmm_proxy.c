@@ -2088,6 +2088,33 @@ static int pfire_reorder_on(void) {
     }
     return g_pfire_reorder;
 }
+/* B3.6.3 (§8.43) fan-out increment 2 — SECOND half, sub-step 2b: the hook-owned WORKER POOL. EAW_PFIRE_POOL=1
+ * runs the deferred-fire replay on `pfireshards` real worker threads (one shard per worker, shard=object_id%N),
+ * instead of the serial loop — the actual concurrency the §8.42 substream + (rank,seq) merge were built to make
+ * deterministic. STEP 1 (this cut, de-risk like the §8.10 1-shard identity scaffold): each a76b0 fire body runs
+ * under a single CRITICAL_SECTION (g_pfire_replay_cs), so AT MOST ONE engine call executes at a time while the
+ * main thread blocks at the join — i.e. serial execution that HOPS ACROSS THREADS. This tests the highest-risk
+ * unknown (does the engine fire body tolerate worker-thread execution + are the pool/barrier/merge mechanics
+ * deterministic under OS scheduling) WITHOUT yet needing the binary leaves to be reentrant. The proof: despite
+ * OS-nondeterministic worker interleave, the world hash h must reproduce the G1 serial substream baseline
+ * (29d24e28…/d4aa1af9…) run-to-run. STEP 2 (later) relaxes the CS to per-scratch (the §8.31 fog CS + the existing
+ * lead/dispersion scratch + a TLS RNG slot) so non-hazardous work overlaps. Needs pfire=4 pfiregeomss=1
+ * pfireshards>=2 difftrace=1. Default OFF ⇒ the serial flush path is untouched. */
+static int g_pfire_pool = -1;          /* -1 unread / 0 serial / 1 = worker-pool replay (CS-serialized a76b0) */
+static CRITICAL_SECTION g_pfire_replay_cs;   /* step-1: serializes the a76b0 fire body across workers */
+static int g_pfire_replay_cs_init = 0;
+static uint32_t g_pfire_pool_threads = 0;    /* DEBUG: worker threads spawned (cumulative) */
+static int pfire_pool_on(void) {
+    if (g_pfire_pool < 0) {
+        const char *e = getenv("EAW_PFIRE_POOL");
+        g_pfire_pool = (e && e[0] && e[0] != '0') ? 1 : 0;
+        if (g_pfire_pool) {
+            if (!g_pfire_replay_cs_init) { InitializeCriticalSection(&g_pfire_replay_cs); g_pfire_replay_cs_init = 1; }
+            log_write("[eaw-mt] PFIREPOOL: deferred-fire replay on WORKER THREADS (EAW_PFIRE_POOL=1, one shard/thread; step-1 = a76b0 CS-serialized). h must reproduce the G1 substream baseline run-to-run.\n");
+        }
+    }
+    return g_pfire_pool;
+}
 /* Wrap a ship's a76b0 fire body in its per-entity substream. begin: SAVE the real global LCG word, SEED the slot
  * with splitmix32(objid,tick) — so every global-LCG draw the fire body makes (r1c spread/dispersion via 1ffbb0/
  * 1ffdb0/381dc0 AND the R3 cooldown's :410 1ffb40, all of which read DAT_140a13e24) advances the SUBSTREAM in
@@ -5850,6 +5877,45 @@ static void pfire_spawn_sort_canonical(int n) {
     }
 }
 
+/* Replay ONE deferred fire (g_pfire_fire_buf[i]): route its creates to its shard, stamp the canonical (rank,seq)
+ * key (rank = the WALK index i), set its per-entity substream, run the engine fire body, time it. Shared by the
+ * serial loop and the §8.43 worker pool. Touches process-global seam state (g_pfire_cur_shard / g_drain_cur_* /
+ * the substream slot / the qpc+fired counters), so under the pool it MUST be called holding g_pfire_replay_cs. */
+static int g_pfire_replay_n = 0, g_pfire_replay_N = 1;   /* §8.43 replay extent, published before the pool spawns */
+static void pfire_replay_one(int i) {
+    int64_t ship = g_pfire_fire_buf[i].ship;
+    int32_t tick = g_pfire_fire_buf[i].tick;
+    int32_t objid = ship ? *(int32_t *)(ship + 0x50) : 0;
+    int N = g_pfire_replay_N; if (N < 1) N = 1;
+    g_pfire_cur_shard = (int)(((uint32_t)objid) % (uint32_t)N);
+    g_drain_cur_rank = (uint32_t)i; g_drain_cur_objid = objid; g_drain_cur_seq = 0;
+    pfire_geom_ss_begin(ship, tick);                     /* §8.42 per-entity geometry RNG substream */
+    if (g_pfire_a76b0_real) {
+        LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
+        g_pfire_a76b0_real(ship, tick);
+        QueryPerformanceCounter(&tb);
+        g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
+    }
+    pfire_geom_ss_end();
+    g_pfire_tot_fired++;
+}
+
+/* §8.43 worker: replay this shard's deferred fires (shard = object_id % N), each a76b0 under g_pfire_replay_cs
+ * (step-1 = at most one engine call at a time; the OS chooses the cross-worker interleave). */
+static DWORD WINAPI pfire_pool_worker(LPVOID arg) {
+    int myshard = (int)(intptr_t)arg;
+    int n = g_pfire_replay_n, N = g_pfire_replay_N; if (N < 1) N = 1;
+    for (int i = 0; i < n; i++) {
+        int64_t ship = g_pfire_fire_buf[i].ship;
+        int32_t objid = ship ? *(int32_t *)(ship + 0x50) : 0;
+        if ((int)(((uint32_t)objid) % (uint32_t)N) != myshard) continue;
+        EnterCriticalSection(&g_pfire_replay_cs);
+        pfire_replay_one(i);
+        LeaveCriticalSection(&g_pfire_replay_cs);
+    }
+    return 0;
+}
+
 /* B3.6.1 (§8.41) fan-out increment 2 — SERIAL-SHARD FLUSH (replaces the inline replay + drain at level>=4 when
  * EAW_PFIRE_SHARDS>=2). Replay every deferred fire in WALK ORDER (so the global LCG + all serial side effects
  * are bit-identical to the 1-shard baseline), routing each fire's buffered creates to its OWN shard buffer
@@ -5878,26 +5944,36 @@ static void pfire_sharded_flush(void) {
      * replay-start / replay-end (post-substream restores) / post-drain. If lcg_start==lcg_mid the substream
      * fully contained the fire bodies (no leak); a lcg_mid→lcg_post delta is the drain's create draws. */
     uint32_t lcg_start = g_dt_imgbase ? *(uint32_t *)(g_dt_imgbase + 0xa13e24) : 0, lcg_mid = 0, lcg_post = 0;
-    for (int pass = 0; pass < (reorder ? N : 1); pass++) {
-        for (int i = 0; i < n; i++) {
-            int64_t ship = g_pfire_fire_buf[i].ship;
-            int32_t tick = g_pfire_fire_buf[i].tick;
-            int32_t objid = ship ? *(int32_t *)(ship + 0x50) : 0;
-            int shard = (int)(((uint32_t)objid) % (uint32_t)N);
-            if (reorder && shard != pass) continue;          /* this pass fires only its shard's ships */
-            g_pfire_cur_shard = shard;
-            /* g_drain_cur_rank = the fire's WALK index (canonical) — independent of replay order; b3a76b0_hook
-             * also stamps it in walk order, but we own it here as the seam the concurrent half will set. */
-            g_drain_cur_rank = (uint32_t)i; g_drain_cur_objid = objid; g_drain_cur_seq = 0;
-            pfire_geom_ss_begin(ship, tick);                 /* §8.42 per-entity geometry RNG substream */
-            if (g_pfire_a76b0_real) {
-                LARGE_INTEGER ta, tb; QueryPerformanceCounter(&ta);
-                g_pfire_a76b0_real(ship, tick);
-                QueryPerformanceCounter(&tb);
-                g_pf_a76b0_qpc += (tb.QuadPart - ta.QuadPart); g_pf_a76b0_n++;
+    if (pfire_pool_on()) {
+        /* §8.43 WORKER POOL (step-1): one thread per shard, each a76b0 CS-serialized. The (rank,seq) merge below
+         * + the §8.42 substream make h deterministic despite the OS-chosen interleave (the gate). */
+        g_pfire_replay_n = n; g_pfire_replay_N = N;
+        HANDLE th[PFIRE_MAX_SHARDS]; int nth = 0;
+        for (int s = 0; s < N; s++) {
+            HANDLE h = CreateThread(NULL, 0, pfire_pool_worker, (LPVOID)(intptr_t)s, 0, NULL);
+            if (h) { th[nth++] = h; }
+            else {  /* CreateThread failed — replay this shard inline (still CS-guarded for consistency) */
+                for (int i = 0; i < n; i++) {
+                    int64_t ship = g_pfire_fire_buf[i].ship;
+                    int32_t objid = ship ? *(int32_t *)(ship + 0x50) : 0;
+                    if ((int)(((uint32_t)objid) % (uint32_t)N) == s) {
+                        EnterCriticalSection(&g_pfire_replay_cs); pfire_replay_one(i); LeaveCriticalSection(&g_pfire_replay_cs);
+                    }
+                }
             }
-            pfire_geom_ss_end();
-            g_pfire_tot_fired++;
+        }
+        if (nth) WaitForMultipleObjects((DWORD)nth, th, TRUE, INFINITE);
+        for (int s = 0; s < nth; s++) CloseHandle(th[s]);
+        g_pfire_pool_threads += (uint32_t)N;
+    } else {
+        for (int pass = 0; pass < (reorder ? N : 1); pass++) {
+            for (int i = 0; i < n; i++) {
+                int64_t ship = g_pfire_fire_buf[i].ship;
+                int32_t objid = ship ? *(int32_t *)(ship + 0x50) : 0;
+                int shard = (int)(((uint32_t)objid) % (uint32_t)N);
+                if (reorder && shard != pass) continue;          /* this pass fires only its shard's ships */
+                pfire_replay_one(i);                              /* canonical rank = walk index i (set inside) */
+            }
         }
     }
     g_pfire_sharded = 0;
