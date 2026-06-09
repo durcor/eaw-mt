@@ -1679,6 +1679,34 @@ fire-path skeleton prewarm above; (d) replace the coarse `g_pfire_replay_cs` wit
 overlap window is the gate predicates + Euler + the buffer append; modest speedup, which is why the premise (proven in §8.43) matters
 more than the speedup here.)**
 
+### 8.45 B3.6.5 — THE CS-FLIP (true overlap): ATTEMPTED, then REVERTED — hook-level overlap of the binary fire body is blocked at the engine-source boundary (2026-06-09)
+Built the full CS-flip and ran it; it does NOT reproduce the baseline, and the root cause is fundamental, so the work was REVERTED to
+the §8.44 state (the validated checkpoint). What was built (all on a `EAW_PFIRE_POOL=1` overlap path, with `=2` kept as the §8.43
+coarse-CS fallback): consolidated per-fire state into one heap `PfireTls` struct (pointer in one Win32 TLS slot) so the substream `lcg`
+is ADDRESSABLE — the pointer-arg draws (`1ffbb0`/`1ffdb0`/`1ffb40`) draw `&t->lcg` directly; `381dc0`/`383f70`/`405870` (which read the
+global word internally) got a global↔`t->lcg` swap under `g_pfire_scratch_cs`; pose leaves `385c70`/`385e70` locked; the per-fire
+routing (`cur_shard`/`rank`/`objid`/`seq`) moved to the TLS struct with the AUTHORITATIVE walk-index rank; the racy `b3a76b0` ENTRY
+observation bypassed via the body trampoline `g_a76b0_trampoline` (confirmed PURE observation — DTFIRE/DTDRAIN survey + the shared
+`g_drain_rank` counter — and at level≥4 the create is DEFERRED, so no `29f810`/spawn-attribution fires during the replay).
+**What VALIDATED:** Win32 TLS persists perfectly in the per-flush workers (`tls_alloc == 4·flushes`, one calloc/worker, freed at exit;
+`tls_oob=0`); `b3a76b0` is cleanly bypassable; the spread/dispersion routing reaches the draws (SSDIAG: in `r1c`, `ss_active=1`,
+`lcg_is_tls=1`).
+**The BLOCKER (`replay_leak=1` + world hash = the substream-OFF baseline):** despite spread/dispersion using the substream, the global
+LCG word is still net-advanced during the replay and the world matches the OFF case — i.e. **at least one binary fire-leaf reads the
+FIXED global word `DAT_140a13e24` internally at a site NOT in the routed set, and that draw drives geometry.** §8.44's substream worked
+precisely because it SWAPPED the global word for the WHOLE `a76b0` body (one save/seed/restore bracketing every draw, routed or not) —
+and THAT whole-body swap is exactly what cannot be made thread-safe under overlap (two workers writing the one shared global word race).
+Redirecting a binary leaf's read of a fixed global address per-thread is only possible for the leaves that take a `uint32_t*` arg; the
+rest would each need an identify-and-lock-swap (fragile: any missed site silently desyncs, as here) OR a host reimplementation of the
+leaf (e.g. `381dc0` dispersion math). a76b0 is a direct call so begin/r1c are the same thread (the differing SSDIAG tids are a per-flush
+sampling artifact, NOT a thread-dispatch) — ruling out a threading-model bug and pinning it on the RNG-redirection completeness.
+**CONCLUSION — this is the engine-source boundary (consistent with `threading-model-conclusions.md`).** True overlap needs the binary
+fire-leaves replaced by thread-safe HOST code (the `sim/` lift compiled into the engine), not the hook calling opaque binary leaves that
+read fixed global RNG/scratch. And the payoff would be ~zero anyway: every heavy leaf (fog/lead/dispersion/pose) serializes on its lock,
+leaving only gates+Euler+append to overlap. **The §8.43 step-1 coarse-CS WORKER POOL stands as the validated in-engine demonstration of
+deterministic concurrent fire-body execution; the §8.44 primitives (Win32-TLS substream, scratch locks) are the reusable building blocks
+the engine-source version inherits.** NEXT lever = engine-source integration of the `sim/` fire path (not further hook-level overlap).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
