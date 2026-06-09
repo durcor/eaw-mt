@@ -1639,6 +1639,45 @@ relax the single `a76b0` CS to per-scratch locks (the §8.31 fog CS already exis
 dispersion shared-scratch guard + a `__thread` RNG substream slot so the pointer-arg draws `1ffbb0`/`1ffdb0`/`1ffb40` use TLS and
 only `381dc0`'s internal global read stays under a lock) so non-hazardous fire-body work actually OVERLAPS — gated by
 `diff(step-1 CS-serialized, step-2 overlapped) == 0` on `h`, plus a perf delta to show real speedup.**
+*(§8.44 below: STEP-2 PRIMITIVES built + validated inert under the coarse CS — per the user's "primitives-first" call; the CS-flip is deferred, with a NEWLY-CONFIRMED extra prerequisite.)*
+
+### 8.44 B3.6.4 — FAN-OUT increment 2 (2b STEP-2 PREP): thread-safety primitives built + validated inert; the pose-eval prerequisite confirmed (2026-06-08)
+Per the human-gate decision (Blueprint rule 6 — true concurrent engine execution is an architectural step), built the STEP-2
+overlap primitives but KEPT the step-1 coarse `a76b0` CS, so they stay INERT (uncontended) and a `== baseline` run validates
+they don't perturb behavior — the Fork-B "build the concurrent-safe primitives inert-in-serial first" methodology.
+**Built + validated (`== baseline` under the coarse CS, where the primitives are uncontended):**
+1. **Per-fire substream in WIN32 TLS** — `geom_ss_begin/_end`'s per-ship seed + saved-global live in `TlsAlloc` slots (values stored
+   directly through `void*`, no heap), so concurrent fire bodies won't clobber each other. ⚠️**KEY FINDING — MinGW `__thread` is the
+   WRONG tool here, on TWO counts** (discovered the hard way): (i) it DESYNCED the world (`P2`: `h=8da28259…`, the whole sim diverged —
+   `obj=8` not `7` @ 2048, `PFLCG lcg_start` differing from flush=1) because emutls' per-thread block isn't set up for threads created
+   by Win32 `CreateThread` outside the C runtime (the pool's workers) → the substream read/wrote a bogus TLS instance; (ii) `__thread`
+   drags in `libgcc_s_seh-1.dll` + `libmcfgthread-2.dll`, absent in the game dir ⇒ WINMM.dll fails to load (`c0000135`) unless built
+   `-static`. **The Win32 TLS API is native to `CreateThread` threads and needs no `-static`** (the DLL stays self-contained:
+   kernel32/msvcrt/user32 only). A clean control isolated it: `STATICDIAG` (plain `pfire=4`, the `-static` build, TLS path UNUSED) =
+   `4a4885ea…` BIT-IDENTICAL to the original §8.41 pin ⇒ `-static` itself is FP-neutral; the desync was purely the `__thread` storage.
+2. **Scratch locks** — `35f470` fog silhouette (`DAT_140a28530`, the SAME `g_fog_cs` Fork B §8.31 uses for the scan path) wrapped in
+   `compute_geom`; `399450` lead-solver + `381dc0` dispersion shared scratch wrapped in a new `g_pfire_scratch_cs` in `r1c_geom`
+   (snapshot the result-pointer values before unlock). Idempotent `pfire_scratch_locks_init()` from `install_pfire_hooks` (release+
+   oracle) + `install_dtscan_hook` (scan path).
+**Gate: P3** (`pfiregeomss=1 pfirepool=1`, Win32-TLS substream + scratch locks live under the coarse CS) — `h` =
+`29d24e28…`/`d4aa1af9…` @ 1024/2048, BIT-IDENTICAL to the §8.43 P1/G1 baseline ⇒ Win32 TLS works in the pool workers + the scratch
+locks are behavior-neutral. (The failed `__thread` attempt = `P2`; the `-static` FP-neutral control = `STATICDIAG`.)
+**NEWLY CONFIRMED HAZARD (sharpens the CS-flip scope beyond §8.43's list):** the fire path hits Fork B's **pose-eval** race too —
+both `385e70` (LOS/muzzle matrix, shooter model via `3858b0`) and `385c70` (aim, target model via `2648b0`) call `12d2c0` →
+`alHModel::vfunc_15`, the dirty-flag-guarded MUTATING pose eval. So true overlap ALSO needs an eager **fire-path skeleton prewarm**
+(warm each firing ship's model + its target's model serially before the parallel phase, so the concurrent `vfunc_15` calls find the
+dirty bit clear → pure reads), analogous to `pfire_skeleton_prewarm` (scan). The target side needs a target PRE-RESOLUTION pass
+(the target is resolved mid-fire-body via `405870`/aim), so it's not a trivial reuse.
+**Remaining for the CS-flip (STEP-2 proper, a focused next session):** (a) move the routing/drain-context state
+(`g_pfire_cur_shard`, `g_drain_cur_{rank,objid,seq}`) into Win32 TLS (NOT `__thread` — see finding above) + make `pfire_replay_one`'s
+walk-index rank authoritative (today `b3a76b0_hook`
+re-stamps `g_drain_cur_rank` from an execution-order counter — harmless serially, wrong under overlap) — note the DTDRAIN
+attribution machine is inherently serial (emitter-transition counts) so it must be DISABLED under overlap; (b) route the pointer-arg
+LCG draws to the TLS slot + bracket `381dc0`'s internal global read with the global↔TLS swap inside `g_pfire_scratch_cs`; (c) the
+fire-path skeleton prewarm above; (d) replace the coarse `g_pfire_replay_cs` with the per-scratch locks; gate `diff(step-1, step-2)
+== 0` on `h` + a perf delta. **(Net: the heavy leaves — fog/lead/dispersion/pose — all serialize on their own locks, so the realistic
+overlap window is the gate predicates + Euler + the buffer append; modest speedup, which is why the premise (proven in §8.43) matters
+more than the speedup here.)**
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).

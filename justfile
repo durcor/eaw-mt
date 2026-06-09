@@ -50,6 +50,9 @@ save-dir  :=env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/use
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
 
 # RELEASE build (default): shipped fixes only, profiler compiled out.
+# NB: do NOT use MinGW `__thread` for per-worker state — emutls misbehaves in Win32 CreateThread worker threads
+# (§8.44 desync) AND pulls in libgcc_s_seh-1.dll / libmcfgthread-2.dll (absent in the game dir ⇒ c0000135 load
+# fail) unless -static. The §8.44 per-fire TLS uses the Win32 TLS API instead ⇒ self-contained -shared, no -static.
 build-winmm:
   nix develop --command x86_64-w64-mingw32-gcc -shared -o patches/experimental/winmm.dll hooks/winmm_proxy.c -lkernel32
   cp patches/experimental/winmm.dll {{game-dir}}

@@ -2064,9 +2064,29 @@ static uint32_t scan_substream_seed(uint32_t object_id, uint32_t tick) {
 }
 static uintptr_t g_dt_imgbase;   /* StarWarsG.exe base — tentative fwd decl for the ss helpers (def =0 below) */
 static int g_pfire_geom_ss     = -1;   /* -1 unread / 0 off / 1 = fire-body draws from per-entity substream */
-static int g_pfire_geom_ss_active = 0; /* 1 while a ship-fire's a76b0 draws are routed to the substream slot */
-static uint32_t g_pfire_geom_ss_seed = 0;     /* the per-ship substream seed (splitmix32(objid,tick)) */
-static uint32_t g_pfire_geom_ss_global = 0;   /* real global LCG saved across the ship's fire body, restored after */
+/* B3.6.4 (§8.44): per-fire substream state is THREAD-LOCAL via the WIN32 TLS API (TlsAlloc/TlsGetValue/TlsSetValue)
+ * — the §8.43 STEP-2 prep. Each worker carries its own ship's substream seed + saved global, so geom_ss_begin/_end
+ * on concurrent fire bodies don't clobber each other. ⚠️NOT MinGW `__thread`: emutls is UNRELIABLE in the pool's
+ * Win32-CreateThread worker threads (it desynced the world — §8.44 P2), because emutls' per-thread setup isn't
+ * driven for threads created outside the C runtime. Win32 TLS slots ARE native to CreateThread. Values are stored
+ * DIRECTLY in the slot (through void*), so no per-worker heap alloc/free, and an unset slot reads 0 (correct init).
+ * INERT under the step-1 coarse CS (one worker active at a time); == baseline validates Win32 TLS works in the
+ * workers — the primitive the CS-flip (true overlap) needs. (The global-LCG SLOT write in geom_ss_begin is still
+ * shared; the CS-flip swaps it for a TLS-pointer draw route.) Indices allocated in install_pfire_hooks. */
+static DWORD g_tls_ss_active = TLS_OUT_OF_INDEXES;
+static DWORD g_tls_ss_seed   = TLS_OUT_OF_INDEXES;
+static DWORD g_tls_ss_global = TLS_OUT_OF_INDEXES;
+static void pfire_tls_init(void) {   /* idempotent; from install_pfire_hooks */
+    if (g_tls_ss_active == TLS_OUT_OF_INDEXES) g_tls_ss_active = TlsAlloc();
+    if (g_tls_ss_seed   == TLS_OUT_OF_INDEXES) g_tls_ss_seed   = TlsAlloc();
+    if (g_tls_ss_global == TLS_OUT_OF_INDEXES) g_tls_ss_global = TlsAlloc();
+}
+static inline int      ss_active(void)        { return (int)(uintptr_t)TlsGetValue(g_tls_ss_active); }
+static inline void     ss_active_set(int v)   { TlsSetValue(g_tls_ss_active, (LPVOID)(uintptr_t)(unsigned)v); }
+static inline uint32_t ss_seed(void)          { return (uint32_t)(uintptr_t)TlsGetValue(g_tls_ss_seed); }
+static inline void     ss_seed_set(uint32_t v){ TlsSetValue(g_tls_ss_seed, (LPVOID)(uintptr_t)v); }
+static inline uint32_t ss_global(void)        { return (uint32_t)(uintptr_t)TlsGetValue(g_tls_ss_global); }
+static inline void     ss_global_set(uint32_t v){ TlsSetValue(g_tls_ss_global, (LPVOID)(uintptr_t)v); }
 static int g_pfire_reorder     = -1;   /* -1 unread / 0 walk-order replay / 1 = shard-grouped reorder (gate) */
 static uint32_t g_pfire_geom_ss_fires = 0; /* DEBUG: ship-fires routed through the substream */
 static int pfire_geom_ss_on(void) {
@@ -2103,6 +2123,20 @@ static int pfire_reorder_on(void) {
 static int g_pfire_pool = -1;          /* -1 unread / 0 serial / 1 = worker-pool replay (CS-serialized a76b0) */
 static CRITICAL_SECTION g_pfire_replay_cs;   /* step-1: serializes the a76b0 fire body across workers */
 static int g_pfire_replay_cs_init = 0;
+
+/* B3.6.4 (§8.44) STEP-2 SCRATCH LOCKS — the primitives true fire-body overlap needs, built+validated INERT under
+ * the step-1 coarse CS (never contended yet ⇒ == baseline confirms they don't perturb behavior). The binary fire
+ * leaves with GLOBAL mutable scratch must not be entered concurrently: 35f470 fog silhouette (DAT_140a28530, SHARED
+ * with Fork B's scan path ⇒ the SAME g_fog_cs) + 399450 lead-solver scratch + 381dc0 dispersion scratch (& its
+ * internal global-LCG read) ⇒ g_pfire_scratch_cs. g_fog_cs is also init'd by install_dtscan_hook (scan path); the
+ * idempotent guard lets both paths init it. (Forward tentative decl of g_fog_cs — real one is further down.) */
+static CRITICAL_SECTION g_fog_cs;
+static CRITICAL_SECTION g_pfire_scratch_cs;
+static int g_fog_cs_init = 0, g_pfire_scratch_cs_init = 0;
+static void pfire_scratch_locks_init(void) {       /* idempotent; from install_pfire_hooks + install_dtscan_hook */
+    if (!g_fog_cs_init)          { InitializeCriticalSection(&g_fog_cs);          g_fog_cs_init = 1; }
+    if (!g_pfire_scratch_cs_init){ InitializeCriticalSection(&g_pfire_scratch_cs); g_pfire_scratch_cs_init = 1; }
+}
 static uint32_t g_pfire_pool_threads = 0;    /* DEBUG: worker threads spawned (cumulative) */
 static int pfire_pool_on(void) {
     if (g_pfire_pool < 0) {
@@ -2123,19 +2157,20 @@ static int pfire_pool_on(void) {
  * ⇒ the fire body draws the global LCG as before. a76b0 is purely the per-fire body (targeting/scan run earlier
  * in the settle walk), so every draw it makes is per-fire RNG that SHOULD be substreamed. */
 static void pfire_geom_ss_begin(int64_t ship, int32_t tick) {
-    if (!pfire_geom_ss_on() || !ship || !g_dt_imgbase) { g_pfire_geom_ss_active = 0; return; }
+    if (!pfire_geom_ss_on() || !ship || !g_dt_imgbase) { ss_active_set(0); return; }
     uint32_t *gLCG = (uint32_t *)(g_dt_imgbase + 0xa13e24);
     int32_t objid = *(int32_t *)(ship + 0x50);
-    g_pfire_geom_ss_global = *gLCG;                                       /* park the real global stream */
-    g_pfire_geom_ss_seed   = scan_substream_seed((uint32_t)objid, (uint32_t)tick);
-    *gLCG = g_pfire_geom_ss_seed;                                         /* fire body now draws the substream */
-    g_pfire_geom_ss_active = 1;
+    ss_global_set(*gLCG);                                                 /* park the real global stream (TLS) */
+    uint32_t seed = scan_substream_seed((uint32_t)objid, (uint32_t)tick);
+    ss_seed_set(seed);
+    *gLCG = seed;                                                         /* fire body now draws the substream */
+    ss_active_set(1);
     g_pfire_geom_ss_fires++;
 }
 static void pfire_geom_ss_end(void) {
-    if (g_pfire_geom_ss_active && g_dt_imgbase)
-        *(uint32_t *)(g_dt_imgbase + 0xa13e24) = g_pfire_geom_ss_global;  /* restore the real global stream */
-    g_pfire_geom_ss_active = 0;
+    if (ss_active() && g_dt_imgbase)
+        *(uint32_t *)(g_dt_imgbase + 0xa13e24) = ss_global();             /* restore the real global stream (TLS) */
+    ss_active_set(0);
 }
 
 /* A4.1 DEBUG (root-causing the drained=0 paradox): which R2 branch the reimpl takes + drain entry. */
@@ -2303,6 +2338,8 @@ static BOOL install_pfire_hooks(void) {
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
     QueryPerformanceFrequency(&g_pf_qpf);   /* A4.1 scan-vs-fire timer */
+    pfire_scratch_locks_init();             /* §8.44: g_fog_cs + g_pfire_scratch_cs ready before any fire body */
+    pfire_tls_init();                       /* §8.44: Win32 TLS slots for the per-fire substream state */
     BYTE *fn2be640 = (BYTE *)exe + T2BE640_RVA;
     BYTE *fn3a6b80 = (BYTE *)exe + TA6B80_RVA;
     BYTE *fna6b80  = (BYTE *)exe + TA6B80_RVA;   /* 3a6b80, the per-object update */
@@ -4537,8 +4574,12 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
     R1_370f00Fn f370f00 = (R1_370f00Fn)(g_dt_imgbase + 0x370f00);
     float fSpeed = f370f00(lVar7, 0);                            /* :230 projectile speed (float, XMM0) */
     R1_399450Fn f399450 = (R1_399450Fn)(g_dt_imgbase + 0x399450);
+    /* §8.44 STEP-2: 399450 lead solver uses a GLOBAL scratch (§8.14 "locked scratch") — lock it. INERT under the
+     * step-1 coarse CS. pf points into buf220 (caller-owned), so it stays valid after the unlock. */
+    EnterCriticalSection(&g_pfire_scratch_cs);
     float *pf = f399450(owner, buf220, (int64_t)p2, &S[12], &S[4], fSpeed);  /* :231 lead solver (param_6=speed) */
-    float lx = pf[0], ly = pf[1], lz = pf[2];                    /* :233-235 */
+    float lx = pf[0], ly = pf[1], lz = pf[2];                    /* :233-235 snapshot before unlock */
+    LeaveCriticalSection(&g_pfire_scratch_cs);
     { static int dbg = 0; if (dbg < 8) { dbg++; char b[256];
         snprintf(b, sizeof b, "[eaw-mt] PFLEAD spd=%.3f aim=%.2f,%.2f,%.2f dir=%.2f,%.2f,%.2f lead=%.4f,%.4f,%.4f\n",
                  fSpeed, S[12],S[13],S[14], S[4],S[5],S[6], lx,ly,lz);
@@ -4561,8 +4602,13 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
     S[6] = S[2];                     /* :251 local_2c0 = lead.z */
     int32_t uVar16 = *(int32_t *)(lVar7 + 0x1fe8);              /* :252 guided flag (genuine int32) */
     R1_381dc0Fn f381dc0 = (R1_381dc0Fn)(g_dt_imgbase + 0x381dc0);
+    /* §8.44 STEP-2: 381dc0 dispersion uses a GLOBAL scratch (§8.14 "locked scratch") AND reads the global LCG
+     * slot internally — both must be exclusive. Lock + snapshot before unlock. INERT under the step-1 coarse CS.
+     * (At the CS-flip, this lock ALSO brackets the TLS→global LCG swap so the dispersion draw is per-ship.) */
+    EnterCriticalSection(&g_pfire_scratch_cs);
     pf = f381dc0(p1, buf220, dist, &S[4], mask, uVar16);        /* :253 dispersion (dist = float arg3) */
     S[0] = pf[0]; S[1] = pf[1]; S[2] = pf[2];                   /* :255-257 local_2d8.. = dispersed dir */
+    LeaveCriticalSection(&g_pfire_scratch_cs);
 
     R1_20acd0Fn f20acd0 = (R1_20acd0Fn)(g_dt_imgbase + 0x20acd0);
     f20acd0(&S[4], &S[8], &S[0]);    /* :258 20acd0(&local_2c8,&local_2b8,&local_2d8) → Euler in local_2c8 */
@@ -4887,8 +4933,13 @@ static int pfire_compute_geom(int64_t p1, int64_t *p2arg, int64_t p3,
         if (*(int32_t *)(local_238 + 0x394) < 0 && *(int32_t *)(owner_type + 0x48) != 10) return 0;
     }
     if (((R1_540140Fn)(g_dt_imgbase + 0x540140))(owner_type, (int64_t *)p2) == 1) return 0;
-    if (((R1_35f470Fn)(g_dt_imgbase + 0x35f470))(*(int64_t *)(g_dt_imgbase + 0xb15418ULL),
-            *(int32_t *)(owner + 0x58), (int64_t *)p2, 1) == 1) return 0;
+    /* §8.44 STEP-2: lock 35f470's global FOG silhouette scratch (shared with the scan path). INERT under the
+     * step-1 coarse CS; the safe primitive for true overlap. (g_fog_cs init'd by install_pfire/dtscan.) */
+    EnterCriticalSection(&g_fog_cs);
+    int fog_occluded = ((R1_35f470Fn)(g_dt_imgbase + 0x35f470))(*(int64_t *)(g_dt_imgbase + 0xb15418ULL),
+            *(int32_t *)(owner + 0x58), (int64_t *)p2, 1);
+    LeaveCriticalSection(&g_fog_cs);
+    if (fog_occluded == 1) return 0;
     if ((*(int8_t *)(owner + 0x3b4) == 1 || *(int8_t *)(p2 + 0x3b4) == 1) &&
         ((R1_39a540Fn)(g_dt_imgbase + 0x39a540))(owner, (int64_t *)p2) == 0) return 0;
 
@@ -5330,7 +5381,7 @@ typedef void    (*ModelVf15Fn)(int64_t);             /* alHModel::vfunc_15 (vtab
  * the CHEAP gate clause. So serialize the global-scratch critical section with a CRITICAL_SECTION and reuse the
  * engine `35f470` bit-exactly. INERT in the serial reimpl (uncontended); the safe primitive the step-4 thread pool
  * relies on. Deterministic: each call fully rebuilds+consumes its own query, so the 0/1 result is order-independent. */
-static CRITICAL_SECTION g_fog_cs;
+/* (g_fog_cs declared up at the §8.44 scratch-lock block — shared by the scan path here and the fire path.) */
 static int pfire_fog_occluded(int64_t b15418, int32_t team, int64_t cand) {
     EnterCriticalSection(&g_fog_cs);
     int r = ((R1_35f470Fn)(g_dt_imgbase + 0x35f470))(b15418, team, (int64_t *)cand, 1);
@@ -5589,7 +5640,7 @@ static BOOL install_dtscan_hook(void) {
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
     if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
-    InitializeCriticalSection(&g_fog_cs);    /* Fork B §8.31: guards 35f470's global FOG scratch for the scan workers */
+    pfire_scratch_locks_init();    /* Fork B §8.31 + §8.44: g_fog_cs (35f470 scratch) + g_pfire_scratch_cs, idempotent */
     BYTE *fn = (BYTE *)exe + DTSCAN_385190_RVA;
     size_t n = sizeof dtscan_385190_prologue;        /* 15 */
     if (memcmp(fn, dtscan_385190_prologue, n) != 0) {
