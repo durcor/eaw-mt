@@ -1741,6 +1741,45 @@ the takeover-wiring step.
   lifting `FUN_14012d2c0` (the animation/skeleton subsystem), out of fire-path RNG scope; the faithful shape is a delegation that hoists
   the bone-transform result as a snapshot input (the `firing_spawn` ENV-getter pattern). **NEXT in this pass = `383f70`.**
 
+### 8.47 B3.7.1 — `383f70` (the aim-point resolver) LIFTED to host code → `sim/firing_aimpoint` (2026-06-09)
+The last RNG-reading fire leaf, and the biggest (1858 bytes): `FUN_140383f70` (3825b0:174) decides WHERE ON THE TARGET to
+aim before the lead solve. Fully decoded as a **3-phase candidate ladder** that accepts the first point whose muzzle→point
+distance is within weapon range AND that passes the reach/LOS check `383ba0`:
+- **Phase 0** (49-57): `398440(target)` → target center (the fallback); early-out to the bare center if the target has no
+  model/skeleton (`*(target+0x2a0)==0` or `2648b0`→0).
+- **Phase 1** (60-117): walk the target model's designated aim-bone list (`tmpl+0xe68`/count `+0xe70`); per bone, fetch its
+  world pos via `12d2c0`, compute muzzle→bone distance, accept the first in-range + reachable. INVALID bones are SKIPPED.
+- **Phase 2** (119-205): if the target has a subsystem list (`target+0x2d0`, count `+0x10`), draw a RANDOM start
+  `1ffb40(&DAT_140a13e24, 0, n-1)` — **the §8.45 blocker draw** — and round-robin through ALIVE subsystems
+  (`bVar8` = component present & flagged AND health`+0x28`<=0 → skip). Unlike phase 1, an invalid-bone subsystem is NOT
+  skipped — it aims at the ORIGIN `{0,0,0}`.
+- **Phase 3** (206-238): fall back to the target center; `locked` iff the center is itself in range (extent added
+  UNCONDITIONALLY here, vs the template-flag gate in phases 1/2) + reachable.
+
+The muzzle is the **midpoint** of two shooter bones (`param_1+0x38`, optional `param_1+0x3c`): `(bone2.k + bone1.k) * (DAT_1407ffaf8/DAT_1408007d4)`
+= `*0.5` (bone2 LEFT; single bone ⇒ bone1). Range = `3857d0(firer)` (+ `397780(target)` extent). **All of `383ba0`/`398440`/
+`3857d0`/`397780` are RNG-FREE (verified)** ⇒ the ONLY RNG seam is the phase-2 random start, so every skeleton/ENV read hoists
+eagerly to plain data with ZERO draw-count impact — the `firing_spawn` pattern. **LIFT** = `sim::firing_resolve_aimpoint(FiringAimInputs&, SimRng&)`
++ reusable kernels `firing_muzzle_midpoint` / `firing_point_in_range`. Bone positions (`12d2c0`), center (`398440`), range/extent,
+and the reach verdict (`383ba0`) are all input fields; the phase-2 start draws from a per-entity SUBSTREAM (so it carries no fixed-
+global read — exactly what makes the fire path thread-safe host code). FP operand order/grouping (midpoint, the x→y→z distance
+accumulation, the gated-vs-unconditional extent) preserved bit-faithfully; the chosen subsystem start differs from the global-LCG
+binary BY DESIGN (the I2 retrofit).
+
+**THREE faithfulness subtleties captured (each a host-gate case):** (1) phase 1 SKIPS invalid bones but phase 2 aims invalid-bone
+subsystems at `{0,0,0}`; (2) phases 1/2 add the target extent only behind the `tmpl+0xc48`/`373670` flag while phase 3 adds it
+unconditionally; (3) the muzzle is invariant across candidates (same shooter), so it is resolved once — `12d2c0` on the shooter
+bones is the §8.30 idempotent dirty-flag pose, identical every iteration.
+
+**Host gate = PASS** (`sim/tests/firing_aimpoint_test.cpp`, ALL PASS; wired into `just sim-test`): midpoint + range kernels;
+phase-0 no-model no-draw; phase-1 hit with valid-skip + out-of-range-skip; phase-1 unreachable→phase-3; phase-2 exactly-one-draw +
+round-robin + destroyed-skip-with-wrap (200 seeds always land on the lone live subsystem) + reproducibility; phase-3 unconditional-
+extent in-range(locked)/out-of-range(unlocked)/unreachable(unlocked). **⇒ the fire body's RNG-reading leaf set is now FULLY host
+code** (`381dc0`/`393b70`/`399e20`/`405870`/`383f70` all in `sim/`); the residual binary reads in the fire path are the `3825b0`
+body's own `:410` draw (lifted incrementally via `firing_spawn` b3) and the opaque pose leaves `385c70`/`385e70` (no RNG;
+pre-warm-handled). **NEXT** = the in-game DT oracle for `383f70` (selection-validity, since substream) at the takeover-wiring step,
+and/or continue the `3825b0`-body orchestration reconstruction that drives these lifted leaves.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
