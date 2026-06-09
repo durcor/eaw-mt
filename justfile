@@ -136,6 +136,9 @@ sim-test:
     sim/tests/firing_spawn_test.cpp sim/firing_spawn.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_firing_spawn_test
   /tmp/eaw_firing_spawn_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/fire_control_test.cpp sim/fire_control.cpp sim/firing_aimpoint.cpp sim/firing_intercept.cpp sim/firing_spawn.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_fire_control_test
+  /tmp/eaw_fire_control_test
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/parallel_fire_test.cpp sim/firing_spawn.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_parallel_fire_test
   /tmp/eaw_parallel_fire_test
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -pthread -Isim \

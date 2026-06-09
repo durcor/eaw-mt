@@ -1780,6 +1780,46 @@ body's own `:410` draw (lifted incrementally via `firing_spawn` b3) and the opaq
 pre-warm-handled). **NEXT** = the in-game DT oracle for `383f70` (selection-validity, since substream) at the takeover-wiring step,
 and/or continue the `3825b0`-body orchestration reconstruction that drives these lifted leaves.
 
+### 8.48 B3.7.2 — `3825b0`-body ORCHESTRATION assembly STARTED → `sim/fire_control` (2026-06-09)
+The §0-blocker fire body `FUN_1403825b0` (4034 bytes) fully decoded and mapped into stages; the host **orchestration** that wires the
+lifted leaves together in the body's decision sequence is now begun. **FULL STAGE MAP** (line refs into `decomp/3825b0.c`):
+- **A. Eligibility gates** (62-106): ~10 early-out predicates (owner/target present; target flags `+0x74`/vfunc `0x11`; charge
+  `owner+0x100`→`+0x394`; `540140` self-target; `35f470` FOG; `39a540` diplomacy). All Phase-A read-only.
+- **B. Context resolve** (107-110): if `param_3==0`, build it via `398440`+`394a80`.
+- **C. Arc gate** (111-146): optional firing-cone dot-product check (`385cf0`/`12d2c0`/`139800`).
+- **D. Weapon/template select** (147-163): pick the projectile template `lVar7` (`397e00`, or the `lVar13` fallback).
+- **E. Aim** (164-187): param_3==0 → `405870`(target redirect)+`383f70`(aim ladder) — BOTH LIFTED (`firing_pick_random_target` /
+  `firing_resolve_aimpoint`); param_3!=0 → `385c70` pose (hoisted). No lock ⇒ return 0.
+- **F. Muzzle + range gate** (188-209): `385e70` muzzle pose; 2D distance `sqrt((my-ay)^2+(mx-ax)^2)`; accept iff
+  `min_range(weapon+0x23c) <= dist <= 3857d0 + 397780` (extent added unconditionally).
+- **G. Dir/spread select** (210-225): 3-way launch-ref pick (`weapon+0x4f` full-random 3×`ffbb0`, else `ffdb0(50%)` between two
+  `385e70` matrix cols) — an ADDITIONAL RNG seam (hoisted as `shooter_ref` for now).
+- **H. Lead + reach** (226-238): `370f00` speed → `399450` lead (LIFTED as the `399e20` fallback `firing_intercept_lead`; the curved
+  `399450` mode is a deferred b2 piece) → zero lead ⇒ no fire → `383ba0` reach (RNG-free, hoisted).
+- **I. Create + init** (239-401): `381dc0` dispersion (LIFTED `firing_apply_spread`) → `20acd0` orient → **`29f810` create**
+  (`mgr=*(owner+0x2b8)`) → write `proj+0xe8` record + SFX `2d5240` = the b3 payload (`firing_make_spawn` / `firing_build_projectile_init`).
+- **J. Cooldown** (402-493): decrement `param_1+0x5c`; on 0, recompute recharge via the `:410` `ffb40` draw + rate-of-fire modifiers
+  (own-state write; a separate RNG seam).
+- **K. Opp-target update** (494-499): `3846c0`/`382510` Class-2b cross-entity AI write (buffered).
+
+**THIS INCREMENT — the GEOMETRY DECISION CORE (stages E→I)** as `sim::fire_control_decide(FireControlInputs&, SimRng&) →
+FireControlDecision`: composes `firing_resolve_aimpoint` → 2D range gate → `firing_intercept_lead` → `firing_apply_spread` →
+`firing_make_spawn`, in 3825b0's branch ORDER, emitting one `SpawnCommand` (the b3 payload, `launch_dir` from the lead+spread chain)
+on Fire. `FireOutcome` enumerates the no-fire exits in stage order (Ineligible / NoAim / OutOfRange / NoLead / Unreachable / Fire).
+It draws ONLY from the per-entity substream (aim phase-2 start + spread) — no fixed-global read. **HOISTED / DEFERRED** (subsequent
+increments, all documented in `fire_control.h`): stages A/C/D gates collapsed to one `eligible` precondition (opaque object-state
+reads, no verifiable geometry); stage-G dir-jitter RNG (→ `shooter_ref`); stage-H curved-lead mode; stage-J cooldown RNG; stage-K
+opp-target; the pose leaves `385c70`/`385e70` (hoisted muzzle/context pose).
+
+**Host gate = PASS** (`sim/tests/fire_control_test.cpp`, ALL PASS; wired into `just sim-test`, full suite green): each no-fire gate in
+stage order (ineligible / no-aim-lock / no-muzzle + out-of-range + min-range + extent-extends-range; no-lead via a too-fast crossing
+target; unreachable); the explicit-context aim path; a full Fire producing a `SpawnCommand` with `projectile.present`, the firer
+identity, and the launch dir propagated into the payload; and aim-ladder reproducibility (same seed ⇒ same decision, the I2 contract).
+**⇒ the lifted leaves now run as ONE host fire-decision body** — the engine-source assembly of the fire path is underway. **NEXT** =
+extend the assembly outward: enumerate the stage-A/C/D gates as explicit predicates, lift the stage-G dir-jitter + stage-J cooldown
+RNG seams (substream), and wire stage-K (opp-target) through the CommandSink; then an in-game structural oracle (the §8.22 observe
+pattern) validating the host `fire_control_decide` against the binary 3825b0 decision on captured inputs.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
