@@ -138,6 +138,41 @@ static void test_spread_reproducible() {
     CHECK((oa == ob));   // identical seed ⇒ identical perturbation (reproducibility, the I2 contract)
 }
 
+// ── random target selection (405870) ─────────────────────────────────────────────────────────────────
+static void test_pick_random_target() {
+    std::printf("test_pick_random_target\n");
+    int a, b, c, d;
+    void* list[4] = { &a, &b, &c, &d };
+
+    // empty / null list → nullptr, NO draw (binary's `return 0`).
+    { SimRng r(555); CHECK(firing_pick_random_target(list, 0, r) == nullptr); CHECK(r.state == 555u); }
+    { SimRng r(555); CHECK(firing_pick_random_target(nullptr, 4, r) == nullptr); CHECK(r.state == 555u); }
+    { SimRng r(555); CHECK(firing_pick_random_target(list, -3, r) == nullptr); CHECK(r.state == 555u); }
+
+    // count == 1 → the sole entry, NO draw (range_i a==b early-out, matching FUN_1401ffb40).
+    { SimRng r(555); CHECK(firing_pick_random_target(list, 1, r) == &a); CHECK(r.state == 555u); }
+
+    // count >= 2 → exactly ONE draw, result always in-range.
+    { SimRng r(0xBEEF);
+      void* sel = firing_pick_random_target(list, 4, r);
+      CHECK(r.state == state_after(0xBEEF, 1));
+      bool in_range = (sel == &a || sel == &b || sel == &c || sel == &d);
+      CHECK(in_range); }
+
+    // reproducibility (the I2 contract): identical seed ⇒ identical pick.
+    { SimRng x(2024), y(2024);
+      CHECK(firing_pick_random_target(list, 4, x) == firing_pick_random_target(list, 4, y)); }
+
+    // uniform coverage: every index reachable over many draws from a walking stream.
+    { SimRng r(1);
+      bool hit[4] = {false,false,false,false};
+      for (int i = 0; i < 2000; ++i) {
+          void* s = firing_pick_random_target(list, 4, r);
+          for (int k = 0; k < 4; ++k) if (s == list[k]) hit[k] = true;
+      }
+      CHECK(hit[0] && hit[1] && hit[2] && hit[3]); }
+}
+
 int main() {
     std::printf("=== firing_intercept_test ===\n");
     test_predict_linear();
@@ -149,6 +184,7 @@ int main() {
     test_spread_primary();
     test_spread_secondary_scaled();
     test_spread_reproducible();
+    test_pick_random_target();
     if (g_fail == 0) std::printf("ALL PASS\n");
     else std::printf("%d FAIL\n", g_fail);
     return g_fail ? 1 : 0;

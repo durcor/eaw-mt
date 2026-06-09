@@ -79,4 +79,24 @@ eaw::vec3 firing_intercept_lead(const eaw::vec3& tgt_pos, const eaw::vec3& tgt_v
 eaw::vec3 firing_apply_spread(const eaw::vec3& dir, bool no_spread, eaw::f32 base_spread,
                               eaw::f32 sec_spread, eaw::f32 dist, eaw::f32 norm, eaw::SimRng& rng);
 
+// FUN_140405870 (UnitAIBehaviorClass): resolve the fire target when the firing body has none explicit —
+// pick a UNIFORM random entry from the firer's candidate-target list. This is the §0-blocker leaf the
+// fire body calls at 3825b0:169 (`param_2 = FUN_140405870(uVar8)`, the param_2 / target resolution; the
+// `g_pf_reimpl_p2` "post-405870 redirect" in the proxy). The binary reads the list at
+// *(behavior+0x28)+0x110 (element-array ptr at +0x10, count at +0x18) and draws the index from the
+// GLOBAL LCG word via FUN_1401ffb40(&DAT_140a13e24, 0, count-1). This lift hoists the list to explicit
+// (candidates, count) inputs (SNAPSHOT-READY: no live pointer chasing) and draws from a per-entity
+// SUBSTREAM, so it carries NO opaque read of the fixed global word — exactly what §8.45 requires to make
+// the fire path thread-safe host code.
+//
+// Faithful to the binary's branch ladder:
+//   • candidates == null OR count <= 0  → return nullptr (the binary's `return 0`), NO draw.
+//   • count == 1                        → range_i(0,0) returns 0 with NO draw (FUN_1401ffb40 a==b early-
+//                                         out) → candidates[0].
+//   • count >= 2                        → ONE draw: idx = range_i(0, count-1) → candidates[idx].
+// RNG NOTE: per-entity substream ⇒ the chosen INDEX differs from the global-LCG binary BY DESIGN (a
+// determinism RETROFIT, not a bit-exact lift, per sim_rng.h / sim_parallel_command_schema.md §4). What is
+// preserved is the draw COUNT (0 for count<=1, else 1) and the uniform-over-[0,count-1] selection policy.
+void* firing_pick_random_target(void* const* candidates, int count, eaw::SimRng& rng);
+
 } // namespace sim

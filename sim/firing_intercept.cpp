@@ -116,4 +116,16 @@ vec3 firing_apply_spread(const vec3& dir, bool no_spread, f32 base_spread,
     return dir;                                                 // no applicable spread
 }
 
+// FUN_140405870 (UnitAIBehaviorClass) — see header. Binary:
+//   list = *(behavior+0x28)+0x110;
+//   if (list != 0 && 0 < *(int*)(list+0x18))
+//       return *(void**)( *(void**)(list+0x10) + FUN_1401ffb40(&DAT_140a13e24, 0, *(int*)(list+0x18)-1)*8 );
+//   return 0;
+// The list (elem-array + count) is hoisted to inputs; the global LCG draw becomes a substream range_i.
+void* firing_pick_random_target(void* const* candidates, int count, eaw::SimRng& rng) {
+    if (candidates == nullptr || count <= 0) return nullptr;     // binary: lVar1 != 0 && 0 < count
+    const int idx = rng.range_i(0, count - 1);                  // FUN_1401ffb40(&word, 0, count-1)
+    return candidates[idx];                                      // *(list[0x10] + idx*8)
+}
+
 } // namespace sim

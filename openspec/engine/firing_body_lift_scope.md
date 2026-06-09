@@ -1707,6 +1707,31 @@ leaving only gates+Euler+append to overlap. **The §8.43 step-1 coarse-CS WORKER
 deterministic concurrent fire-body execution; the §8.44 primitives (Win32-TLS substream, scratch locks) are the reusable building blocks
 the engine-source version inherits.** NEXT lever = engine-source integration of the `sim/` fire path (not further hook-level overlap).
 
+### 8.46 B3.7.0 — ENGINE-SOURCE INTEGRATION begins: lift the first global-LCG-reading fire leaf (`405870`) to host code (2026-06-09)
+Per §8.45's named next lever ("the binary fire-leaves replaced by thread-safe HOST code, the `sim/` lift compiled into the engine"),
+this opens the fire-leaf lift pass. **Scope of the gap (measured this session):** of the fire body's global-word readers,
+`381dc0`/`393b70`/`399e20` are ALREADY in `sim/firing_intercept`; the still-binary leaves are `405870`, `383f70`, `385c70`, `385e70`.
+Each is a leaf that reads the FIXED global LCG word `DAT_140a13e24` (or a pose/transform slot) internally — i.e. exactly the
+"opaque binary leaf the hook cannot redirect per-thread" that blocked §8.45's overlap. Lifting them to `sim/` removes that blocker by
+construction (host code draws from a per-entity substream, no fixed-global read).
+
+**FIRST LEAF LIFTED — `UnitAIBehaviorClass::FUN_140405870` (RVA 0x405870, 73 bytes) → `sim::firing_pick_random_target`.** It is the
+fire body's **`param_2` (target) resolution**: called at `3825b0:169` (`param_2 = FUN_140405870(uVar8)`; also `4f6470:100`), it picks a
+UNIFORM-random entry from the firer's candidate-target list when no explicit target is set — the `g_pf_reimpl_p2` "post-405870 redirect"
+the proxy already names. Binary: `list = *(behavior+0x28)+0x110`; if `list && *(int*)(list+0x18) > 0`, draw
+`i = FUN_1401ffb40(&DAT_140a13e24, 0, count-1)` and return `*(void**)(*(void**)(list+0x10) + i*8)`; else `return 0`. The lift hoists the
+list to explicit `(candidates, count)` inputs (SNAPSHOT-READY) and draws via `SimRng::range_i` on a per-entity substream — so it carries
+NO read of the fixed global word. Branch fidelity preserved: null/empty→`nullptr` NO draw; `count==1`→`range_i(0,0)` returns 0 with NO
+draw (matching `1ffb40`'s `a==b` early-out)→`candidates[0]`; `count>=2`→ exactly ONE draw→`candidates[idx]`. Per the substream retrofit,
+the chosen INDEX differs from the global-LCG binary BY DESIGN; what is bit-faithful is the draw COUNT and the uniform-over-`[0,count-1]`
+policy (sim_rng.h / `sim_parallel_command_schema.md` §4).
+
+**Host gate = PASS** (`sim/tests/firing_intercept_test.cpp::test_pick_random_target`, ALL PASS): empty/null/negative→nullptr+no-draw;
+`count==1`→sole entry+no-draw; `count>=2`→exactly one draw + in-range; identical-seed reproducibility (I2 contract); uniform coverage of
+all indices over 2000 walking draws. **NEXT in this pass:** `385c70` / `385e70` (the pose/transform leaves) and `383f70` (the larger aim
+orchestrator that itself reuses the same random-pick idiom at `383f70:121`). The in-game DT oracle for `405870` (selection-validity, not
+bit-exact, since substream) is deferred to the takeover-wiring step.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
