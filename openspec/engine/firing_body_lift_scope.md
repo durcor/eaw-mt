@@ -1728,9 +1728,18 @@ policy (sim_rng.h / `sim_parallel_command_schema.md` §4).
 
 **Host gate = PASS** (`sim/tests/firing_intercept_test.cpp::test_pick_random_target`, ALL PASS): empty/null/negative→nullptr+no-draw;
 `count==1`→sole entry+no-draw; `count>=2`→exactly one draw + in-range; identical-seed reproducibility (I2 contract); uniform coverage of
-all indices over 2000 walking draws. **NEXT in this pass:** `385c70` / `385e70` (the pose/transform leaves) and `383f70` (the larger aim
-orchestrator that itself reuses the same random-pick idiom at `383f70:121`). The in-game DT oracle for `405870` (selection-validity, not
-bit-exact, since substream) is deferred to the takeover-wiring step.
+all indices over 2000 walking draws. The in-game DT oracle for `405870` (selection-validity, not bit-exact, since substream) is deferred to
+the takeover-wiring step.
+
+**LEAF MAP CORRECTION (measured this session — the fire body's `DAT_140a13e24` readers vs. its pose leaves are distinct classes):**
+- **RNG leaves** (read the global LCG word → the §8.45 overlap blocker, the lift target of this pass): `381dc0`/`393b70`/`399e20`
+  (done, `firing_intercept`), `405870` (done now), and **`383f70`** (3825b0:174, the aim path — STILL BINARY, the genuine next leaf;
+  it reuses the same random-pick idiom at `383f70:121`). `3825b0` itself also draws at :410 (the body, lifted incrementally by `firing_spawn` b3).
+- **Pose leaves** (NO RNG read): `385c70` (3825b0:183) and `385e70` (3825b0:201) are thin wrappers around the OPAQUE skeleton
+  bone-transform accessor `FUN_14012d2c0` (+ `FUN_1402648b0` skeleton resolve). They are a SEPARATE hazard — the shared pose-eval state
+  §8.30 found and §8.32 already handles via a serial pre-warm — NOT an RNG-redirection blocker. Lifting them to closed form would require
+  lifting `FUN_14012d2c0` (the animation/skeleton subsystem), out of fire-path RNG scope; the faithful shape is a delegation that hoists
+  the bone-transform result as a snapshot input (the `firing_spawn` ENV-getter pattern). **NEXT in this pass = `383f70`.**
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
