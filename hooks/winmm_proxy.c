@@ -4650,12 +4650,17 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
         float gs=(float)*(int32_t*)(g_dt_imgbase + 0xb0a340);  /* DAT_140b0a340: 399e20 reads (float)DAT, an INT→float convert (=30), NOT a raw float */
         float eo[4]={0,0,0,0};
         ((R1_399e20Fn)(g_dt_imgbase + 0x399e20))(owner, eo, tgt, &S[12], &S[4], fSpeed);
-        char lb[512];
+        /* reach predicate (:238 fire-gate) on the lead — the last RNG-free fire/no-fire factor. Only
+         * meaningful when the lead is non-zero (the body checks it only then); record 1/0. */
+        int lead_nz = (lx*lx + ly*ly + lz*lz != 0.0f);
+        float leadv[4] = { lx, ly, lz, 0.0f };
+        int reach = lead_nz ? (((R1_383ba0Fn)(g_dt_imgbase + 0x383ba0))(p1, leadv) != 0 ? 1 : 0) : 0;
+        char lb[576];
         snprintf(lb, sizeof lb,
             "DTFCLREC\ttp=%.9g,%.9g,%.9g\ttv=%.9g,%.9g,%.9g\tfv=%.9g,%.9g,%.9g\tmz=%.9g,%.9g,%.9g\t"
-            "sr=%.9g,%.9g,%.9g\tgs=%.9g\tps=%.9g\teo=%.9g,%.9g,%.9g\n",
+            "sr=%.9g,%.9g,%.9g\tgs=%.9g\tps=%.9g\teo=%.9g,%.9g,%.9g\treach=%d\n",
             tp0,tp1,tp2, tv0,tv1,tv2, fv0,fv1,fv2, S[12],S[13],S[14], S[4],S[5],S[6], gs, fSpeed,
-            eo[0],eo[1],eo[2]);
+            eo[0],eo[1],eo[2], reach);
         log_write(lb); g_fcl_rec++;
     }
     { static int dbg = 0; if (dbg < 8) { dbg++; char b[256];

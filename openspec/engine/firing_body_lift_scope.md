@@ -1913,6 +1913,27 @@ the input mapping was right, only the one global was mis-typed (exactly the "DAT
 decision is now in-game validated end-to-end: ordered gates (§8.51) → range gate (§8.52, bit-exact) → lead-solve verdict (§8.53, bit-exact).
 The remaining RNG-free factor is the `383ba0` reach predicate (hoisted bool); then `fire_control_decide`'s full composed outcome.**
 
+### 8.54 B3.7.8 — oracle CLOSED OUT: reach predicate + full composed outcome = PASS (2026-06-10)
+Closes the in-game oracle for the param_3≠0 fire decision. (a) The last RNG-free factor — the `383ba0` reach predicate (3825b0:238) — is
+captured at the lead point (`pfire_r1c_geom`, pf==2) by calling it on the solved lead, and recorded in `DTFCLREC` as `reach`. (b) The
+offline harness now runs the FULL `sim::fire_control_decide` on each real fired-shot record: gates + range pass trivially (each already
+validated — §8.51/§8.52), `shooter_ref = sr` (mat1, no second bone → no RNG), the lead is recomputed (bit-exact per §8.53), and
+`aim_reachable` = the captured reach. The composed outcome MUST be `Fire` iff (lead non-zero AND reach) — the binary's actual fire decision.
+
+**RESULT = PASS** (live battle; evidence `eaw-mt.log.dtfce-pass`, one unified pf==2 run): **gate ladder** 8192 records / 144 shots `bug=0`;
+**range gate** 8192 records `transcribe_mismatch=0` (bit-exact); **lead solve** 6649 records `exact=6649` (bit-exact — now with `gs=30`
+captured directly via the §8.53 `(float)(int32_t)` fix, no offline correction); **end-to-end** `reach0=0` (every fired shot passed reach —
+the ground-truth invariant) and `compose_fail=0` over 6649 records (`fire_control_decide` returned `Fire` for every real fired shot, the
+composition reproducing the binary). ⇒ **the param_3≠0 fire/no-fire decision of `sim::fire_control_decide` is validated in-game end-to-end
+against the live binary: ordered eligibility gates → 2D range gate (bit-exact) → projectile-intercept lead (bit-exact) → reach predicate →
+composed Fire verdict.** ORACLE CLOSED.
+
+**Scope boundary (documented, not gaps in the lift):** pf==2 observe sees only FIRED shots, so the no-fire side is validated per-factor
+(gate `bug=0` / range `ground_bug=0` over the full pf<3 population) rather than as a composed no-fire outcome. The param_3==0 RNG-aim path
+(`383f70`/`405870`, substream-divergent by design) is covered by the host gate + the §8.46/§8.47 leaf oracles, not this bit-exact path.
+Remaining LIFT sub-pieces (separate from the oracle): the curved-lead `399450` matrix branch (189-209, only differs from the 399e20
+fallback sim/ uses), stage-G `385e70` pose, stage-J rate-of-fire modifiers (414-491), stage-K opp-target via CommandSink.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

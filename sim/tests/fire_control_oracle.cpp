@@ -68,6 +68,8 @@ int main(int argc, char** argv) {
     // ── lead-solve records (DTFCLREC) ──
     long l_records = 0, l_verdict_mismatch = 0, l_exact = 0, l_near = 0, l_far = 0;
     double l_max_err = 0.0;
+    // ── end-to-end composed outcome (reach + fire_control_decide) ──
+    long e_reach1 = 0, e_reach0 = 0, e_fire = 0, e_compose_fail = 0;
 
     char line[512];
     while (std::fgets(line, sizeof line, f)) {
@@ -123,6 +125,8 @@ int main(int argc, char** argv) {
             if (!(v3("\ttp=",tp)&&v3("\ttv=",tv)&&v3("\tfv=",fv)&&v3("\tmz=",mz)&&v3("\tsr=",sr)&&
                   kg && kp && v3("\teo=",eo))) continue;
             if (std::sscanf(kg+4,"%g",&gs)!=1 || std::sscanf(kp+4,"%g",&ps)!=1) continue;
+            int reach = -1; const char* kr = std::strstr(L,"\treach=");
+            if (kr) std::sscanf(kr+7,"%d",&reach);
             ++l_records;
             bool sol = false;
             eaw::vec3 lead = firing_intercept_lead(eaw::vec3{tp[0],tp[1],tp[2]}, eaw::vec3{tv[0],tv[1],tv[2]},
@@ -145,6 +149,37 @@ int main(int argc, char** argv) {
             double mag=std::sqrt((double)eo[0]*eo[0]+(double)eo[1]*eo[1]+(double)eo[2]*eo[2]);
             double rel = mag>1e-6 ? err/mag : err;
             if (exact) ++l_exact; else if (rel < 1e-4) ++l_near; else { ++l_far; if (rel>l_max_err) l_max_err=rel; }
+
+            // ── end-to-end: run the FULL fire_control_decide on this real fired shot. Gates + range pass
+            // trivially (validated separately, §8.51/§8.52); shooter_ref = sr (mat1, no second bone, no
+            // RNG); the lead is recomputed (bit-exact per above) and reach is the captured 383ba0. The
+            // outcome MUST be Fire iff (lead non-zero AND reach) — the binary's composed fire decision.
+            if (reach >= 0) {
+                if (reach) ++e_reach1; else ++e_reach0;
+                FireControlInputs fin;
+                fin.has_explicit_context = true;  fin.context_aim = eaw::vec3{mz[0],mz[1],mz[2]};
+                fin.muzzle_valid = true;          fin.weapon_range = 1e30f;   // range passes
+                fin.target_pos = eaw::vec3{tp[0],tp[1],tp[2]};
+                fin.target_vel = eaw::vec3{tv[0],tv[1],tv[2]};
+                fin.frame_vel  = eaw::vec3{fv[0],fv[1],fv[2]};
+                fin.muzzle_mat1_t = eaw::vec3{sr[0],sr[1],sr[2]};   // → shooter_ref = sr (no RNG)
+                fin.gamespeed = gs; fin.proj_speed = ps;
+                fin.aim_reachable = (reach != 0);
+                fin.no_spread = true;
+                static int dummy_owner; fin.spawn.requester = &dummy_owner; fin.spawn.template_id = 1;
+                eaw::SimRng rr(0);
+                FireControlDecision dd = fire_control_decide(fin, rr);
+                bool sim_lead_nz = !(lead.x==0.0f && lead.y==0.0f && lead.z==0.0f);
+                bool expect_fire = sim_lead_nz && (reach != 0);
+                bool got_fire = (dd.outcome == FireOutcome::Fire);
+                if (got_fire) ++e_fire;
+                if (got_fire != expect_fire) {
+                    ++e_compose_fail;
+                    if (e_compose_fail <= 16)
+                        std::printf("  COMPOSE FAIL reach=%d lead_nz=%d expect_fire=%d got_fire=%d outcome=%d\n",
+                                    reach, sim_lead_nz, expect_fire, got_fire, (int)dd.outcome);
+                }
+            }
         }
     }
     std::fclose(f);
@@ -158,6 +193,8 @@ int main(int argc, char** argv) {
                 g_records, g_fired, g_transcribe_mismatch, g_ground_bug);
     std::printf("[lead solve]   records=%ld  verdict_mismatch=%ld  exact=%ld  near=%ld  far=%ld  max_rel_err=%.3g\n",
                 l_records, l_verdict_mismatch, l_exact, l_near, l_far, l_max_err);
+    std::printf("[end-to-end]   reach1=%ld  reach0=%ld  decide_fire=%ld  compose_fail=%ld\n",
+                e_reach1, e_reach0, e_fire, e_compose_fail);
 
     int fail = 0;
     if (records == 0 && g_records == 0 && l_records == 0) { std::printf("NO RECORDS — capture produced no DTFC*REC lines\n"); return 1; }
@@ -166,8 +203,9 @@ int main(int argc, char** argv) {
     if (g_ground_bug != 0)         { std::printf("RANGE FAIL — sim range gate rejects %ld real shots\n", g_ground_bug); fail = 1; }
     if (l_verdict_mismatch != 0)   { std::printf("LEAD FAIL — sim lead disagrees with the binary on solution-existence for %ld records\n", l_verdict_mismatch); fail = 1; }
     if (l_far != 0)                { std::printf("LEAD FAIL — sim lead value diverges (>1e-4 rel) on %ld records (max %.3g)\n", l_far, l_max_err); fail = 1; }
+    if (e_compose_fail != 0)       { std::printf("COMPOSE FAIL — fire_control_decide outcome != expected on %ld records\n", e_compose_fail); fail = 1; }
     if (fail) return 1;
-    std::printf("ALL PASS — gate ladder clean (%ld shots); range gate bit-exact on %ld records; lead solver verdict+value match on all %ld records\n",
-                fired, g_records, l_records);
+    std::printf("ALL PASS — gates clean (%ld shots); range bit-exact (%ld); lead bit-exact (%ld); fire_control_decide outcome matches the composed factors on all %ld end-to-end records\n",
+                fired, g_records, l_records, e_reach1 + e_reach0);
     return 0;
 }

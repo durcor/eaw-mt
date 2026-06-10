@@ -1,0 +1,16 @@
+# DTFCE — UNIFIED in-game oracle for the param_3!=0 fire decision (sim::fire_control_decide) — §8.54 — PASS
+# captured 2026-06-10 from a live space battle (pfire=2 observe + EAW_DIFFTRACE=1); gs captured correctly (=30)
+# end-to-end: gates (§8.51) -> range bit-exact (§8.52) -> lead bit-exact (§8.53) -> reach + composed outcome (§8.54)
+
+=== fire_control_oracle ===
+[gate ladder]  records=8192  fired=144  bug=0
+  block distribution (first-blocking gate):
+    None             8192
+[range gate]   records=8192  fired=144  transcribe_mismatch=0  ground_bug=0
+[lead solve]   records=6649  verdict_mismatch=0  exact=6649  near=0  far=0  max_rel_err=0
+[end-to-end]   reach1=6649  reach0=0  decide_fire=6649  compose_fail=0
+ALL PASS — gates clean (144 shots); range bit-exact (8192); lead bit-exact (6649); fire_control_decide outcome matches the composed factors on all 6649 end-to-end records
+
+## in-game summaries from the same run:
+DTFC	tick=1024	calls=161698	fired=270	bug=0	pass_fire=270	pass_nofire=161428	blk=Own0,Tgt0,Ctx0,Tgtbl0,Qry0,Cap0,Chg0,Self0,Fog0,Dip0,Arc0,Wpn0
+DTFCG	tick=1024	n=161698	in_range=58477	fired=270	bug=0
