@@ -31,7 +31,11 @@ static FireControlInputs firing_baseline() {
     in.target_pos = vec3{0, 0, 0};
     in.target_vel = vec3{0, 0, 0};
     in.frame_vel  = vec3{0, 0, 0};
-    in.shooter_ref = vec3{0, 0, 0};
+    // stage-G muzzle select resolves to {0,0,0} (mat1==mat2==0, no second bone ⇒ no draw).
+    in.muzzle_mat1_t = vec3{0, 0, 0};
+    in.muzzle_mat2_t = vec3{0, 0, 0};
+    in.full_random_dir = false;
+    in.has_muzzle_bone2 = false;
     in.gamespeed = 1.0f;
     in.proj_speed = 10.0f;
     in.aim_reachable = true;
@@ -133,8 +137,69 @@ static void test_aim_ladder_reproducible() {
     CHECK(da.outcome == db.outcome && (da.aim_point == db.aim_point));
 }
 
+// expected RNG state after N steps from seed.
+static eaw::u32 state_after(eaw::u32 seed, int n) { SimRng r(seed); for (int i=0;i<n;++i) r.step(); return r.state; }
+
+static void test_muzzle_select_seam() {
+    std::printf("test_muzzle_select_seam\n");
+    const vec3 m1{0, 0, 0}, m2{10, 20, 30};
+    // no second bone → mat1, NO draw.
+    { SimRng r(5); CHECK((firing_select_muzzle_point(m1, m2, false, false, r) == m1)); CHECK(r.state == 5u); }
+    // has bone2, not full-random → one percent(50) ROLL (rejection-sampled, ≥1 step); result mat1/mat2.
+    { SimRng ref(5); ref.percent(50);
+      SimRng r(5); vec3 p = firing_select_muzzle_point(m1, m2, false, true, r);
+      CHECK(r.state == ref.state); CHECK((p == m1 || p == m2)); }
+    // full random → THREE range_f draws (single-step each), each component within [mat1.k, mat2.k].
+    { SimRng r(5); vec3 p = firing_select_muzzle_point(m1, m2, true, true, r);
+      CHECK(r.state == state_after(5, 3));
+      CHECK(p.x >= 0 && p.x <= 10 && p.y >= 0 && p.y <= 20 && p.z >= 0 && p.z <= 30); }
+    // both branches of the 50/50 are reachable across seeds.
+    { bool saw1=false, saw2=false;
+      for (eaw::u32 s=1; s<=64 && !(saw1&&saw2); ++s) {
+          SimRng r(s); vec3 p = firing_select_muzzle_point(m1, m2, false, true, r);
+          if (p == m1) saw1 = true;
+          if (p == m2) saw2 = true;
+      }
+      CHECK(saw1 && saw2); }
+}
+
+static void test_cooldown_seam() {
+    std::printf("test_cooldown_seam\n");
+    // draw in [(int)(2*10),(int)(5*10)] = [20,50]; base = ((int64)(draw*1.0) & 0xffffffff)/100.
+    { SimRng r(9); int draw = SimRng(9).range_i(20, 50);
+      int base = firing_roll_cooldown_base(2.0f, 5.0f, 10.0f, 1.0f, r);
+      CHECK(base == (int)(((int64_t)((float)draw * 1.0f) & 0xffffffffLL) / 100)); }
+    // consumes exactly one range_i ROLL (rejection-sampled, ≥1 step).
+    { SimRng ref(9); ref.range_i(20, 50);
+      SimRng r(9); firing_roll_cooldown_base(2.0f, 5.0f, 10.0f, 1.0f, r);
+      CHECK(r.state == ref.state); }
+    // reproducible.
+    { SimRng a(3), b(3);
+      CHECK(firing_roll_cooldown_base(1.0f, 4.0f, 100.0f, 2.5f, a) ==
+            firing_roll_cooldown_base(1.0f, 4.0f, 100.0f, 2.5f, b)); }
+}
+
+static void test_fire_rolls_cooldown() {
+    std::printf("test_fire_rolls_cooldown\n");
+    FireControlInputs in = firing_baseline();
+    in.roll_cooldown = true;
+    in.cooldown_min = 2.0f; in.cooldown_max = 5.0f; in.cooldown_scale = 10.0f;  // gamespeed 1.0
+    SimRng r(1);
+    FireControlDecision d = fire_control_decide(in, r);
+    CHECK(d.outcome == FireOutcome::Fire);
+    CHECK(d.cooldown_rolled);
+    CHECK(d.cooldown_base >= 0);
+    // no roll when the burst counter has not reached 0.
+    FireControlInputs in2 = firing_baseline();   // roll_cooldown defaults false
+    SimRng r2(1);
+    CHECK(!fire_control_decide(in2, r2).cooldown_rolled);
+}
+
 int main() {
     std::printf("=== fire_control_test ===\n");
+    test_muzzle_select_seam();
+    test_cooldown_seam();
+    test_fire_rolls_cooldown();
     test_ineligible();
     test_no_aim();
     test_no_muzzle_and_out_of_range();

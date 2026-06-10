@@ -55,11 +55,19 @@ struct FireControlInputs {
     float     target_extent = 0.0f;       // 397780(target)
     float     min_range = 0.0f;           // *(weapon+0x23c)
 
+    // ── G: launch-point select (210-225) — the muzzle point fed to the lead solver (399450 param_5).
+    // Picked from the two muzzle-bone matrix translations (385e70 mat1/mat2). RNG seam, now on the
+    // substream: full_random ⇒ 3 range_f draws (a point in the spread cone); else a 50/50 pick (or mat1
+    // when there is no second bone).
+    eaw::vec3 muzzle_mat1_t = {};         // mat1 translation = (uStack_260,250,240)._4_4_
+    eaw::vec3 muzzle_mat2_t = {};         // mat2 translation = (uStack_290,280,270)._4_4_
+    bool      full_random_dir = false;    // weapon+0x4f == 1 (full-random spread cone)
+    bool      has_muzzle_bone2 = false;   // param_1+0x3c >= 0 (a second launcher bone exists)
+
     // ── H: lead solve + reach ───────────────────────────────────────────────────────────────────────
     eaw::vec3 target_pos = {};            // snapshot target world pos
     eaw::vec3 target_vel = {};            // snapshot target velocity
     eaw::vec3 frame_vel  = {};            // reference-frame velocity (firing_intercept)
-    eaw::vec3 shooter_ref = {};           // stage-G dir/ref (399450 param_5; hoisted)
     float     gamespeed = 1.0f;           // DAT_140b0a340
     float     proj_speed = 0.0f;          // 370f00(template) muzzle speed
     bool      aim_reachable = false;      // 383ba0(firer, lead aim) verdict (RNG-free)
@@ -73,6 +81,14 @@ struct FireControlInputs {
 
     // ── I: the projectile payload (firing_make_spawn). `launch_dir` is filled BY this pipeline. ───────
     ProjectileFiringInputs spawn{};
+
+    // ── J: cooldown base roll (402-413) — own-state, the :410 RNG seam, now on the substream. Rolled
+    // only when the burst counter reaches 0 (hoisted as `roll_cooldown`; the surrounding rate-of-fire
+    // modifier math, 414-491, is own-state and a later stage-J completion). ──────────────────────────
+    bool  roll_cooldown   = false;        // *(param_1+0x5c) decremented to 0 this shot → roll
+    float cooldown_min    = 0.0f;         // *(weapon+0x228)
+    float cooldown_max    = 0.0f;         // *(weapon+0x22c)
+    float cooldown_scale  = 1.0f;         // DAT_1408007f0
 };
 
 enum class FireOutcome {
@@ -89,10 +105,26 @@ struct FireControlDecision {
     eaw::vec3   aim_point  = {};   // the resolved aim (stage E)
     eaw::vec3   launch_dir = {};   // post-lead, post-spread launch direction (stage I)
     SpawnCommand cmd{};            // valid iff outcome == Fire
+    bool        cooldown_rolled = false;  // stage J fired (Fire + roll_cooldown)
+    int         cooldown_base   = 0;      // the rolled base countdown (param_1+0x58), when cooldown_rolled
 };
 
 // Run the fire-control decision over hoisted inputs, composing the lifted leaves in 3825b0 order. Draws
 // only from `rng` (the per-entity substream). On Fire, `cmd` is the SpawnCommand to emit.
 FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng);
+
+// ── lifted RNG seams of the fire body (exposed for unit tests) ─────────────────────────────────────────
+// Stage G (210-225): the launch/muzzle POINT select.
+//   full_random       → per-axis range_f(mat1.k, mat2.k)  [3 draws, a point in the spread cone]
+//   !has_bone2         → mat1                              [0 draws]
+//   else percent(50)   → mat1 (true) / mat2 (false)        [1 draw]
+eaw::vec3 firing_select_muzzle_point(const eaw::vec3& mat1_t, const eaw::vec3& mat2_t,
+                                     bool full_random, bool has_bone2, eaw::SimRng& rng);
+
+// Stage J (402-413, the :410 draw): the base cooldown countdown.
+//   draw = range_i((int)(min*scale), (int)(max*scale))
+//   return (int)( ((int64_t)((float)draw * gamespeed) & 0xffffffff) / 100 )
+int firing_roll_cooldown_base(float min_delay, float max_delay, float scale, float gamespeed,
+                              eaw::SimRng& rng);
 
 } // namespace sim

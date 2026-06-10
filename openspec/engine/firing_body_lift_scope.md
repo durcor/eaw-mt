@@ -1811,6 +1811,23 @@ increments, all documented in `fire_control.h`): stages A/C/D gates collapsed to
 reads, no verifiable geometry); stage-G dir-jitter RNG (→ `shooter_ref`); stage-H curved-lead mode; stage-J cooldown RNG; stage-K
 opp-target; the pose leaves `385c70`/`385e70` (hoisted muzzle/context pose).
 
+### 8.49 B3.7.3 — fire-body RNG seams G+J lifted onto the substream (2026-06-09)
+Closes the two remaining global-LCG draws in the fire body so the whole `fire_control` decision draws ONLY from the per-entity substream
+(no fixed-global read anywhere in the host fire path):
+- **Stage G — launch-point select** (`firing_select_muzzle_point`, lines 210-225): the muzzle point fed to the lead solver, picked from
+  the two `385e70` muzzle-bone matrix translations. `weapon+0x4f==1` (full-random) ⇒ per-axis `range_f(mat1.k, mat2.k)` (3 `ffbb0` draws,
+  x→y→z — the §8.22 methodology-#28 XMM-arg bounds = mat1[k]/mat2[k]); else no second bone ⇒ `mat1` (no draw); else `percent(50)`
+  (`ffdb0(&lcg,0x32)`) ⇒ `mat1` on true / `mat2` on false. Now computed INSIDE `fire_control_decide` (the old hoisted `shooter_ref` input
+  is gone), drawn in the binary's position (after the range gate, before the lead/spread/cooldown seams).
+- **Stage J — cooldown base roll** (`firing_roll_cooldown_base`, lines 402-413, the `:410` draw): `draw = range_i((int)(min*scale),
+  (int)(max*scale))` then `base = ((int64)((float)draw*gamespeed) & 0xffffffff)/100` (faithful mask+integer-div). Rolled on Fire when the
+  burst counter reaches 0 (hoisted `roll_cooldown`); the surrounding rate-of-fire modifier math (414-491) is own-state, a later stage-J
+  completion. Result surfaced as `FireControlDecision.cooldown_base`/`cooldown_rolled`.
+Both are RETROFITS (substream ⇒ the drawn values differ from the global-LCG binary BY DESIGN) preserving the branch structure + draw COUNT
+(G: 3 / 0 / 1-roll; J: 1-roll) and per-draw formula. Draw ORDER across the body is now substream-faithful: aim phase-2 → muzzle-select →
+spread → cooldown. **Host gate extended (ALL PASS):** muzzle-select no-draw/3-draw/50-50-both-reachable + cooldown roll formula vs
+`range_i` + exactly-one-roll (rejection-aware, compared to a reference stream) + reproducibility + the Fire path rolling cooldown.
+
 **Host gate = PASS** (`sim/tests/fire_control_test.cpp`, ALL PASS; wired into `just sim-test`, full suite green): each no-fire gate in
 stage order (ineligible / no-aim-lock / no-muzzle + out-of-range + min-range + extent-extends-range; no-lead via a too-fast crossing
 target; unreachable); the explicit-context aim path; a full Fire producing a `SpawnCommand` with `projectile.present`, the firer

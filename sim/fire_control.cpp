@@ -9,6 +9,30 @@ namespace sim {
 using eaw::f32;
 using eaw::vec3;
 
+// Stage G (210-225): the launch/muzzle POINT select. ffbb0 = range_f, ffdb0(50) = percent(50).
+vec3 firing_select_muzzle_point(const vec3& mat1, const vec3& mat2,
+                                bool full_random, bool has_bone2, eaw::SimRng& rng) {
+    if (full_random) {                                   // weapon+0x4f==1: 3 draws, x→y→z
+        vec3 m;
+        m.x = rng.range_f(mat1.x, mat2.x);
+        m.y = rng.range_f(mat1.y, mat2.y);
+        m.z = rng.range_f(mat1.z, mat2.z);
+        return m;
+    }
+    if (!has_bone2) return mat1;                         // param_1+0x3c < 0 → mat1, NO draw (short-circuit)
+    return rng.percent(50) ? mat1 : mat2;                // ffdb0(&lcg, 0x32): true → mat1, false → mat2
+}
+
+// Stage J (402-413, the :410 draw): the base cooldown countdown.
+int firing_roll_cooldown_base(f32 min_delay, f32 max_delay, f32 scale, f32 gamespeed,
+                              eaw::SimRng& rng) {
+    const int lo = (int)(min_delay * scale);             // (int)(weapon+0x228 * DAT_1408007f0)
+    const int hi = (int)(max_delay * scale);             // (int)(weapon+0x22c * DAT_1408007f0)
+    const int draw = rng.range_i(lo, hi);                // FUN_1401ffb40(&DAT_140a13e24, lo, hi)
+    const int64_t scaled = (int64_t)((f32)draw * gamespeed);
+    return (int)((scaled & 0xffffffffLL) / 100);         // ((longlong)(...) & 0xffffffffU) / 100
+}
+
 FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng) {
     FireControlDecision d;
 
@@ -43,12 +67,17 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
         }
     }
 
+    // ── Stage G: launch-point select (210-225) ───────────────────────────────────────────────────────
+    // The muzzle point fed to the lead solver. Draws BEFORE the lead/spread/cooldown seams (binary order).
+    const vec3 shooter_ref = firing_select_muzzle_point(in.muzzle_mat1_t, in.muzzle_mat2_t,
+                                                        in.full_random_dir, in.has_muzzle_bone2, rng);
+
     // ── Stage H: lead solve + reach (226-238) ────────────────────────────────────────────────────────
     // 399450 lead solver (here its 399e20 fallback, firing_intercept_lead). A zero lead vector is the
     // no-solution sentinel (line 236: lead.x^2+lead.y^2+lead.z^2 != 0). Then 383ba0 reach/LOS (RNG-free).
     bool has_sol = false;
     const vec3 lead = firing_intercept_lead(in.target_pos, in.target_vel, in.frame_vel,
-                                            d.aim_point, in.shooter_ref, in.gamespeed,
+                                            d.aim_point, shooter_ref, in.gamespeed,
                                             in.proj_speed, &has_sol);
     if (lead == vec3{}) { d.outcome = FireOutcome::NoFire_NoLead; return d; }
     if (!in.aim_reachable) { d.outcome = FireOutcome::NoFire_Unreachable; return d; }
@@ -62,6 +91,14 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
     spawn.launch_dir = d.launch_dir;
     d.cmd = firing_make_spawn(spawn);
     d.outcome = FireOutcome::Fire;
+
+    // ── Stage J: cooldown base roll (402-413) ─────────────────────────────────────────────────────────
+    // Own-state; rolled only when the burst counter reaches 0 this shot. Last RNG seam (after the spread).
+    if (in.roll_cooldown) {
+        d.cooldown_base = firing_roll_cooldown_base(in.cooldown_min, in.cooldown_max,
+                                                    in.cooldown_scale, in.gamespeed, rng);
+        d.cooldown_rolled = true;
+    }
     return d;
 }
 
