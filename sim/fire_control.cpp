@@ -33,11 +33,28 @@ int firing_roll_cooldown_base(f32 min_delay, f32 max_delay, f32 scale, f32 games
     return (int)((scaled & 0xffffffffLL) / 100);         // ((longlong)(...) & 0xffffffffU) / 100
 }
 
+FireGate fire_first_blocked_gate(const FireEligibility& g) {
+    if (!g.owner_present)     return FireGate::OwnerPresent;
+    if (!g.target_present)    return FireGate::TargetPresent;
+    if (!g.context_match)     return FireGate::ContextMatch;
+    if (!g.target_targetable) return FireGate::TargetTargetable;
+    if (!g.target_queryable)  return FireGate::TargetQueryable;
+    if (!g.capability_match)  return FireGate::CapabilityMatch;
+    if (!g.order_charge_ok)   return FireGate::OrderCharge;
+    if (!g.not_self_target)   return FireGate::NotSelfTarget;
+    if (!g.not_fogged)        return FireGate::NotFogged;
+    if (!g.diplomacy_ok)      return FireGate::Diplomacy;
+    if (!g.firing_arc_ok)     return FireGate::FiringArc;
+    if (!g.weapon_selected)   return FireGate::WeaponSelected;
+    return FireGate::None;
+}
+
 FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng) {
     FireControlDecision d;
 
-    // ── Stage A/C/D: eligibility (62-163) ────────────────────────────────────────────────────────────
-    if (!in.eligible) { d.outcome = FireOutcome::NoFire_Ineligible; return d; }
+    // ── Stage A/C/D: eligibility (62-163) — ordered early-out ladder ──────────────────────────────────
+    d.blocked_gate = fire_first_blocked_gate(in.gates);
+    if (d.blocked_gate != FireGate::None) { d.outcome = FireOutcome::NoFire_Ineligible; return d; }
 
     // ── Stage E: aim resolution (164-187) ────────────────────────────────────────────────────────────
     // param_3 != 0  → the explicit firing context: aim = 385c70 pose (hoisted), always "locked".

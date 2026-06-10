@@ -1837,6 +1837,20 @@ extend the assembly outward: enumerate the stage-A/C/D gates as explicit predica
 RNG seams (substream), and wire stage-K (opp-target) through the CommandSink; then an in-game structural oracle (the §8.22 observe
 pattern) validating the host `fire_control_decide` against the binary 3825b0 decision on captured inputs.
 
+### 8.50 B3.7.4 — stage-A/C/D eligibility gates enumerated as an ordered predicate ladder (2026-06-09)
+Replaces the §8.48 single `eligible` precondition with the explicit 12-gate ladder in 3825b0 order (`FireEligibility` struct +
+`FireGate` enum + `fire_first_blocked_gate`): owner-present(62) → target-present(65) → context-match(68) → target-targetable
+(`+0x74&0x40`,71) → target-queryable(`vfunc 0x11`,74) → capability-match(`39b140`,78) → order-charge(`+0x394`,83) → not-self-target
+(`540140`,93) → not-fogged(`35f470`,97) → diplomacy(`39a540`,102) → firing-arc(stage C,111) → weapon-selected(stage D,147).
+`fire_control_decide` checks them in this order and reports the FIRST failure via `FireControlDecision.blocked_gate`. The predicate
+VALUES stay hoisted (each is an opaque Phase-A own/snapshot read with no geometry); what this adds is the faithful early-out ORDER and
+the exact block point — the diagnostic an in-game oracle compares against the binary's specific `return 0` site. **Host gate (ALL PASS,
+full suite green):** single-gate block reports that gate + no draw consumed; multi-gate sets report the FIRST in order; the first gate
+(owner-present); all-pass proceeds to Fire. **The fire-body host assembly now reproduces the full decision skeleton — ordered gates →
+aim → range → muzzle-select → lead → reach → spread → spawn → cooldown — drawing only from the substream.** Residual deferred:
+predicate-value derivation for the gates (the opaque reads), the stage-G `385e70` pose + curved-lead `399450` mode, stage-J rate-of-fire
+modifier math (414-491), stage-K opp-target via CommandSink, and the in-game structural oracle (§8.22 observe pattern) vs binary 3825b0.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

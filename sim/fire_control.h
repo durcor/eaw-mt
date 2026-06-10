@@ -38,10 +38,49 @@
 
 namespace sim {
 
+// The eligibility ladder (3825b0 stages A/C/D, lines 62-163) — the ordered early-out gates BEFORE any
+// geometry. Each predicate is an opaque object-state read hoisted to a bool (true = the gate PASSES);
+// `fire_control_decide` checks them in this exact order so the first failure reproduces the binary's
+// return point (the diagnostic an in-game oracle compares against). Reproducing the *order* is the value
+// here; the predicate VALUES stay hoisted (the reads are Phase-A own/snapshot state, no geometry).
+enum class FireGate {
+    None,               // all gates passed
+    OwnerPresent,       // *(param_1+0x10) != 0                                   (62)
+    TargetPresent,      // param_2 != 0                                           (65)
+    ContextMatch,       // param_3==0 || *(param_3+0x10)==param_2                 (68)
+    TargetTargetable,   // (*(param_2+0x74) & 0x40) == 0                          (71)
+    TargetQueryable,    // vfunc(param_2,0x11) == 0                               (74)
+    CapabilityMatch,    // !(39b140(param_2) && *(owner_tmpl+0xa4)==0)            (78-82)
+    OrderCharge,        // owner+0x100 → +0x394 charge state                      (83-91)
+    NotSelfTarget,      // 540140(owner_team, param_2) != 1                       (93-96)
+    NotFogged,          // 35f470(combat, owner_id, param_2, 1) != 1             (97-101)
+    Diplomacy,          // !((owner/target +0x3b4==1) && 39a540()==0)             (102-106)
+    FiringArc,          // stage C cone: weapon+0x4e==1 ⇒ dot >= threshold        (111-146)
+    WeaponSelected,     // stage D: a projectile template resolved                (147-163)
+};
+
+struct FireEligibility {
+    bool owner_present     = true;
+    bool target_present    = true;
+    bool context_match     = true;
+    bool target_targetable = true;
+    bool target_queryable  = true;
+    bool capability_match  = true;
+    bool order_charge_ok   = true;
+    bool not_self_target   = true;
+    bool not_fogged        = true;
+    bool diplomacy_ok      = true;
+    bool firing_arc_ok     = true;   // stage C
+    bool weapon_selected   = true;   // stage D
+};
+
+// First failing gate in 3825b0 order, or FireGate::None when all pass.
+FireGate fire_first_blocked_gate(const FireEligibility& g);
+
 // All hoisted inputs for one fire-control decision. Offsets in comments are into the 3825b0 body / source
 // objects (the firing_spawn ENV-getter pattern); the caller resolves them from snapshot/own-state.
 struct FireControlInputs {
-    bool eligible = false;                // stages A/C/D gates all passed (62-163); else NO fire
+    FireEligibility gates{};              // stages A/C/D ordered gates (62-163); first failure ⇒ NO fire
 
     // ── E: aim ────────────────────────────────────────────────────────────────────────────────────
     bool      has_explicit_context = false;   // param_3 != 0 → use the 385c70 pose, skip the aim ladder
@@ -102,6 +141,7 @@ enum class FireOutcome {
 
 struct FireControlDecision {
     FireOutcome outcome = FireOutcome::NoFire_Ineligible;
+    FireGate    blocked_gate = FireGate::None;  // which A/C/D gate blocked, when NoFire_Ineligible
     eaw::vec3   aim_point  = {};   // the resolved aim (stage E)
     eaw::vec3   launch_dir = {};   // post-lead, post-spread launch direction (stage I)
     SpawnCommand cmd{};            // valid iff outcome == Fire

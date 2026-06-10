@@ -18,7 +18,7 @@ static int g_fail = 0;
 // stationary target → non-zero lead, reachable, spread off. The caller mutates one field per test.
 static FireControlInputs firing_baseline() {
     FireControlInputs in;
-    in.eligible = true;
+    // in.gates default to all-pass.
     in.has_explicit_context = true;
     in.context_aim = vec3{50, 0, 0};
 
@@ -52,10 +52,30 @@ static FireControlInputs firing_baseline() {
 
 static void test_ineligible() {
     std::printf("test_ineligible\n");
-    FireControlInputs in = firing_baseline();
-    in.eligible = false;
-    SimRng r(1);
-    CHECK(fire_control_decide(in, r).outcome == FireOutcome::NoFire_Ineligible);
+    // any single blocked gate ⇒ NoFire_Ineligible, reporting THAT gate.
+    { FireControlInputs in = firing_baseline(); in.gates.not_fogged = false;
+      SimRng r(1); FireControlDecision d = fire_control_decide(in, r);
+      CHECK(d.outcome == FireOutcome::NoFire_Ineligible);
+      CHECK(d.blocked_gate == FireGate::NotFogged);
+      CHECK(!d.cooldown_rolled); }                 // blocked before any draw
+
+    // gate ORDER: when several fail, the FIRST in 3825b0 order is reported.
+    { FireControlInputs in = firing_baseline();
+      in.gates.weapon_selected = false;            // last gate
+      in.gates.target_targetable = false;          // earlier gate
+      in.gates.not_self_target = false;            // middle gate
+      SimRng r(1);
+      CHECK(fire_control_decide(in, r).blocked_gate == FireGate::TargetTargetable); }
+
+    // the very first gate.
+    { FireControlInputs in = firing_baseline(); in.gates.owner_present = false;
+      SimRng r(1);
+      CHECK(fire_control_decide(in, r).blocked_gate == FireGate::OwnerPresent); }
+
+    // all gates pass ⇒ proceeds past eligibility (this baseline Fires).
+    { FireControlInputs in = firing_baseline();
+      SimRng r(1); FireControlDecision d = fire_control_decide(in, r);
+      CHECK(d.blocked_gate == FireGate::None && d.outcome == FireOutcome::Fire); }
 }
 
 static void test_no_aim() {
