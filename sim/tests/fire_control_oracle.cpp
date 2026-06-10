@@ -70,6 +70,9 @@ int main(int argc, char** argv) {
     double l_max_err = 0.0;
     // ── end-to-end composed outcome (reach + fire_control_decide) ──
     long e_reach1 = 0, e_reach0 = 0, e_fire = 0, e_compose_fail = 0;
+    // ── stage-J cooldown records (DTFCJREC, §8.55) ──
+    long j_records = 0, j_roll = 0, j_btwn = 0;
+    long j_recharge_bug = 0, j_burst_bug = 0, j_drawmiss = 0;
 
     char line[512];
     while (std::fgets(line, sizeof line, f)) {
@@ -180,6 +183,69 @@ int main(int argc, char** argv) {
                                     reach, sim_lead_nz, expect_fire, got_fire, (int)dd.outcome);
                 }
             }
+        } else if (const char* J = std::strstr(line, "DTFCJREC")) {
+            // Stage-J replay: the binary's post +0x58/+0x5c writes must equal the lifted ladder's output
+            // bit-exact (pure integer compare — the FP path inside is fully determined by the captured
+            // float bits). Roll branch (pre5c ∈ {0,1}) additionally needs the captured :410 draw; its
+            // (lo,hi) args are cross-checked against (int)(w228*100)/(int)(w22c*100) — a mismatch means
+            // the recorded last-in-fire draw was NOT the cooldown roll (j_drawmiss, a FAIL).
+            auto geti = [&](const char* key, long* o) {
+                const char* k = std::strstr(J, key);
+                return k && std::sscanf(k + (int)std::strlen(key), "%ld", o) == 1;
+            };
+            auto hexf = [&](const char* key, float* o) {
+                const char* k = std::strstr(J, key);
+                unsigned u;
+                if (!k || std::sscanf(k + (int)std::strlen(key), "%x", &u) != 1) return false;
+                std::memcpy(o, &u, 4); return true;
+            };
+            long pre5c, dn, da, db, dr, a0, a1, w230, gs, post58, post5c;
+            float m0, m1, mod1, mod9, fold, w228, w22c, w234;
+            if (!(geti("\tpre5c=",&pre5c) && geti("\tdn=",&dn) && geti("\tda=",&da) &&
+                  geti("\tdb=",&db) && geti("\tdr=",&dr) && geti("\ta0=",&a0) && geti("\ta1=",&a1) &&
+                  geti("\tw230=",&w230) && geti("\tgs=",&gs) &&
+                  geti("\tpost58=",&post58) && geti("\tpost5c=",&post5c) &&
+                  hexf("\tm0=",&m0) && hexf("\tm1=",&m1) && hexf("\tmod1=",&mod1) &&
+                  hexf("\tmod9=",&mod9) && hexf("\tfold=",&fold) &&
+                  hexf("\tw228=",&w228) && hexf("\tw22c=",&w22c) && hexf("\tw234=",&w234))) continue;
+            ++j_records;
+            CooldownModInputs m;
+            m.cat0_active = (a0 != 0); m.cat0_mult = m0;
+            m.cat1_active = (a1 != 0); m.cat1_mult = m1;
+            m.owner_rof_mod = mod1; m.owner_recharge_mod = mod9; m.buff_fold = fold;
+            m.burst_count = (eaw::u32)w230; m.shot_delay = w234;
+            const float gsf = (float)gs;
+            int counter = (int)pre5c;
+            if (counter != 0) counter -= 1;
+            CooldownState exp;
+            if (counter == 0) {
+                ++j_roll;
+                const int lo = (int)(w228 * 100.0f), hi = (int)(w22c * 100.0f);
+                if (dn < 1 || da != lo || db != hi) {
+                    ++j_drawmiss;
+                    if (j_drawmiss <= 16)
+                        std::printf("  J DRAWMISS pre5c=%ld dn=%ld (da,db)=(%ld,%ld) want (%d,%d)\n",
+                                    pre5c, dn, da, db, lo, hi);
+                    continue;
+                }
+                const int base = (int)(((int64_t)((float)(int)dr * gsf) & 0xffffffffLL) / 100);
+                exp = firing_recharge_after_burst(base, m);
+            } else {
+                ++j_btwn;
+                exp = firing_delay_between_shots(gsf, m, counter);
+            }
+            if (exp.recharge != (int)post58) {
+                ++j_recharge_bug;
+                if (j_recharge_bug <= 16)
+                    std::printf("  J RECHARGE pre5c=%ld sim=%d bin=%ld  (mod1=%g mod9=%g fold=%g a0=%ld a1=%ld)\n",
+                                pre5c, exp.recharge, post58, mod1, mod9, fold, a0, a1);
+            }
+            if (exp.burst != (int)post5c) {
+                ++j_burst_bug;
+                if (j_burst_bug <= 16)
+                    std::printf("  J BURST pre5c=%ld sim=%d bin=%ld  (w230=%ld mod9=%g fold=%g)\n",
+                                pre5c, exp.burst, post5c, w230, mod9, fold);
+            }
         }
     }
     std::fclose(f);
@@ -195,6 +261,8 @@ int main(int argc, char** argv) {
                 l_records, l_verdict_mismatch, l_exact, l_near, l_far, l_max_err);
     std::printf("[end-to-end]   reach1=%ld  reach0=%ld  decide_fire=%ld  compose_fail=%ld\n",
                 e_reach1, e_reach0, e_fire, e_compose_fail);
+    std::printf("[stage-J]      records=%ld  roll=%ld  between=%ld  drawmiss=%ld  recharge_bug=%ld  burst_bug=%ld\n",
+                j_records, j_roll, j_btwn, j_drawmiss, j_recharge_bug, j_burst_bug);
 
     int fail = 0;
     if (records == 0 && g_records == 0 && l_records == 0) { std::printf("NO RECORDS — capture produced no DTFC*REC lines\n"); return 1; }
@@ -204,8 +272,11 @@ int main(int argc, char** argv) {
     if (l_verdict_mismatch != 0)   { std::printf("LEAD FAIL — sim lead disagrees with the binary on solution-existence for %ld records\n", l_verdict_mismatch); fail = 1; }
     if (l_far != 0)                { std::printf("LEAD FAIL — sim lead value diverges (>1e-4 rel) on %ld records (max %.3g)\n", l_far, l_max_err); fail = 1; }
     if (e_compose_fail != 0)       { std::printf("COMPOSE FAIL — fire_control_decide outcome != expected on %ld records\n", e_compose_fail); fail = 1; }
+    if (j_drawmiss != 0)           { std::printf("STAGE-J FAIL — the captured in-fire draw was not the :410 cooldown roll on %ld records\n", j_drawmiss); fail = 1; }
+    if (j_recharge_bug != 0)       { std::printf("STAGE-J FAIL — recharge (+0x58) mismatch on %ld records\n", j_recharge_bug); fail = 1; }
+    if (j_burst_bug != 0)          { std::printf("STAGE-J FAIL — burst (+0x5c) mismatch on %ld records\n", j_burst_bug); fail = 1; }
     if (fail) return 1;
-    std::printf("ALL PASS — gates clean (%ld shots); range bit-exact (%ld); lead bit-exact (%ld); fire_control_decide outcome matches the composed factors on all %ld end-to-end records\n",
-                fired, g_records, l_records, e_reach1 + e_reach0);
+    std::printf("ALL PASS — gates clean (%ld shots); range bit-exact (%ld); lead bit-exact (%ld); fire_control_decide outcome matches the composed factors on all %ld end-to-end records; stage-J cooldown bit-exact (%ld)\n",
+                fired, g_records, l_records, e_reach1 + e_reach0, j_records);
     return 0;
 }

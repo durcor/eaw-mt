@@ -1,0 +1,17 @@
+# DTFCJ — in-game BIT-EXACT oracle for stage-J cooldown math (sim firing_recharge_after_burst / firing_delay_between_shots) — §8.57 — PASS
+# captured 2026-06-10, menu-demo space battle, EAW_ORACLE build, pfire=2 difftrace=1, full 8192-record cap
+# non-neutral-modifier records: 489 (mod1=0.85 cat0-active — the multiplier path on live data); mod9/fold neutral in this battle
+
+=== fire_control_oracle ===
+[gate ladder]  records=8192  fired=144  bug=0
+  block distribution (first-blocking gate):
+    None             8192
+[range gate]   records=8192  fired=144  transcribe_mismatch=0  ground_bug=0
+[lead solve]   records=8192  verdict_mismatch=0  exact=8192  near=0  far=0  max_rel_err=0
+[end-to-end]   reach1=8192  reach0=0  decide_fire=8192  compose_fail=0
+[stage-J]      records=8192  roll=870  between=7322  drawmiss=0  recharge_bug=0  burst_bug=0
+ALL PASS — gates clean (144 shots); range bit-exact (8192); lead bit-exact (8192); fire_control_decide outcome matches the composed factors on all 8192 end-to-end records; stage-J cooldown bit-exact (8192)
+
+DTFCJ	tick=1024	n=7843	roll=861	btwn=6982	rec=7843
+DTFCJ	tick=2048	n=7933	roll=861	btwn=7072	rec=7933
+DTFCJ	tick=1024	n=8366	roll=877	btwn=7489	rec=8192

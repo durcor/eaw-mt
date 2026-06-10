@@ -1991,6 +1991,28 @@ not slot writes; clear-to-null; decide()-level stage-K on Fire only + null-sink 
 residue: curved-lead `399450` mode (dormant), stage-G `385e70` pose (engine-boundary pose eval), the roll-branch side effects
 (+0x68 stamp, 294bc0/285d70 deregistration), and the opaque hoisted reads themselves.
 
+### 8.57 B3.7.11 — stage-J cooldown IN-GAME ORACLE = BIT-EXACT PASS (2026-06-10)
+The §8.55 lift validated against the live binary. Capture (DTFCJ, `winmm_proxy.c`): the 3825b0 detour records `+0x5c` at entry
+(`pre5c`); the DTRNG `b1ffb40` detour records the LAST in-fire-body 1ffb40 draw (args + result — the `:410` roll is the body's final
+int draw); post-call, `dtfcj_emit` re-evaluates the modifier terms by calling the SAME leaves the binary calls (374b50/39b950/398010 +
+the 535cb0-ctor/395c70-collect/33fb70-fold/535fb0-dtor sequence with a hook-stack 0x160-byte bucket array, fold on bucket 6 = +0xc0,
+functor vtables Plus `0x85ae90` / GreaterThan `0x85ef60`; 398010 + 33fb70 declared FLOAT-return per the §8.55 asm) and logs one
+`DTFCJREC` per FIRED shot with all float bits hex-exact + the binary's post `+0x58`/`+0x5c`. Offline (`fire_control_oracle.cpp`,
+`just fc-oracle`): replay `firing_recharge_after_burst` (roll branch, base from the captured draw, after cross-checking the draw's
+(lo,hi) == `(int)(w228*100)/(int)(w22c*100)` — also validating the §8.49 bounds transcription) or `firing_delay_between_shots`
+(between-shots), integer-compare against the binary's writes.
+
+**RESULT = PASS** (menu-demo space battle, EAW_ORACLE + pfire=2 + difftrace=1, evidence `eaw-mt.log.dtfcj-pass`): **8192 records
+(full cap): roll=870, between=7322, drawmiss=0, recharge_bug=0, burst_bug=0 — both stage-J branches reproduce the binary's
+(+0x58,+0x5c) pair bit-exact on every record**, including all 870 RNG-roll records (every captured draw matched the cooldown bounds)
+and **489 records with a real non-neutral modifier** (`mod1=0.85`, cat0 active — the multiplier path exercised on live data, both the
+roll branch's f<1-conditional and the between-shots unconditional multiply). The same unified run re-validated §8.51-8.54 fresh
+(gates bug=0 / range bit-exact / lead exact=8192 / compose_fail=0 over 8192 records). **Coverage boundary (documented):** the divisor
+path (`mod9`/fold) was neutral throughout this battle (no recharge buffs in the demo population) — its branches (g∈(0,1) divide,
+g<=0 zero-both tail incl. the §8.55 asm-corrected ebx write, burst scaling) rest on the host gate; a buff-heavy battle would extend
+the in-game envelope. ⇒ **stage J is closed: lifted (§8.55) + in-game bit-exact (this).** The fire body's remaining binary residue
+is unchanged: curved-lead `399450` (dormant), stage-G `385e70` pose, roll-branch side effects, the opaque hoisted reads.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

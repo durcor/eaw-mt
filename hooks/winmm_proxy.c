@@ -4467,6 +4467,73 @@ static uint32_t g_fc_last=0xFFFFFFFFu;
 /* §8.52 geometry (range-gate) oracle counters. */
 static uint32_t g_fcg_n=0, g_fcg_inrange=0, g_fcg_fired=0, g_fcg_bug=0, g_fcg_rec=0;
 
+/* ── DTFCJ — §8.55 stage-J cooldown oracle: capture everything the lifted firing_recharge_after_burst /
+ * firing_delay_between_shots ladder needs, on each FIRED shot, for offline bit-exact replay vs the
+ * binary's own +0x58/+0x5c writes. The modifier TERMS are opaque Phase-A reads (CooldownModInputs), so
+ * the hook calls the SAME leaves the binary calls (374b50/39b950/398010 + the 535cb0/395c70/33fb70 fold)
+ * on the post-call state (stage J runs at the body's end; none of these reads is mutated by the body).
+ * ⚠ float-return trap (§8.20 class): 398010 and 33fb70 return FLOAT in xmm0 (Ghidra says int64) —
+ * confirmed in the 3825b0 asm (movaps/addss %xmm0 right after the calls). The :410 roll draw is captured
+ * by the DTRNG b1ffb40 detour recording the LAST in-fire draw (the :410 draw is the final 1ffb40 call in
+ * the body; its (lo,hi) args are cross-checked offline against (int)(w228*100)/(int)(w22c*100)). */
+static uint32_t g_fcj_n=0, g_fcj_roll=0, g_fcj_btwn=0, g_fcj_rec=0;
+static int32_t  g_fcj_pre5c=0;                       /* burst counter at body entry */
+static int      g_fcj_draw_n=0;                      /* # of 1ffb40 draws inside THIS fire call */
+static int      g_fcj_draw_a=0, g_fcj_draw_b=0, g_fcj_draw_ret=0;   /* the LAST one */
+
+typedef int      (*FcjIdxFn)(int64_t, int);          /* 374b50(owner+0x298 value, k) → category idx */
+typedef uint8_t  (*FcjActiveFn)(int64_t, int, char); /* 39b950(owner, idx, 1) → category active */
+typedef float    (*FcjModFn)(int64_t, int);          /* 398010(owner, k) → FLOAT in xmm0 */
+typedef int64_t *(*FcjCtorFn)(int64_t *);            /* 535cb0(buf) modifier-bucket array ctor */
+typedef uint64_t (*FcjCollectFn)(int64_t, int64_t *);/* 395c70(owner, buf) collect modifier sources */
+typedef float    (*FcjFoldFn)(void *, void *, void *); /* 33fb70(bucket6, &PlusVt, &GtVt) → FLOAT */
+typedef void     (*FcjDtorFn)(int64_t *);            /* 535fb0(buf) dtor */
+
+static uint32_t fcj_bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+
+/* Evaluate the stage-J ladder terms exactly as 3825b0:414-491 does and emit one DTFCJREC. */
+static void dtfcj_emit(int64_t owner, int64_t wt, int32_t post58, int32_t post5c) {
+    FcjIdxFn     f374b50 = (FcjIdxFn)    (g_dt_imgbase + 0x374b50);
+    FcjActiveFn  f39b950 = (FcjActiveFn) (g_dt_imgbase + 0x39b950);
+    FcjModFn     f398010 = (FcjModFn)    (g_dt_imgbase + 0x398010);
+    FcjCtorFn    f535cb0 = (FcjCtorFn)   (g_dt_imgbase + 0x535cb0);
+    FcjCollectFn f395c70 = (FcjCollectFn)(g_dt_imgbase + 0x395c70);
+    FcjFoldFn    f33fb70 = (FcjFoldFn)   (g_dt_imgbase + 0x33fb70);
+    FcjDtorFn    f535fb0 = (FcjDtorFn)   (g_dt_imgbase + 0x535fb0);
+
+    int64_t cats = *(int64_t *)(owner + 0x298);
+    int i0 = f374b50(cats, 0);
+    int a0 = f39b950(owner, i0, 1) ? 1 : 0;
+    float m0 = a0 ? *(float *)(wt + 0x250 + (int64_t)i0 * 4) : 1.0f;
+    float mod1 = f398010(owner, 1);
+    int i1 = f374b50(cats, 1);
+    int a1 = f39b950(owner, i1, 1) ? 1 : 0;
+    float m1 = a1 ? *(float *)(wt + 0x250 + (int64_t)i1 * 4) : 1.0f;
+    float mod9 = f398010(owner, 9);
+
+    int64_t fcjbuf[0x2c];                            /* 0x160 B: the 11×0x20 bucket array (535cb0) */
+    f535cb0(fcjbuf);
+    f395c70(owner, fcjbuf);
+    uint64_t plus_vt = (uint64_t)(g_dt_imgbase + 0x85ae90);   /* Plus<float>::vftable */
+    uint64_t gt_vt   = (uint64_t)(g_dt_imgbase + 0x85ef60);   /* GreaterThan<float>::vftable */
+    float fold = f33fb70((char *)fcjbuf + 0xc0, &plus_vt, &gt_vt);  /* bucket 6, exactly :447/:483 */
+    f535fb0(fcjbuf);
+
+    float w228 = *(float *)(wt + 0x228), w22c = *(float *)(wt + 0x22c), w234 = *(float *)(wt + 0x234);
+    uint32_t w230 = *(uint32_t *)(wt + 0x230);
+    int32_t gs = *(int32_t *)(g_dt_imgbase + 0xb0a340);       /* gamespeed (an INT, §8.53) */
+
+    char jb[320];
+    snprintf(jb, sizeof jb,
+        "DTFCJREC\tpre5c=%d\tdn=%d\tda=%d\tdb=%d\tdr=%d\ta0=%d\tm0=%08x\ta1=%d\tm1=%08x\t"
+        "mod1=%08x\tmod9=%08x\tfold=%08x\tw228=%08x\tw22c=%08x\tw230=%u\tw234=%08x\tgs=%d\t"
+        "post58=%d\tpost5c=%d\n",
+        g_fcj_pre5c, g_fcj_draw_n, g_fcj_draw_a, g_fcj_draw_b, g_fcj_draw_ret,
+        a0, fcj_bits(m0), a1, fcj_bits(m1), fcj_bits(mod1), fcj_bits(mod9), fcj_bits(fold),
+        fcj_bits(w228), fcj_bits(w22c), w230, fcj_bits(w234), gs, post58, post5c);
+    log_write(jb);
+}
+
 static uint16_t dtfc_gate_bits(int64_t p1, int64_t *p2, int64_t p3, int r1_g2a) {
     uint16_t m = 0x0FFF;                                  /* all 12 pass */
     if (!g_dt_imgbase || !p1) return m;
@@ -6178,6 +6245,7 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
             r1_full = r1_g2a ? pfire_r1_gate2b_g(p1, (int64_t *)p2, p3, &fcg) : 0;
         }
         g_b3_in_fire = 1; g_b3_last_proj = 0; g_b3_args.have = 0;  /* reset per call → have=1 ⟺ THIS call created */
+        g_fcj_pre5c = *(int32_t *)(p1 + 0x5c); g_fcj_draw_n = 0;   /* DTFCJ (§8.55) pre-state */
     }
     /* ── A3.3 TAKEOVER (EAW_PFIRE=3) ── drive the firing body from the lifted reimpl instead of the binary.
      * Runs in PhaseB (a76b0 is deferred to the 2a62d0 flush at level>=2, so every 3825b0 call here is on the
@@ -6286,6 +6354,20 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     log_write(gb); g_fcg_rec++;
                 }
             }
+
+            /* DTFCJ (§8.55): stage-J cooldown oracle — fired shots only (stage J runs only on the fired
+             * path). post +0x58/+0x5c are the binary's stage-J writes; the leaves are re-evaluated on the
+             * post-call state (none is mutated by the body). Capped like the other DTFC samples. */
+            if (r == 1 && owner && owner_type) {
+                g_fcj_n++;
+                int32_t pre5c = g_fcj_pre5c;
+                if (pre5c == 0 || pre5c == 1) g_fcj_roll++; else g_fcj_btwn++;
+                if (g_fcj_rec < 8192) {
+                    dtfcj_emit(owner, owner_type,
+                               *(int32_t *)(p1 + 0x58), *(int32_t *)(p1 + 0x5c));
+                    g_fcj_rec++;
+                }
+            }
         }
         if (r == 1 && g_b3_last_proj && owner && owner_type) {
             /* tgt oracle checks rec+0x08 == param_2. At takeover the param_3==0 path may REDIRECT param_2
@@ -6324,6 +6406,10 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 snprintf(db, sizeof db,
                     "DTFCG\ttick=%u\tn=%u\tin_range=%u\tfired=%u\tbug=%u\n",
                     tk, g_fcg_n, g_fcg_inrange, g_fcg_fired, g_fcg_bug);
+                log_write(db);
+                snprintf(db, sizeof db,
+                    "DTFCJ\ttick=%u\tn=%u\troll=%u\tbtwn=%u\trec=%u\n",
+                    tk, g_fcj_n, g_fcj_roll, g_fcj_btwn, g_fcj_rec);
                 log_write(db);
             } else {
                 snprintf(db, sizeof db,
@@ -6615,11 +6701,20 @@ static int b1ffb40_hook(uint32_t *state, int a, int b)
     uint32_t idx = g_rng_callctr++;
     int sample = (state != NULL) && ((idx & (DTRNG_SAMPLE - 1u)) == 0u) &&
                  (g_rng_lines < DTRNG_MAXLINES);
-    if (!sample) return g_ffb40_trampoline(state, a, b);
+    if (!sample) {
+        int ret0 = g_ffb40_trampoline(state, a, b);
+        if (g_b3_in_fire) {                 /* DTFCJ (§8.55): record the LAST in-fire-body draw */
+            g_fcj_draw_a = a; g_fcj_draw_b = b; g_fcj_draw_ret = ret0; g_fcj_draw_n++;
+        }
+        return ret0;
+    }
 
     uint32_t s_in = *state;
     int ret = g_ffb40_trampoline(state, a, b);
     uint32_t s_out = *state;
+    if (g_b3_in_fire) {                     /* DTFCJ: same recording on the sampled path */
+        g_fcj_draw_a = a; g_fcj_draw_b = b; g_fcj_draw_ret = ret; g_fcj_draw_n++;
+    }
 
     char s[160];
     snprintf(s, sizeof s,
