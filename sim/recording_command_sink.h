@@ -21,8 +21,17 @@ struct RecordedCommand {
     OpportunityTargetAcquiredData  opp{};        // valid iff sig_id == kSigOpportunityTargetAcquired
 };
 
+// One recorded listener-slot edit (Class 2b, emit_connect/emit_disconnect).
+struct RecordedListenerEdit {
+    void*    target   = nullptr;   // whose +0x38 dispatcher is edited
+    void*    listener = nullptr;   // the slot's listener (the emitting unit)
+    uint32_t sig_id   = 0;
+    bool     connect  = false;     // true = 220e90 add, false = 220eb0 remove
+};
+
 struct RecordingCommandSink : CommandSink {
     std::vector<RecordedCommand> commands;
+    std::vector<RecordedListenerEdit> listener_edits;   // Class-2b slot edits, in emit order
     std::vector<SfxCommand> sfx;                        // channel-2 presentation cues, in emit order
     std::vector<std::pair<void*, uint64_t>> scheduled;  // galactic OutgoingEventQueueClass (out of scope)
 
@@ -37,6 +46,13 @@ struct RecordingCommandSink : CommandSink {
             rc.opp = *static_cast<const OpportunityTargetAcquiredData*>(payload);
         }
         commands.push_back(rc);
+    }
+
+    void emit_connect(void* target, void* listener, uint32_t sig_id) override {
+        listener_edits.push_back(RecordedListenerEdit{target, listener, sig_id, true});
+    }
+    void emit_disconnect(void* target, void* listener, uint32_t sig_id) override {
+        listener_edits.push_back(RecordedListenerEdit{target, listener, sig_id, false});
     }
 
     void emit_sfx_event(void* emitter, uint32_t sfx_id) override {

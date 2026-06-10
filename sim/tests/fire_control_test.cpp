@@ -2,6 +2,7 @@
 // fire_control_decide). Drives the composed pipeline end-to-end: each no-fire gate in stage order, the
 // explicit-context aim path, and a full Fire that produces a SpawnCommand with the launch dir propagated.
 #include "../fire_control.h"
+#include "../recording_command_sink.h"
 #include <cstdio>
 #include <cmath>
 
@@ -274,6 +275,62 @@ static void test_cooldown_modifier_ladder() {
       CHECK(s.burst == 0); }
 }
 
+static void test_opp_target_update() {
+    std::printf("test_opp_target_update\n");
+    static int firer_o, old_o, new_o;
+    void *firer = &firer_o, *oldt = &old_o, *newt = &new_o;
+
+    // unchanged target ⇒ no-op, no edits.
+    { RecordingCommandSink s; OppTargetInputs in{firer, newt, newt, false, false};
+      CHECK(fire_update_opp_target(in, s) == newt);
+      CHECK(s.listener_edits.empty()); }
+
+    // fresh acquire (no old): connect 0x28 then 1 on the new target, slot set.
+    { RecordingCommandSink s; OppTargetInputs in{firer, nullptr, newt, false, false};
+      CHECK(fire_update_opp_target(in, s) == newt);
+      CHECK(s.listener_edits.size() == 2);
+      CHECK(s.listener_edits[0].connect && s.listener_edits[0].target == newt &&
+            s.listener_edits[0].listener == firer && s.listener_edits[0].sig_id == 0x28);
+      CHECK(s.listener_edits[1].connect && s.listener_edits[1].sig_id == 1); }
+
+    // retarget: disconnect old (0x28, 1) THEN connect new (0x28, 1) — the binary's order.
+    { RecordingCommandSink s; OppTargetInputs in{firer, oldt, newt, false, false};
+      CHECK(fire_update_opp_target(in, s) == newt);
+      CHECK(s.listener_edits.size() == 4);
+      CHECK(!s.listener_edits[0].connect && s.listener_edits[0].target == oldt &&
+            s.listener_edits[0].sig_id == 0x28);
+      CHECK(!s.listener_edits[1].connect && s.listener_edits[1].sig_id == 1);
+      CHECK(s.listener_edits[2].connect && s.listener_edits[2].target == newt);
+      CHECK(s.listener_edits[3].connect && s.listener_edits[3].sig_id == 1); }
+
+    // elsewhere-tracked guards suppress the edits but not the slot writes.
+    { RecordingCommandSink s; OppTargetInputs in{firer, oldt, newt, true, true};
+      CHECK(fire_update_opp_target(in, s) == newt);
+      CHECK(s.listener_edits.empty()); }
+
+    // clear to null target: disconnect only, slot ends null.
+    { RecordingCommandSink s; OppTargetInputs in{firer, oldt, nullptr, false, false};
+      CHECK(fire_update_opp_target(in, s) == nullptr);
+      CHECK(s.listener_edits.size() == 2);
+      CHECK(!s.listener_edits[0].connect && !s.listener_edits[1].connect); }
+
+    // through decide(): stage K runs only on the fired path and only with a sink.
+    { FireControlInputs in = firing_baseline();
+      in.opp = OppTargetInputs{firer, oldt, newt, false, false};
+      RecordingCommandSink s; SimRng r(1);
+      FireControlDecision d = fire_control_decide(in, r, &s);
+      CHECK(d.outcome == FireOutcome::Fire);
+      CHECK(d.opp_target == newt);
+      CHECK(s.listener_edits.size() == 4); }
+    { FireControlInputs in = firing_baseline();
+      in.opp = OppTargetInputs{firer, oldt, newt, false, false};
+      in.gates.not_fogged = false;                 // blocked ⇒ no stage K
+      RecordingCommandSink s; SimRng r(1);
+      FireControlDecision d = fire_control_decide(in, r, &s);
+      CHECK(d.outcome == FireOutcome::NoFire_Ineligible);
+      CHECK(d.opp_target == nullptr && s.listener_edits.empty()); }
+}
+
 static void test_range_gate() {
     std::printf("test_range_gate\n");
     // 2D distance only (z ignored): muzzle {0,0,99}, aim {3,4,-99} → dist 5.
@@ -300,6 +357,7 @@ int main() {
     test_unreachable();
     test_fire_emits_spawn();
     test_aim_ladder_reproducible();
+    test_opp_target_update();
     if (g_fail == 0) std::printf("ALL PASS\n");
     else std::printf("%d FAIL\n", g_fail);
     return g_fail ? 1 : 0;

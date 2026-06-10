@@ -110,7 +110,31 @@ bool fire_range_gate_pass(const vec3& muzzle, const vec3& aim,
     return dist <= max_range && min_range <= dist;
 }
 
-FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng) {
+// Stage K (3825b0:494-499 → 3846c0 / 382510): see fire_control.h. The slot writes are the binary's;
+// only the listener edits cross the entity boundary (buffered).
+void* fire_update_opp_target(const OppTargetInputs& in, CommandSink& sink) {
+    void* slot = in.current;
+    if (slot == in.target) return slot;                  // 3825b0:494 — unchanged target, no-op
+    if (slot != nullptr) {                               // 3825b0:495-496 → 3846c0 clear
+        void* old = slot;
+        slot = nullptr;                                  // *param_2 = 0 (before the guard checks)
+        if (!in.old_elsewhere_tracked) {
+            sink.emit_disconnect(old, in.firer, 0x28);   // 220eb0(_, old+0x38, firer, 0x28)
+            sink.emit_disconnect(old, in.firer, 1);      // 220eb0(_, old+0x38, firer, 1)
+        }
+    }
+    if (in.target != nullptr && slot != in.target) {     // 3825b0:497 → 382510 set
+        if (!in.new_elsewhere_tracked) {
+            sink.emit_connect(in.target, in.firer, 0x28); // 220e90(_, target+0x38, firer, 0x28)
+            sink.emit_connect(in.target, in.firer, 1);    // 220e90(_, target+0x38, firer, 1)
+        }
+        slot = in.target;                                // *param_3 = param_2
+    }
+    return slot;
+}
+
+FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng,
+                                        CommandSink* sink) {
     FireControlDecision d;
 
     // ── Stage A/C/D: eligibility (62-163) — ordered early-out ladder ──────────────────────────────────
@@ -178,6 +202,9 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
     } else {
         d.cooldown = firing_delay_between_shots(in.gamespeed, in.cooldown_mods, counter);
     }
+
+    // ── Stage K: opportunity-target update (494-499) — last op before return 1, fired path only. ──────
+    if (sink) d.opp_target = fire_update_opp_target(in.opp, *sink);
     return d;
 }
 

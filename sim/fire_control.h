@@ -32,6 +32,7 @@
 #pragma once
 #include "eaw_types.h"
 #include "sim_rng.h"
+#include "command_sink.h"
 #include "firing_aimpoint.h"
 #include "firing_intercept.h"
 #include "firing_spawn.h"
@@ -99,6 +100,20 @@ struct CooldownState {
     int burst = 0;                 // *(param_1+0x5c)
 };
 
+// Stage-K inputs (3825b0:494-499 → 3846c0 clear / 382510 set). The "elsewhere-tracked" guards are
+// the binary's identity checks against the firer's OTHER target slots (+0xc0/+0xa8/+0x40/+0x50) —
+// listener edits are skipped for an object that is still tracked through another slot. Opaque
+// own-state reads, hoisted to bools (NB 3846c0 zeroes +0xa8 BEFORE its check, so for the old target
+// the +0xa8 compare is against 0; for the new target +0xa8 still holds the pre-clear value's slot,
+// already zeroed by the clear that ran first).
+struct OppTargetInputs {
+    void* firer   = nullptr;       // param_1 — the listener registered on the target's dispatcher
+    void* current = nullptr;       // *(param_1+0xa8) at entry (the old opportunity target)
+    void* target  = nullptr;       // param_2 — the fired-at target
+    bool  old_elsewhere_tracked = false;  // old ∈ {+0xc0, +0x40, +0x50} (3846c0 guard)
+    bool  new_elsewhere_tracked = false;  // target ∈ {+0xc0, +0xa8, +0x40, +0x50} (382510 guard)
+};
+
 // All hoisted inputs for one fire-control decision. Offsets in comments are into the 3825b0 body / source
 // objects (the firing_spawn ENV-getter pattern); the caller resolves them from snapshot/own-state.
 struct FireControlInputs {
@@ -154,6 +169,11 @@ struct FireControlInputs {
     float cooldown_max    = 0.0f;         // *(weapon+0x22c)
     float cooldown_scale  = 1.0f;         // DAT_1408007f0 (= 100.0f in the binary)
     CooldownModInputs cooldown_mods{};    // stage-J modifier ladder values (414-491)
+
+    // ── K: opportunity-target update (494-499) — runs only on the fired path, right before return 1.
+    // The own-slot (+0xa8) write is own-state (→ FireControlDecision.opp_target); the listener edits
+    // on the old/new target's +0x38 dispatcher are Class-2b → buffered via CommandSink. ─────────────
+    OppTargetInputs opp{};
 };
 
 enum class FireOutcome {
@@ -174,11 +194,25 @@ struct FireControlDecision {
     bool        cooldown_rolled = false;  // stage J: burst counter reached 0 ⇒ the :410 draw happened
     int         cooldown_base   = 0;      // the rolled PRE-modifier base, when cooldown_rolled
     CooldownState cooldown{};             // stage J result: the new (+0x58, +0x5c) own-state pair
+    void*       opp_target = nullptr;     // stage K result: the new +0xa8 own-slot value
 };
 
 // Run the fire-control decision over hoisted inputs, composing the lifted leaves in 3825b0 order. Draws
-// only from `rng` (the per-entity substream). On Fire, `cmd` is the SpawnCommand to emit.
-FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng);
+// only from `rng` (the per-entity substream). On Fire, `cmd` is the SpawnCommand to emit. When `sink`
+// is non-null, stage K runs on the fired path (its Class-2b listener edits buffered through the sink,
+// the new own-slot value in `opp_target`); a null sink skips stage K (the pre-§8.56 behaviour — the
+// caller does not model the opp-target record).
+FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng,
+                                        CommandSink* sink = nullptr);
+
+// Stage K (3825b0:494-499): the opportunity-target record update, the binary's exact branch shape:
+//   *(+0xa8) == target  ⇒ no-op (returns current)
+//   current != 0        ⇒ 3846c0 clear: slot = 0; unless old_elsewhere_tracked, emit_disconnect(old,
+//                         firer, 0x28) + emit_disconnect(old, firer, 1)
+//   target != 0         ⇒ 382510 set: unless new_elsewhere_tracked, emit_connect(target, firer, 0x28)
+//                         + emit_connect(target, firer, 1); slot = target
+// Returns the new own-slot (+0xa8) value. Listener edits go through the sink (Class 2b, buffered).
+void* fire_update_opp_target(const OppTargetInputs& in, CommandSink& sink);
 
 // ── lifted RNG seams of the fire body (exposed for unit tests) ─────────────────────────────────────────
 // Stage G (210-225): the launch/muzzle POINT select.

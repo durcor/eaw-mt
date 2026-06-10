@@ -1962,6 +1962,35 @@ recharge==base. **Remaining stage-J residue:** none in the math; the in-game bit
 the binary's +0x58/+0x5c writes, replay host ladder) is the next slice. Still deferred elsewhere: curved-lead `399450`, stage-G
 `385e70` pose, stage-K opp-target via CommandSink.
 
+### 8.56 B3.7.10 — stage-K opp-target update WIRED through CommandSink; `220eb0` = DISCONNECT (spec correction) (2026-06-10)
+Completes stage K (3825b0:494-499, the body's last op before `return 1`, fired path only): `sim::fire_update_opp_target`
+(`fire_control.cpp`) reproduces the exact branch shape — same-target no-op → `3846c0` clear (slot=0; unless old-elsewhere-tracked,
+disconnect old's listeners 0x28 then 1) → `382510` set (unless new-elsewhere-tracked, connect new's listeners 0x28 then 1; slot=new).
+The own-slot `+0xa8` write is own-state (→ `FireControlDecision.opp_target`); the listener edits are the known Class-2b cross-entity
+writes, now buffered through TWO NEW CommandSink ops `emit_connect`/`emit_disconnect` (live shape `(_, target+0x38, listener, sig_id)`;
+drain = replay in canonical order). `fire_control_decide` gained an optional `CommandSink*` (null = stage-K skipped, old behaviour);
+the "elsewhere-tracked" identity guards (old ∈ {+0xc0,+0x40,+0x50}; new ∈ {+0xc0,+0xa8,+0x40,+0x50}) are hoisted bools. Sig-id 0x28/1
+semantics still undecoded (TODO).
+
+**⚠ SPEC CORRECTION (Blueprint rule 6 — flagged for human review; contradicts `command_sink.h`'s channel-1 doc):** `FUN_140220eb0`
+→ `2408c0` → `20abe0` is a **DISCONNECT (remove-slot)**, not the previously documented "has-slot bool query". Asm evidence:
+(a) the 220eb0 thunk forwards r8 (the listener) untouched — Ghidra's 2-arg rendering of the 2408c0 call DROPPED it; (b) `2408c0`
+(1402408ff) sets `dispatcher+0x08 = 1` (dirty/suppression flag) then calls `20abe0(*(map_node+0x18) = SignalListClass, listener)`;
+(c) `20abe0` (14020ac1f-54) UNLINKS the matched slot (`slot+0x20 == match`) from the SignalListClass doubly-linked ring (+0x00/+0x08),
+removes it from the listener's own connection chain (head `listener+0x08`, link `slot+0x10`), **frees the 0x28-byte node** (769c94)
+and **decrements `SignalListClass+0x30`** — the count field the `2406c0` connect ctor zeroes. An unlink+free+count-decrement cannot
+be a query; it is `2406c0`'s exact inverse. The bool return = "a slot was removed". `command_sink.h` doc corrected in place. (This
+correction is load-bearing for stage K: with "query" semantics the `3846c0` clear path made no sense.) Slot-node layout pinned:
+0x28 B = {+0x00/+0x08 list ring prev/next, +0x10 listener-chain next, +0x20 SignalListClass back-ptr}; a listener's connections chain
+from `listener+0x08`.
+
+**Host gate = PASS** (`fire_control_test.cpp` `test_opp_target_update` + full `just sim-test` 20/20 green): unchanged-target no-op;
+fresh-acquire connect (0x28,1); retarget disconnect-old-then-connect-new in binary order; elsewhere-tracked guards suppress edits but
+not slot writes; clear-to-null; decide()-level stage-K on Fire only + null-sink skip. `RecordingCommandSink` extended with
+`listener_edits`. **With stages A-K all assembled, `sim::fire_control_decide` now models the FULL `3825b0` body** — remaining binary
+residue: curved-lead `399450` mode (dormant), stage-G `385e70` pose (engine-boundary pose eval), the roll-branch side effects
+(+0x68 stamp, 294bc0/285d70 deregistration), and the opaque hoisted reads themselves.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

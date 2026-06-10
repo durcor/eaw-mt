@@ -29,7 +29,15 @@
 //         connect = FUN_140220e90(...)  -> FUN_1402406c0   (add slot; lazily builds the list and
 //                          registers it into the GLOBAL SingletonInstance<SignalDispatcherClass>
 //                          returned by FUN_140058570, which is just a registry of live emitters)
-//         has-slot = FUN_140220eb0(...) -> FUN_1402408c0   (bool query)
+//         disconnect = FUN_140220eb0(...) -> FUN_1402408c0 -> FUN_14020abe0   (REMOVE slot)
+//                          ⚠ CORRECTED 2026-06-10 (was documented "has-slot bool query"): the asm of
+//                          20abe0 (14020ac1f-54) unlinks the matched slot from the SignalListClass
+//                          doubly-linked ring (+0x00/+0x08), removes it from the listener's own
+//                          connection chain (head at listener+0x08, link at slot+0x10), FREES the
+//                          0x28-byte slot node and DECREMENTS the list count (SignalListClass+0x30,
+//                          the field the 2406c0 ctor zeroes). 2408c0 also sets dispatcher+0x08 = 1
+//                          (the suppression/dirty flag) before the removal. It is 2406c0's inverse —
+//                          a disconnect, not a query (the bool return = "a slot was removed").
 //
 //       NOTE: FUN_140058570()'s return is PASSED to FUN_140220ed0 but IGNORED there — emit
 //       dispatches on `self+0x38`, not on the global singleton. The singleton call survives only
@@ -202,6 +210,16 @@ struct CommandSink {
     // A lifted unit emits here and the serial drain (drain_sfx, sfx_channel.h) routes to an SfxSink.
     // Default no-op so units that ignore audio need not override.
     virtual void emit_sfx_event(void* /*emitter*/, uint32_t /*sfx_id*/) {}
+
+    // Listener-slot edits on ANOTHER object's +0x38 dispatcher (Class 2b). Mirrors
+    // FUN_140220e90 (connect → 2406c0 add-slot) / FUN_140220eb0 (disconnect → 2408c0/20abe0
+    // remove-slot) with the live call shape (_, target+0x38, listener, sig_id) — `target` here is
+    // NOT pre-offset (the drain resolves +0x38). These are cross-entity WRITES (the slot list lives
+    // in the target), so a Phase-A unit buffers them; the drain replays in canonical order. First
+    // emitter: the fire body's stage-K opp-target update (3825b0:494-499, sig_ids 0x28 and 1 —
+    // signal semantics not yet decoded; see firing_body_lift_scope.md §8.56). Default no-op.
+    virtual void emit_connect(void* /*target*/, void* /*listener*/, uint32_t /*sig_id*/) {}
+    virtual void emit_disconnect(void* /*target*/, void* /*listener*/, uint32_t /*sig_id*/) {}
 
     // Object creation (Class 2). Mirrors the inline GameObjectManager::CreateObject (FUN_14029f810)
     // a unit runs to spawn a projectile/fx/child. Recorded, never run inline: the Phase-B drain calls
