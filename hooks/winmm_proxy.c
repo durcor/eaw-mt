@@ -4448,6 +4448,57 @@ static int pfire_r1_gate2a(int64_t p1, int64_t *p2, int64_t p3) {
     return 0;                                                          /* compound false ⇒ binary returns 0 */
 }
 
+/* ── DTFC — in-game STRUCTURAL ORACLE for the sim/ fire_control gate ladder (firing_body_lift_scope.md
+ * §8.50/§8.51). The sim/ assembly enumerates 12 ordered eligibility gates (sim::FireGate /
+ * fire_first_blocked_gate). This evaluates those exact 12 predicates IN SIM ORDER on the binary's PRE-call
+ * state and (a) tallies a one-directional invariant vs the binary's fire verdict r, and (b) logs a capped
+ * sample of (bits, fired) records for OFFLINE replay through the real sim:: code (sim/tests/fire_control_
+ * oracle.cpp). Bit i set = gate i PASSES; SHORT-CIRCUIT — the first failing gate clears its bit and the
+ * later bits are left set (don't-care), mirroring fire_first_blocked_gate. `r1_g2a` is the already-computed
+ * gate-2a verdict (= sim WeaponSelected). Predicates transcribe pfire_r1_gate1/2a's reads (the same leaves
+ * the binary runs; 35f470 fog rebuild is idempotent). HEADLINE: fc_bug = count(sim blocks AND binary
+ * fired) MUST be 0 — a non-zero would mean a sim gate rejects a shot the binary actually took (an
+ * over-strict / wrong sim gate). The bit index ↔ sim::FireGate: 0 OwnerPresent .. 11 WeaponSelected. */
+#define DTFC_NGATE 12
+static uint32_t g_fc_calls=0, g_fc_fired=0, g_fc_bug=0, g_fc_passfire=0, g_fc_passnofire=0;
+static uint32_t g_fc_blocked[DTFC_NGATE];
+static uint32_t g_fc_rec=0;            /* capped raw-record counter (DTFCREC) */
+static uint32_t g_fc_last=0xFFFFFFFFu;
+
+static uint16_t dtfc_gate_bits(int64_t p1, int64_t *p2, int64_t p3, int r1_g2a) {
+    uint16_t m = 0x0FFF;                                  /* all 12 pass */
+    if (!g_dt_imgbase || !p1) return m;
+    #define FCFAIL(i) do { m &= (uint16_t)~(1u << (i)); return m; } while (0)
+    int64_t owner = *(int64_t *)(p1 + 0x10);
+    if (owner == 0) FCFAIL(0);                            /* OwnerPresent      :62 */
+    if (p2 == 0) FCFAIL(1);                               /* TargetPresent     :65 */
+    if (p3 != 0 && *(int64_t *)(p3 + 0x10) != (int64_t)p2) FCFAIL(2);          /* ContextMatch :68 */
+    if ((*(uint8_t *)((int64_t)p2 + 0x74 * 8) & 0x40) != 0) FCFAIL(3);         /* TargetTargetable :71 */
+    int64_t owner_type = *(int64_t *)(p1 + 0x20);
+    R1_VfuncFn vf = *(R1_VfuncFn *)(*(int64_t *)p2 + 0x10);
+    if (vf(p2, 0x11) != 0) FCFAIL(4);                     /* TargetQueryable   :74 */
+    R1_39b140Fn f39b140 = (R1_39b140Fn)(g_dt_imgbase + 0x39b140);
+    if (f39b140(p2) != 0 && *(int8_t *)(*(int64_t *)(owner + 0x298) + 0xa4) == 0) FCFAIL(5); /* CapabilityMatch :78 */
+    int64_t order_rec = *(int64_t *)(owner + 0x100);
+    if (order_rec != 0) {
+        if (*(int32_t *)(order_rec + 0x394) > 0) FCFAIL(6);                    /* OrderCharge :85 */
+        if (*(int32_t *)(order_rec + 0x394) < 0 && *(int32_t *)(owner_type + 0x48) != 10) FCFAIL(6); /* :88 */
+    }
+    R1_540140Fn f540140 = (R1_540140Fn)(g_dt_imgbase + 0x540140);
+    if (f540140(owner_type, p2) == 1) FCFAIL(7);          /* NotSelfTarget     :93 */
+    int64_t b15418 = *(int64_t *)(g_dt_imgbase + 0xb15418ULL);
+    R1_35f470Fn f35f470 = (R1_35f470Fn)(g_dt_imgbase + 0x35f470);
+    if (f35f470(b15418, *(int32_t *)(owner + 0x58), p2, 1) == 1) FCFAIL(8);    /* NotFogged :97 */
+    if (*(int8_t *)(owner + 0x3b4) == 1 || *(int8_t *)((int64_t)p2 + 0x3b4) == 1) {
+        R1_39a540Fn f39a540 = (R1_39a540Fn)(g_dt_imgbase + 0x39a540);
+        if (f39a540(owner, p2) == 0) FCFAIL(9);           /* Diplomacy         :102 */
+    }
+    /* gate 10 FiringArc = assume pass (owner_type+0x4e==0, dead in tactical — same as gate2a). */
+    if (!r1_g2a) FCFAIL(11);                              /* WeaponSelected (gate2a verdict, :147-163) */
+    #undef FCFAIL
+    return m;
+}
+
 /* R1 gate-2b (3825b0:164-209): aim-point + LOS + range — the dominant per-tick fire/no-fire filter.
  * Assumes gate1+gate2a passed (reached :164). Returns 1 = reaches the spread/fire point (:210), 0 = bails
  * (no LOS or out of range), -1 = SKIP (the param_3==0 aim path uses 383f70 + the 405870 redirect, both of
@@ -6148,6 +6199,25 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
             if (r1_full == -1) g_r1_g3_skip++;
             else if (r == 1) { if (r1_full == 1) g_r1_g3_ok++; else g_r1_g3_bug++; }
             else if (r1_full == 1) g_r1_g3_nofire++;
+
+            /* DTFC (§8.51): the sim/ fire_control gate-ladder oracle. Evaluate the 12 FireGate predicates
+             * in sim order; tally the one-directional invariant vs r and log a capped sample for offline
+             * sim:: replay. */
+            uint16_t fcm = dtfc_gate_bits(p1, (int64_t *)p2, p3, r1_g2a);
+            int fc_blocked = (fcm != 0x0FFF);
+            g_fc_calls++;
+            if (r == 1) g_fc_fired++;
+            if (fc_blocked) {
+                int bi = 0; while (bi < DTFC_NGATE && (fcm & (uint16_t)(1u << bi))) bi++;
+                if (bi < DTFC_NGATE) g_fc_blocked[bi]++;
+                if (r == 1) g_fc_bug++;            /* HEADLINE: sim blocks a shot the binary TOOK → bug */
+            } else if (r == 1) g_fc_passfire++;
+            else g_fc_passnofire++;
+            if (g_fc_rec < 8192) {                 /* capped raw records for offline sim:: replay */
+                char fb[96];
+                snprintf(fb, sizeof fb, "DTFCREC\tbits=%03x\tfired=%d\n", fcm, (r == 1) ? 1 : 0);
+                log_write(fb); g_fc_rec++;
+            }
         }
         if (r == 1 && g_b3_last_proj && owner && owner_type) {
             /* tgt oracle checks rec+0x08 == param_2. At takeover the param_3==0 path may REDIRECT param_2
@@ -6174,6 +6244,14 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     tk, g_r1_g1_n, g_r1_g1_ok, g_r1_g1_bug, g_r1_g1_nofire,
                     g_r1_g2_ok, g_r1_g2_bug, g_r1_g2_nofire,
                     g_r1_g3_ok, g_r1_g3_bug, g_r1_g3_nofire, g_r1_g3_skip);
+                log_write(db);
+                snprintf(db, sizeof db,
+                    "DTFC\ttick=%u\tcalls=%u\tfired=%u\tbug=%u\tpass_fire=%u\tpass_nofire=%u\t"
+                    "blk=Own%u,Tgt%u,Ctx%u,Tgtbl%u,Qry%u,Cap%u,Chg%u,Self%u,Fog%u,Dip%u,Arc%u,Wpn%u\n",
+                    tk, g_fc_calls, g_fc_fired, g_fc_bug, g_fc_passfire, g_fc_passnofire,
+                    g_fc_blocked[0],g_fc_blocked[1],g_fc_blocked[2],g_fc_blocked[3],g_fc_blocked[4],
+                    g_fc_blocked[5],g_fc_blocked[6],g_fc_blocked[7],g_fc_blocked[8],g_fc_blocked[9],
+                    g_fc_blocked[10],g_fc_blocked[11]);
                 log_write(db);
             } else {
                 snprintf(db, sizeof db,

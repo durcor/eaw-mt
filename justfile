@@ -70,6 +70,17 @@ build-winmm-oracle:
   nix develop --command x86_64-w64-mingw32-gcc -DEAW_ORACLE -shared -o patches/experimental/winmm.dll hooks/winmm_proxy.c -lkernel32
   cp patches/experimental/winmm.dll {{game-dir}}
 
+# §8.51: in-game STRUCTURAL ORACLE for the sim/ fire_control gate ladder. Capture first:
+#   just build-winmm-oracle  &&  just difftrace=1 launch-foc-desktop   (play a space battle → DTFCREC lines)
+# then replay the capture through the REAL sim::fire_first_blocked_gate (PASS iff no sim gate blocked a
+# real shot). Override the log: just fc-oracle capture=eaw-mt.log.dtfc-pass
+fc-oracle capture="eaw-mt.log":
+  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+    sim/tests/fire_control_oracle.cpp sim/fire_control.cpp sim/firing_aimpoint.cpp sim/firing_intercept.cpp \
+    sim/firing_spawn.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_fc_oracle
+  grep '^DTFCREC' {{capture}} > /tmp/dtfc_records.txt
+  /tmp/eaw_fc_oracle /tmp/dtfc_records.txt
+
 # Compile + run the lifted sim-core host validation tests (sim/). No game needed.
 sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \

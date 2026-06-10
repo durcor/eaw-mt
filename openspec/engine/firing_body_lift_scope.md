@@ -1851,6 +1851,28 @@ aim → range → muzzle-select → lead → reach → spread → spawn → cool
 predicate-value derivation for the gates (the opaque reads), the stage-G `385e70` pose + curved-lead `399450` mode, stage-J rate-of-fire
 modifier math (414-491), stage-K opp-target via CommandSink, and the in-game structural oracle (§8.22 observe pattern) vs binary 3825b0.
 
+### 8.51 B3.7.5 — IN-GAME STRUCTURAL ORACLE for the fire_control gate ladder = PASS (2026-06-09)
+The first in-game validation of the sim/ fire-control ASSEMBLY against the live binary, via **capture-then-replay** (sim/ C++ can't link
+into the pure-C hook DLL, so: the hook captures, an offline host harness replays the REAL sim:: code). The hook (`dtfc_gate_bits` +
+the DTFC tally in `dtwa_b3_3825b0_hook`, `winmm_proxy.c`) evaluates the 12 `sim::FireGate` predicates IN SIM ORDER on each live `3825b0`
+fire call (transcribing the same engine reads `pfire_r1_gate1/2a` run), and (a) tallies the one-directional invariant vs the binary's
+actual fire verdict `r`, (b) logs a capped 8192-record sample (`DTFCREC bits=<hex> fired=<0|1>`) for offline replay through
+`sim::fire_first_blocked_gate` (`sim/tests/fire_control_oracle.cpp`, `just fc-oracle`). **HEADLINE invariant: `bug = count(sim gate
+blocks AND binary fired) == 0`** — a sim gate must never reject a shot the binary actually took.
+
+**RESULT = PASS** (live space battle, EAW_ORACLE + EAW_DIFFTRACE=1; evidence `eaw-mt.log.dtfc-pass`): over **calls=2,541,020**
+fire-control evaluations with **fired=14,290** real shots, **bug=0** — the sim/ gate ladder never blocked a real shot.
+`pass_fire=14,290` (every binary fire passed all 12 sim gates), `pass_nofire=2,526,310` (no-fires that cleared eligibility and bailed
+downstream at aim/range/lead — expected). Block distribution: the ONLY eligibility gate that ever blocks in practice is
+**TargetTargetable** (`+0x74 & 0x40`, 420 blocks); all other 11 gates never first-block in this battle. The offline harness replayed the
+8192 records through the real `sim::fire_first_blocked_gate`: `bug=0`, all 143 sampled shots → `FireGate::None`, **ALL PASS**.
+**Cross-check vs the pre-existing DTR1SUM oracle** (independent transcription): `g1_bug=g2_bug=g3_bug=0`, with `g1_n=2,541,020` and
+`g1_ok=14,290` matching DTFC's `calls`/`fired` exactly — fully consistent. ⇒ the §8.50 gate enumeration is correct + complete against
+2.5M real fire decisions. **Scope/next:** this validates the gate SKELETON (RNG-independent). The geometry stages (aim/range/lead/spread)
+are substream-divergent from the global-LCG binary, so their in-game oracle is the next slice — capture the RNG-independent decision
+(param_3≠0 explicit-context path) + replay `fire_control_decide`'s full outcome; and widen the DTFCREC sample to include gate-block
+records (this capture's early 8192 were all eligibility-pass). The binary geometry itself is already in-game bit-exact via §8.22 PFOBS.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
