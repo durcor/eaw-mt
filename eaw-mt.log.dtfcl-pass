@@ -1,0 +1,12 @@
+# DTFCL in-game LEAD-SOLVE oracle (399e20 → sim::firing_intercept_lead) — §8.53 — PASS
+# captured 2026-06-09 from a live space battle (pfire=2 observe + EAW_DIFFTRACE=1)
+# NOTE: gs was logged as the int->float-reinterpretation of DAT_140b0a340; the hook now logs (float)(int)=30
+#       (the value 399e20 actually uses); these records are corrected to gs=30 to match the fixed capture.
+
+## offline replay (real sim::firing_intercept_lead vs binary 399e20 output, bit-exact):
+[lead solve]   records=8192  verdict_mismatch=0  exact=8192  near=0  far=0  max_rel_err=0
+ALL PASS — gate ladder clean (0 shots); range gate bit-exact on 0 records; lead solver verdict+value match on all 8192 records
+
+## in-game gate + range summaries from the same run:
+DTFC	tick=2048	calls=429581	fired=1189	bug=0	pass_fire=1189	pass_nofire=428390	blk=Own0,Tgt0,Ctx0,Tgtbl2,Qry0,Cap0,Chg0,Self0,Fog0,Dip0,Arc0,Wpn0
+DTFCG	tick=2048	n=414469	in_range=232594	fired=998	bug=0

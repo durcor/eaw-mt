@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 using namespace sim;
 
@@ -64,6 +65,9 @@ int main(int argc, char** argv) {
     long g_records = 0, g_fired = 0;
     long g_transcribe_mismatch = 0;   // sim::fire_range_gate_pass != binary's captured in_range
     long g_ground_bug = 0;            // binary fired but the range gate (sim) says out of range
+    // ── lead-solve records (DTFCLREC) ──
+    long l_records = 0, l_verdict_mismatch = 0, l_exact = 0, l_near = 0, l_far = 0;
+    double l_max_err = 0.0;
 
     char line[512];
     while (std::fgets(line, sizeof line, f)) {
@@ -109,6 +113,38 @@ int main(int argc, char** argv) {
                                 sim_in, in, mx, my, ax, ay, wr, ex, mn);
             }
             if (fr == 1) { ++g_fired; if (!sim_in) ++g_ground_bug; }   // fired but sim says out of range
+        } else if (const char* L = std::strstr(line, "DTFCLREC")) {
+            float tp[3],tv[3],fv[3],mz[3],sr[3],gs,ps,eo[3];
+            auto v3 = [&](const char* key, float* o) {
+                const char* k = std::strstr(L, key);
+                return k && std::sscanf(k + (int)std::strlen(key), "%g,%g,%g", o, o+1, o+2) == 3;
+            };
+            const char* kg = std::strstr(L,"\tgs="); const char* kp = std::strstr(L,"\tps=");
+            if (!(v3("\ttp=",tp)&&v3("\ttv=",tv)&&v3("\tfv=",fv)&&v3("\tmz=",mz)&&v3("\tsr=",sr)&&
+                  kg && kp && v3("\teo=",eo))) continue;
+            if (std::sscanf(kg+4,"%g",&gs)!=1 || std::sscanf(kp+4,"%g",&ps)!=1) continue;
+            ++l_records;
+            bool sol = false;
+            eaw::vec3 lead = firing_intercept_lead(eaw::vec3{tp[0],tp[1],tp[2]}, eaw::vec3{tv[0],tv[1],tv[2]},
+                                                   eaw::vec3{fv[0],fv[1],fv[2]}, eaw::vec3{mz[0],mz[1],mz[2]},
+                                                   eaw::vec3{sr[0],sr[1],sr[2]}, gs, ps, &sol);
+            // the fire-relevant bit: does sim agree with the binary on whether a solution exists?
+            bool sim_zero = (lead.x==0.0f && lead.y==0.0f && lead.z==0.0f);
+            bool bin_zero = (eo[0]==0.0f && eo[1]==0.0f && eo[2]==0.0f);
+            if (sim_zero != bin_zero) {
+                ++l_verdict_mismatch;
+                if (l_verdict_mismatch <= 16)
+                    std::printf("  LEAD VERDICT sim_zero=%d bin_zero=%d  sim=(%.4g,%.4g,%.4g) bin=(%.4g,%.4g,%.4g)\n",
+                                sim_zero, bin_zero, lead.x,lead.y,lead.z, eo[0],eo[1],eo[2]);
+            }
+            // value accuracy (bit-exact vs near vs far), to separate transcription error from FP noise.
+            auto bits = [](float a){ uint32_t u; std::memcpy(&u,&a,4); return u; };
+            bool exact = bits(lead.x)==bits(eo[0]) && bits(lead.y)==bits(eo[1]) && bits(lead.z)==bits(eo[2]);
+            double ex=lead.x-eo[0], ey=lead.y-eo[1], ez=lead.z-eo[2];
+            double err=std::sqrt(ex*ex+ey*ey+ez*ez);
+            double mag=std::sqrt((double)eo[0]*eo[0]+(double)eo[1]*eo[1]+(double)eo[2]*eo[2]);
+            double rel = mag>1e-6 ? err/mag : err;
+            if (exact) ++l_exact; else if (rel < 1e-4) ++l_near; else { ++l_far; if (rel>l_max_err) l_max_err=rel; }
         }
     }
     std::fclose(f);
@@ -120,14 +156,18 @@ int main(int argc, char** argv) {
         if (blocked_hist[i]) std::printf("    %-16s %ld\n", gate_name((FireGate)i), blocked_hist[i]);
     std::printf("[range gate]   records=%ld  fired=%ld  transcribe_mismatch=%ld  ground_bug=%ld\n",
                 g_records, g_fired, g_transcribe_mismatch, g_ground_bug);
+    std::printf("[lead solve]   records=%ld  verdict_mismatch=%ld  exact=%ld  near=%ld  far=%ld  max_rel_err=%.3g\n",
+                l_records, l_verdict_mismatch, l_exact, l_near, l_far, l_max_err);
 
     int fail = 0;
-    if (records == 0 && g_records == 0) { std::printf("NO RECORDS — capture produced no DTFC*REC lines\n"); return 1; }
+    if (records == 0 && g_records == 0 && l_records == 0) { std::printf("NO RECORDS — capture produced no DTFC*REC lines\n"); return 1; }
     if (bug != 0)                  { std::printf("GATE FAIL — sim gate blocked %ld real shots\n", bug); fail = 1; }
     if (g_transcribe_mismatch != 0){ std::printf("RANGE FAIL — sim range gate disagrees with the binary on %ld records\n", g_transcribe_mismatch); fail = 1; }
     if (g_ground_bug != 0)         { std::printf("RANGE FAIL — sim range gate rejects %ld real shots\n", g_ground_bug); fail = 1; }
+    if (l_verdict_mismatch != 0)   { std::printf("LEAD FAIL — sim lead disagrees with the binary on solution-existence for %ld records\n", l_verdict_mismatch); fail = 1; }
+    if (l_far != 0)                { std::printf("LEAD FAIL — sim lead value diverges (>1e-4 rel) on %ld records (max %.3g)\n", l_far, l_max_err); fail = 1; }
     if (fail) return 1;
-    std::printf("ALL PASS — gate ladder clean on %ld shots; range gate matches the binary on all %ld records (%ld real shots)\n",
-                fired, g_records, g_fired);
+    std::printf("ALL PASS — gate ladder clean (%ld shots); range gate bit-exact on %ld records; lead solver verdict+value match on all %ld records\n",
+                fired, g_records, l_records);
     return 0;
 }

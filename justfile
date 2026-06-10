@@ -74,11 +74,14 @@ build-winmm-oracle:
 #   just build-winmm-oracle  &&  just difftrace=1 launch-foc-desktop   (play a space battle → DTFCREC lines)
 # then replay the capture through the REAL sim::fire_first_blocked_gate (PASS iff no sim gate blocked a
 # real shot). Override the log: just fc-oracle capture=eaw-mt.log.dtfc-pass
+# NB: the lead-solve (DTFCLREC) records only appear under `just pfire=2 difftrace=1 launch-foc-desktop`
+# (the observe path that computes the geometry); the gate/range records appear under plain difftrace=1.
+# -ffp-contract=off keeps the lifted lead math un-FMA'd for bit-exact comparison with the binary's SSE.
 fc-oracle capture="eaw-mt.log":
-  nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
+  nix develop --command g++ -std=c++17 -O2 -ffp-contract=off -Wall -Wextra -Isim \
     sim/tests/fire_control_oracle.cpp sim/fire_control.cpp sim/firing_aimpoint.cpp sim/firing_intercept.cpp \
     sim/firing_spawn.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_fc_oracle
-  grep -E '^(DTFCREC|DTFCGREC)' {{capture}} > /tmp/dtfc_records.txt
+  grep -E '^(DTFCREC|DTFCGREC|DTFCLREC)' {{capture}} > /tmp/dtfc_records.txt
   /tmp/eaw_fc_oracle /tmp/dtfc_records.txt
 
 # Compile + run the lifted sim-core host validation tests (sim/). No game needed.

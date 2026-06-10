@@ -4549,6 +4549,8 @@ typedef char    (*R1_ffdb0Fn)(uint32_t*, int32_t);        /* FUN_1401ffdb0(&LCG,
  * ⇒ lead = x*garbage_as_0 = 0 ⇒ the reimpl never fires. Must capture+pass it as float. */
 typedef float   (*R1_370f00Fn)(int64_t, int64_t);         /* FUN_140370f00(lVar7,0) → projectile speed (float) */
 typedef float*  (*R1_399450Fn)(int64_t, float*, int64_t, float*, float*, float); /* lead solver; param_6=speed (float) */
+typedef float*  (*R1_399e20Fn)(int64_t, float*, int64_t, float*, float*, float); /* §8.53 the 399e20 fallback solver = the sim::firing_intercept_lead lift */
+static uint32_t g_fcl_rec=0;   /* §8.53 capped DTFCLREC lead-solve records for offline sim:: replay */
 typedef char    (*R1_383ba0Fn)(int64_t, float*);          /* FUN_140383ba0 fire-gate predicate */
 typedef int64_t (*R1_3973b0Fn)(int64_t*);                 /* FUN_1403973b0 type-record (error path) */
 typedef float*  (*R1_381dc0Fn)(int64_t, float*, float, float*, int64_t, int32_t); /* dispersion (float arg3) */
@@ -4633,6 +4635,29 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
     float *pf = f399450(owner, buf220, (int64_t)p2, &S[12], &S[4], fSpeed);  /* :231 lead solver (param_6=speed) */
     float lx = pf[0], ly = pf[1], lz = pf[2];                    /* :233-235 snapshot before unlock */
     LeaveCriticalSection(&g_pfire_scratch_cs);
+
+    /* DTFCL (§8.53): lead-solve verdict oracle. Call 399e20 (the fallback solver that sim::firing_intercept_lead
+     * lifts) DIRECTLY on the same aim(&S[12])/muzzle(&S[4])/speed the body feeds 399450, read the target inputs
+     * at 399e20's offsets, and log them + the 399e20 output for offline BIT-EXACT replay through the lifted
+     * sim::firing_intercept_lead. RNG-free (399e20 + its inlined 393b70 predict are pure math). %.9g round-trips
+     * a float exactly. */
+    if (dt_on() && g_fcl_rec < 8192) {
+        int64_t tgt = (int64_t)p2;
+        int64_t ref = *(int64_t *)(tgt + 0xa8) ? *(int64_t *)(tgt + 0xa8) + 0x164 : tgt + 0x248;
+        float tp0=*(float*)(tgt+0x78),  tp1=*(float*)(tgt+0x7c),  tp2=*(float*)(tgt+0x80);
+        float tv0=*(float*)(tgt+0x254), tv1=*(float*)(tgt+0x264), tv2=*(float*)(tgt+0x274);
+        float fv0=*(float*)(ref+0xc),   fv1=*(float*)(ref+0x1c),  fv2=*(float*)(ref+0x2c);
+        float gs=(float)*(int32_t*)(g_dt_imgbase + 0xb0a340);  /* DAT_140b0a340: 399e20 reads (float)DAT, an INT→float convert (=30), NOT a raw float */
+        float eo[4]={0,0,0,0};
+        ((R1_399e20Fn)(g_dt_imgbase + 0x399e20))(owner, eo, tgt, &S[12], &S[4], fSpeed);
+        char lb[512];
+        snprintf(lb, sizeof lb,
+            "DTFCLREC\ttp=%.9g,%.9g,%.9g\ttv=%.9g,%.9g,%.9g\tfv=%.9g,%.9g,%.9g\tmz=%.9g,%.9g,%.9g\t"
+            "sr=%.9g,%.9g,%.9g\tgs=%.9g\tps=%.9g\teo=%.9g,%.9g,%.9g\n",
+            tp0,tp1,tp2, tv0,tv1,tv2, fv0,fv1,fv2, S[12],S[13],S[14], S[4],S[5],S[6], gs, fSpeed,
+            eo[0],eo[1],eo[2]);
+        log_write(lb); g_fcl_rec++;
+    }
     { static int dbg = 0; if (dbg < 8) { dbg++; char b[256];
         snprintf(b, sizeof b, "[eaw-mt] PFLEAD spd=%.3f aim=%.2f,%.2f,%.2f dir=%.2f,%.2f,%.2f lead=%.4f,%.4f,%.4f\n",
                  fSpeed, S[12],S[13],S[14], S[4],S[5],S[6], lx,ly,lz);

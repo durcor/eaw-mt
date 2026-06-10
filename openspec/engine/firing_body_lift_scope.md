@@ -1893,6 +1893,26 @@ throughout; `ground_bug=0` was the tell (a real transcription error would have r
 **NEXT geometry slices:** lead-solve verdict (399450 vs the lifted 399e20 fallback — capture lead-nonzero + reach `383ba0`, the
 remaining RNG-free fire/no-fire factors on the param_3≠0 path) → then the full param_3≠0 OUTCOME of `fire_control_decide` end-to-end.
 
+### 8.53 B3.7.7 — in-game oracle extended to the LEAD-SOLVE verdict = BIT-EXACT PASS (2026-06-09)
+Extends the oracle to stage H — the projectile-intercept lead solver, the spot with the known transcription concern (the binary fire body
+calls the full `399450`, which mode-switches but in every branch DELEGATES to `399e20`; sim/ lifts `399e20` as `firing_intercept_lead`).
+The clean validation is therefore against `399e20` directly: in `pfire_compute_geom` (pf==2 observe) the hook calls `399e20` on the SAME
+aim(`&S[12]`)/muzzle(`&S[4]`)/speed the body feeds `399450`, reads the target inputs at 399e20's exact offsets (tgt_pos `+0x78/7c/80`,
+tgt_vel `+0x254/264/274`, frame_vel `(tgt+0xa8?*+0x164:+0x248)+0xc/1c/2c`), and logs them + the 399e20 output (`%.9g`, float-exact
+round-trip) as `DTFCLREC` for offline replay through the real `sim::firing_intercept_lead` (RNG-free — 399e20 + its inlined 393b70 predict
+are pure math; harness built `-ffp-contract=off` to match the binary's un-FMA'd SSE). Checks the lead-NONZERO verdict (the fire-relevant
+bit) AND the value (bit-exact / near / far).
+
+**RESULT = BIT-EXACT PASS** (live space battle; evidence `eaw-mt.log.dtfcl-pass`): over **8192** real fire-path lead solves,
+`verdict_mismatch=0`, **`exact=8192`** (`near=far=0`, `max_rel_err=0`) — `firing_intercept_lead` reproduces the binary `399e20` output
+bit-for-bit on the real input distribution, including the solution-existence verdict. Same pf==2 run re-confirms the gate ladder (`bug=0`)
+and range gate (`bug=0`). **⚠️Methodology-#28 banked (caught + fixed before committing):** the first run logged `gs=4.2e-44` — a denormal,
+i.e. the integer `30` read as a RAW float; `399e20` does `(float)DAT_140b0a340` (an INT→float CONVERT = 30.0), so the capture must read
+`(float)*(int32_t*)`. The tell that it was a capture (not a lift) bug: with `gs` corrected to 30 the lift matched bit-exact on all 8192 —
+the input mapping was right, only the one global was mis-typed (exactly the "DAT read as the wrong type" trap). **⇒ the param_3≠0 fire/no-fire
+decision is now in-game validated end-to-end: ordered gates (§8.51) → range gate (§8.52, bit-exact) → lead-solve verdict (§8.53, bit-exact).
+The remaining RNG-free factor is the `383ba0` reach predicate (hoisted bool); then `fire_control_decide`'s full composed outcome.**
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
