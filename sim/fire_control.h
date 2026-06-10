@@ -77,6 +77,28 @@ struct FireEligibility {
 // First failing gate in 3825b0 order, or FireGate::None when all pass.
 FireGate fire_first_blocked_gate(const FireEligibility& g);
 
+// Stage-J rate-of-fire modifier values (3825b0:414-491) — every term is an opaque Phase-A read
+// (category index 374b50 / active-check 39b950 / recursive owner modifier 398010 / the 33fb70
+// Plus-of-per-bucket-max buff fold over the 395c70-collected modifier set), hoisted to its VALUE;
+// the lifted ladder is the arithmetic that combines them. Defaults are the neutral element.
+struct CooldownModInputs {
+    bool  cat0_active = false;     // 39b950(owner, 374b50(owner+0x298, 0), 1)
+    float cat0_mult   = 1.0f;      // *(weapon+0x250 + idx0*4), used iff cat0_active
+    bool  cat1_active = false;     // 39b950(owner, 374b50(owner+0x298, 1), 1)
+    float cat1_mult   = 1.0f;      // *(weapon+0x250 + idx1*4), used iff cat1_active
+    float owner_rof_mod = 1.0f;    // 398010(owner, 1)  — rate-of-fire owner/group modifier
+    float owner_recharge_mod = 1.0f; // 398010(owner, 9) — recharge owner/group modifier
+    float buff_fold = 0.0f;        // 33fb70(GreaterThan, Plus) fold over the 395c70 modifier set
+    eaw::u32 burst_count = 0;      // *(uint*)(weapon+0x230) — burst reset base (roll branch)
+    float shot_delay = 0.0f;       // *(float*)(weapon+0x234) — between-shot delay (no-roll branch)
+};
+
+// New cooldown own-state after stage J: the (+0x58, +0x5c) pair the binary writes.
+struct CooldownState {
+    int recharge = 0;              // *(param_1+0x58)
+    int burst = 0;                 // *(param_1+0x5c)
+};
+
 // All hoisted inputs for one fire-control decision. Offsets in comments are into the 3825b0 body / source
 // objects (the firing_spawn ENV-getter pattern); the caller resolves them from snapshot/own-state.
 struct FireControlInputs {
@@ -121,13 +143,17 @@ struct FireControlInputs {
     // ── I: the projectile payload (firing_make_spawn). `launch_dir` is filled BY this pipeline. ───────
     ProjectileFiringInputs spawn{};
 
-    // ── J: cooldown base roll (402-413) — own-state, the :410 RNG seam, now on the substream. Rolled
-    // only when the burst counter reaches 0 (hoisted as `roll_cooldown`; the surrounding rate-of-fire
-    // modifier math, 414-491, is own-state and a later stage-J completion). ──────────────────────────
-    bool  roll_cooldown   = false;        // *(param_1+0x5c) decremented to 0 this shot → roll
+    // ── J: cooldown (402-493) — own-state; the :410 RNG seam on the substream. The binary decrements
+    // the burst counter (param_1+0x5c); at 0 it ROLLS a new recharge base (firing_roll_cooldown_base)
+    // and recomputes the recharge + burst reset; otherwise it recomputes the between-shot delay (no
+    // draw). Both branches run the rate-of-fire modifier ladder (CooldownModInputs, opaque hoisted
+    // reads). Deferred side effects of the roll branch: the +0x68 sensor-frame stamp and the
+    // 294bc0/285d70 manager deregistration (own-state / manager-list writes, not decision math). ─────
+    int   burst_counter   = 2;            // *(param_1+0x5c) at entry; decremented on fire; 0 ⇒ roll
     float cooldown_min    = 0.0f;         // *(weapon+0x228)
     float cooldown_max    = 0.0f;         // *(weapon+0x22c)
-    float cooldown_scale  = 1.0f;         // DAT_1408007f0
+    float cooldown_scale  = 1.0f;         // DAT_1408007f0 (= 100.0f in the binary)
+    CooldownModInputs cooldown_mods{};    // stage-J modifier ladder values (414-491)
 };
 
 enum class FireOutcome {
@@ -145,8 +171,9 @@ struct FireControlDecision {
     eaw::vec3   aim_point  = {};   // the resolved aim (stage E)
     eaw::vec3   launch_dir = {};   // post-lead, post-spread launch direction (stage I)
     SpawnCommand cmd{};            // valid iff outcome == Fire
-    bool        cooldown_rolled = false;  // stage J fired (Fire + roll_cooldown)
-    int         cooldown_base   = 0;      // the rolled base countdown (param_1+0x58), when cooldown_rolled
+    bool        cooldown_rolled = false;  // stage J: burst counter reached 0 ⇒ the :410 draw happened
+    int         cooldown_base   = 0;      // the rolled PRE-modifier base, when cooldown_rolled
+    CooldownState cooldown{};             // stage J result: the new (+0x58, +0x5c) own-state pair
 };
 
 // Run the fire-control decision over hoisted inputs, composing the lifted leaves in 3825b0 order. Draws
@@ -172,5 +199,27 @@ bool fire_range_gate_pass(const eaw::vec3& muzzle, const eaw::vec3& aim,
 //   return (int)( ((int64_t)((float)draw * gamespeed) & 0xffffffff) / 100 )
 int firing_roll_cooldown_base(float min_delay, float max_delay, float scale, float gamespeed,
                               eaw::SimRng& rng);
+
+// Stage J (414-491): the modifier ladder shared by both cooldown branches.
+//   rate multiplier f: start 1.0; cat0_active ⇒ f = cat0_mult; f *= owner_rof_mod;
+//                      cat1_active ⇒ f *= cat1_mult.
+//   recharge divisor g: owner_recharge_mod * (buff_fold + 1.0).
+float firing_rate_multiplier(const CooldownModInputs& m);
+float firing_recharge_divisor(const CooldownModInputs& m);
+
+// Stage J, roll branch (3825b0:409-457; asm 1403831d7-3833d4) — burst counter hit 0:
+//   recharge = rolled_base;  f < 1.0       ⇒ recharge = (int)((float)(u32)recharge * f + 0.5)
+//              0 < g < 1.0   ⇒ recharge = (int)((float)(u32)recharge / g + 0.5)
+//   burst    = (int)((float)burst_count * max(g, 0.0) + 0.5)
+CooldownState firing_recharge_after_burst(int rolled_base, const CooldownModInputs& m);
+
+// Stage J, between-shots branch (3825b0:459-495; asm 1403833d9-383525) — counter still > 0 after the
+// decrement (`burst_after`). NOTE the tail is asm-corrected vs the Ghidra decompile: at g <= 0 the
+// binary writes ebx (= 0 since 140382d3d) to BOTH +0x5c and +0x58 — recharge AND burst zeroed.
+//   recharge = (int)(int64)(gamespeed * shot_delay)
+//   recharge = (int)((float)(u32)recharge * f + 0.5)            [unconditional, unlike the roll branch]
+//   g > 0 ⇒ recharge = (int)((float)(u32)recharge / g + 0.5), burst = burst_after
+//   g <= 0 ⇒ recharge = 0, burst = 0
+CooldownState firing_delay_between_shots(float gamespeed, const CooldownModInputs& m, int burst_after);
 
 } // namespace sim

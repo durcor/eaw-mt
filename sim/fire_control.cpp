@@ -33,6 +33,55 @@ int firing_roll_cooldown_base(f32 min_delay, f32 max_delay, f32 scale, f32 games
     return (int)((scaled & 0xffffffffLL) / 100);         // ((longlong)(...) & 0xffffffffU) / 100
 }
 
+// Stage J (414-491): the modifier ladder shared by both cooldown branches. 1.0 = DAT_1407ffaf8.
+float firing_rate_multiplier(const CooldownModInputs& m) {
+    f32 f = 1.0f;                                        // movaps %xmm9,%xmm6
+    if (m.cat0_active) f = m.cat0_mult;                  // 39b950 ⇒ weapon+0x250[idx0]
+    f *= m.owner_rof_mod;                                // 398010(owner, 1)
+    if (m.cat1_active) f *= m.cat1_mult;                 // 39b950 ⇒ weapon+0x250[idx1]
+    return f;
+}
+
+float firing_recharge_divisor(const CooldownModInputs& m) {
+    return m.owner_recharge_mod * (m.buff_fold + 1.0f);  // 398010(owner,9) * (33fb70 fold + 1.0)
+}
+
+// Stage J, roll branch (3825b0:409-457). 0.5 = DAT_1408007c0; the (f32)(u32) conversions mirror the
+// zero-extended cvtsi2ss %rax loads of +0x58; the truncating (int) casts are cvttss2si.
+CooldownState firing_recharge_after_burst(int rolled_base, const CooldownModInputs& m) {
+    CooldownState s;
+    eaw::u32 r = (eaw::u32)rolled_base;
+    const f32 f = firing_rate_multiplier(m);
+    if (f < 1.0f)                                        // comiss: apply only when f < 1.0
+        r = (eaw::u32)(int)((f32)r * f + 0.5f);
+    f32 g = firing_recharge_divisor(m);
+    if (0.0f < g && g < 1.0f)                            // apply only when 0 < g < 1
+        r = (eaw::u32)(int)((f32)r / g + 0.5f);
+    if (g < 0.0f) g = 0.0f;                              // maxss %xmm10,%xmm6
+    s.recharge = (int)r;
+    s.burst = (int)((f32)m.burst_count * g + 0.5f);      // (uint)weapon+0x230 via cvtsi2ss %rcx
+    return s;
+}
+
+// Stage J, between-shots branch (3825b0:459-495). Tail asm-corrected (140383503-525): on g <= 0 the
+// binary stores ebx — zeroed at 140382d3d, untouched since — to BOTH +0x5c and +0x58.
+CooldownState firing_delay_between_shots(f32 gamespeed, const CooldownModInputs& m, int burst_after) {
+    CooldownState s;
+    // cvttss2si %xmm0,%rax of (float)gamespeed_int * weapon+0x234, stored as the low 32 bits.
+    eaw::u32 r = (eaw::u32)(eaw::i64)(gamespeed * m.shot_delay);
+    const f32 f = firing_rate_multiplier(m);
+    r = (eaw::u32)(int)((f32)r * f + 0.5f);              // UNCONDITIONAL here (no f<1 guard)
+    const f32 g = firing_recharge_divisor(m);
+    if (0.0f < g) {
+        s.recharge = (int)((f32)r / g + 0.5f);
+        s.burst = burst_after;                           // +0x5c keeps the decremented counter
+    } else {
+        s.recharge = 0;                                  // mov %ebx,0x58(%rdi), ebx == 0
+        s.burst = 0;                                     // mov %ebx,0x5c(%rdi)
+    }
+    return s;
+}
+
 FireGate fire_first_blocked_gate(const FireEligibility& g) {
     if (!g.owner_present)     return FireGate::OwnerPresent;
     if (!g.target_present)    return FireGate::TargetPresent;
@@ -115,12 +164,19 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
     d.cmd = firing_make_spawn(spawn);
     d.outcome = FireOutcome::Fire;
 
-    // ── Stage J: cooldown base roll (402-413) ─────────────────────────────────────────────────────────
-    // Own-state; rolled only when the burst counter reaches 0 this shot. Last RNG seam (after the spread).
-    if (in.roll_cooldown) {
+    // ── Stage J: cooldown (402-493) ───────────────────────────────────────────────────────────────────
+    // Own-state, only on the fired path (after the create). Decrement the burst counter; at 0 roll a new
+    // recharge base (the :410 draw — last RNG seam, after the spread) and run the roll-branch modifier
+    // ladder; otherwise recompute the between-shot delay (no draw).
+    int counter = in.burst_counter;
+    if (counter != 0) counter -= 1;                      // 3825b0:403-407
+    if (counter == 0) {
         d.cooldown_base = firing_roll_cooldown_base(in.cooldown_min, in.cooldown_max,
                                                     in.cooldown_scale, in.gamespeed, rng);
         d.cooldown_rolled = true;
+        d.cooldown = firing_recharge_after_burst(d.cooldown_base, in.cooldown_mods);
+    } else {
+        d.cooldown = firing_delay_between_shots(in.gamespeed, in.cooldown_mods, counter);
     }
     return d;
 }

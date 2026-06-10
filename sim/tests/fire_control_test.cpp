@@ -202,17 +202,76 @@ static void test_cooldown_seam() {
 static void test_fire_rolls_cooldown() {
     std::printf("test_fire_rolls_cooldown\n");
     FireControlInputs in = firing_baseline();
-    in.roll_cooldown = true;
+    in.burst_counter = 1;                        // decrements to 0 ⇒ roll
     in.cooldown_min = 2.0f; in.cooldown_max = 5.0f; in.cooldown_scale = 10.0f;  // gamespeed 1.0
+    in.cooldown_mods.burst_count = 3;
     SimRng r(1);
     FireControlDecision d = fire_control_decide(in, r);
     CHECK(d.outcome == FireOutcome::Fire);
     CHECK(d.cooldown_rolled);
     CHECK(d.cooldown_base >= 0);
-    // no roll when the burst counter has not reached 0.
-    FireControlInputs in2 = firing_baseline();   // roll_cooldown defaults false
+    // neutral mods: f == 1 (no mult), g == 1 (no div) ⇒ recharge == base; burst = (int)(3*1.0+0.5) == 3.
+    CHECK(d.cooldown.recharge == d.cooldown_base);
+    CHECK(d.cooldown.burst == 3);
+    // entry counter 0 also rolls (no decrement, already 0).
+    { FireControlInputs in0 = firing_baseline(); in0.burst_counter = 0;
+      in0.cooldown_min = 2.0f; in0.cooldown_max = 5.0f; in0.cooldown_scale = 10.0f;
+      SimRng r0(1);
+      CHECK(fire_control_decide(in0, r0).cooldown_rolled); }
+    // no roll when the burst counter has not reached 0 (baseline default 2 → between-shots branch).
+    FireControlInputs in2 = firing_baseline();
+    in2.cooldown_mods.shot_delay = 100.0f;       // recharge = (int)(1.0*100) → /g=1 +0.5 ⇒ 100
     SimRng r2(1);
-    CHECK(!fire_control_decide(in2, r2).cooldown_rolled);
+    FireControlDecision d2 = fire_control_decide(in2, r2);
+    CHECK(!d2.cooldown_rolled);
+    CHECK(d2.cooldown.recharge == 100);
+    CHECK(d2.cooldown.burst == 1);               // decremented 2 → 1, kept (g > 0)
+}
+
+static void test_cooldown_modifier_ladder() {
+    std::printf("test_cooldown_modifier_ladder\n");
+    // rate multiplier composition: cat0 REPLACES the 1.0 start, cat1 multiplies.
+    { CooldownModInputs m; m.cat0_active = true; m.cat0_mult = 0.5f;
+      m.owner_rof_mod = 2.0f; m.cat1_active = true; m.cat1_mult = 0.25f;
+      CHECK(firing_rate_multiplier(m) == 0.5f * 2.0f * 0.25f); }
+    { CooldownModInputs m; m.cat0_mult = 0.5f;   // inactive ⇒ ignored
+      CHECK(firing_rate_multiplier(m) == 1.0f); }
+    { CooldownModInputs m; m.owner_recharge_mod = 2.0f; m.buff_fold = 0.5f;
+      CHECK(firing_recharge_divisor(m) == 2.0f * 1.5f); }
+
+    // roll branch: f < 1 applies, f >= 1 does NOT (the comiss asymmetry).
+    { CooldownModInputs m; m.cat0_active = true; m.cat0_mult = 0.5f; m.burst_count = 4;
+      CooldownState s = firing_recharge_after_burst(100, m);
+      CHECK(s.recharge == (int)(100.0f * 0.5f + 0.5f));         // 50
+      CHECK(s.burst == 4); }                                    // g == 1 ⇒ burst_count*1+0.5
+    { CooldownModInputs m; m.cat0_active = true; m.cat0_mult = 3.0f;  // f > 1 ⇒ recharge untouched
+      CooldownState s = firing_recharge_after_burst(100, m);
+      CHECK(s.recharge == 100); }
+    // roll branch: divisor applies only inside (0,1); g > 1 leaves recharge but scales the burst reset.
+    { CooldownModInputs m; m.owner_recharge_mod = 0.5f; m.burst_count = 4;
+      CooldownState s = firing_recharge_after_burst(100, m);
+      CHECK(s.recharge == (int)(100.0f / 0.5f + 0.5f));         // 200
+      CHECK(s.burst == (int)(4.0f * 0.5f + 0.5f)); }            // 2
+    { CooldownModInputs m; m.owner_recharge_mod = 2.0f; m.burst_count = 4;
+      CooldownState s = firing_recharge_after_burst(100, m);
+      CHECK(s.recharge == 100);                                 // g >= 1 ⇒ no div
+      CHECK(s.burst == (int)(4.0f * 2.0f + 0.5f)); }            // 8 (burst still scales)
+    // roll branch, g < 0: clamped to 0 for the burst reset (maxss), recharge untouched (not in (0,1)).
+    { CooldownModInputs m; m.owner_recharge_mod = -1.0f; m.burst_count = 4;
+      CooldownState s = firing_recharge_after_burst(100, m);
+      CHECK(s.recharge == 100);
+      CHECK(s.burst == 0); }
+
+    // between-shots branch: f applies UNCONDITIONALLY (even f > 1), then /g when g > 0.
+    { CooldownModInputs m; m.shot_delay = 100.0f; m.cat0_active = true; m.cat0_mult = 2.0f;
+      CooldownState s = firing_delay_between_shots(1.0f, m, 5);
+      CHECK(s.recharge == (int)((f32)(int)(100.0f * 2.0f + 0.5f) / 1.0f + 0.5f));  // 200→/1+0.5→200
+      CHECK(s.burst == 5); }
+    // between-shots, g <= 0: BOTH recharge and burst zeroed (the asm-corrected ebx tail).
+    { CooldownModInputs m; m.shot_delay = 100.0f; m.owner_recharge_mod = 0.0f;
+      CooldownState s = firing_delay_between_shots(1.0f, m, 5);
+      CHECK(s.recharge == 0);
+      CHECK(s.burst == 0); }
 }
 
 static void test_range_gate() {
@@ -232,6 +291,7 @@ int main() {
     test_range_gate();
     test_muzzle_select_seam();
     test_cooldown_seam();
+    test_cooldown_modifier_ladder();
     test_fire_rolls_cooldown();
     test_ineligible();
     test_no_aim();

@@ -1934,6 +1934,34 @@ composed Fire verdict.** ORACLE CLOSED.
 Remaining LIFT sub-pieces (separate from the oracle): the curved-lead `399450` matrix branch (189-209, only differs from the 399e20
 fallback sim/ uses), stage-G `385e70` pose, stage-J rate-of-fire modifiers (414-491), stage-K opp-target via CommandSink.
 
+### 8.55 B3.7.9 — stage-J rate-of-fire modifier math LIFTED (asm-corrected vs Ghidra) (2026-06-10)
+Completes stage J (3825b0:402-493): the full cooldown own-state recompute now runs in `sim/fire_control`, replacing the hoisted
+`roll_cooldown` bool with the faithful burst-counter logic (decrement; ==0 ⇒ roll branch; else between-shots branch) and emitting the
+new `(+0x58, +0x5c)` pair as `FireControlDecision.cooldown` (`CooldownState`). The modifier TERMS stay hoisted (`CooldownModInputs` —
+each is an opaque Phase-A read: category idx `374b50(owner+0x298,k)` → active `39b950(owner,idx,1)` → mult `weapon+0x250[idx]`;
+recursive owner modifiers `398010(owner,1)`/`(owner,9)`; the `33fb70` fold = Plus-across-buckets of GreaterThan-max-within-bucket,
+clamped, over the `395c70`-collected modifier set [global mgr `b15418` vfunc+0x220 player + `owner+0xf0→+0x138`]); the LIFT is the
+arithmetic ladder combining them. Constants pinned from the binary: `DAT_1408007c0=0.5` (rounding), `DAT_1408007f0=100.0`,
+`DAT_1407ffaf8=1.0`, `DAT_140800804=1e18` (398010's no-value sentinel); gamespeed `DAT_140b0a340` is an INT converted per use
+(cvtdq2ps), consistent with the §8.53 gs=30 finding.
+- **Roll branch** (409-457): recharge=rolled base (§8.49 `firing_roll_cooldown_base`); `f<1.0` ⇒ `r=(int)((f32)(u32)r*f+0.5)`
+  (CONDITIONAL); `0<g<1` ⇒ `r=(int)((f32)(u32)r/g+0.5)`; burst reset `=(int)((f32)(u32)w0x230*max(g,0)+0.5)`. (`f`=rate multiplier:
+  1.0 → cat0 REPLACES → ×mod1 → ×cat1; `g`=`mod9*(fold+1.0)`.) Side effects deferred: +0x68 sensor-frame stamp, `294bc0/285d70`
+  manager deregistration.
+- **Between-shots branch** (459-495): recharge=`(int)(i64)(gamespeed*w0x234)`; `×f` UNCONDITIONAL (no f<1 guard — a real branch
+  asymmetry); `g>0` ⇒ `÷g`, burst keeps the decremented counter. **⚠ GHIDRA ARTIFACT CORRECTED at the tail** (asm 140383503-525):
+  on `g<=0` the binary stores `%ebx` to BOTH `+0x5c` AND `+0x58` — and ebx is ZERO (xor at 140382d3d right after the `29f810`
+  create, rbx callee-saved through every intervening call, verified no write in 140382d3d-1403831d7) ⇒ recharge AND burst both
+  zeroed. Ghidra rendered this as `+0x5c=0` plus a stale-`iVar6` store to `+0x58` — the decompile alone would have lifted a
+  garbage-value bug as truth. (Methodology: same class as the §8.20 Ghidra-args traps — verify register provenance in the asm
+  for any decompiled store of a non-obvious local.)
+**Host gate = PASS** (`fire_control_test.cpp` + full `just sim-test` green; fc-oracle harness recompiles clean): ladder composition
+(cat0-replaces/inactive-ignored/divisor), roll-branch f<1-only + g∈(0,1)-only + g>1-scales-burst-not-recharge + g<0-clamps-burst,
+between-shots unconditional-×f + g<=0-zeroes-BOTH, decide()-level roll-at-counter∈{0,1} vs between-shots-at-counter>1 with neutral-mod
+recharge==base. **Remaining stage-J residue:** none in the math; the in-game bit-exact oracle (capture leaf values + the :410 draw +
+the binary's +0x58/+0x5c writes, replay host ladder) is the next slice. Still deferred elsewhere: curved-lead `399450`, stage-G
+`385e70` pose, stage-K opp-target via CommandSink.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
