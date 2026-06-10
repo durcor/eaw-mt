@@ -1873,6 +1873,26 @@ are substream-divergent from the global-LCG binary, so their in-game oracle is t
 (param_3≠0 explicit-context path) + replay `fire_control_decide`'s full outcome; and widen the DTFCREC sample to include gate-block
 records (this capture's early 8192 were all eligibility-pass). The binary geometry itself is already in-game bit-exact via §8.22 PFOBS.
 
+### 8.52 B3.7.6 — in-game oracle EXTENDED to the geometry stage (range gate) = PASS (2026-06-09)
+Extends §8.51 from the gate skeleton to the first GEOMETRY stage — the stage-F range gate (188-209), the dominant RNG-free fire/no-fire
+filter. The lift's inline range check was extracted to a single exposed function `sim::fire_range_gate_pass(muzzle, aim, weapon_range,
+target_extent, min_range)` (one source of truth — `fire_control_decide` and the oracle call the same code). On the param_3≠0 path,
+`pfire_r1_gate2b_g` (`winmm_proxy.c`) now captures the exact geometry it computes — muzzle (`385e70`), aim (`385c70`), `weapon_range`
+(`3857d0`), `target_extent` (`397780`, split from the sum), `min_range` (`owner_type+0x23c`) — plus the binary's own in-range verdict,
+into a capped 8192-record `DTFCGREC` sample, and tallies the ground-truth invariant **binary fired ⇒ in range** (`DTFCG`). The offline
+harness (`just fc-oracle`) replays each record through the real `sim::fire_range_gate_pass` and checks two things: (1) **bit-for-bit
+agreement** with the binary's verdict on every captured float (the FP-transcription check — the 2D `dy²+dx²` grouping, the `<=` boundary,
+the unconditionally-added extent, the min floor), and (2) it never rejects a real shot.
+
+**RESULT = PASS** (live space battle; evidence `eaw-mt.log.dtfcg-pass`): offline `transcribe_mismatch=0` over all **8192** captured
+geometries (143 real shots) — the lifted range gate reproduces the binary's verdict exactly; `ground_bug=0`. In-game tally corroborates:
+over n≈263K–375K range-gate evaluations across battles, `bug=0` (every binary fire was in range). Cross-checks DTR1SUM/DTFC exactly
+(`g3_bug=0`; `g1_n`/`g1_ok` match DTFC `calls`/`fired`). **Methodology note (banked):** the first run showed 3848 spurious "mismatches" —
+a HARNESS parser bug (`strstr("in=")` matched the `in=` inside `min=`); fixed with tab-anchored keys (`"\tin="`). The lift was correct
+throughout; `ground_bug=0` was the tell (a real transcription error would have rejected fired shots). Unit test `test_range_gate` added.
+**NEXT geometry slices:** lead-solve verdict (399450 vs the lifted 399e20 fallback — capture lead-nonzero + reach `383ba0`, the
+remaining RNG-free fire/no-fire factors on the param_3≠0 path) → then the full param_3≠0 OUTCOME of `fire_control_decide` end-to-end.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

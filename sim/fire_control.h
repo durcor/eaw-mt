@@ -161,6 +161,12 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
 eaw::vec3 firing_select_muzzle_point(const eaw::vec3& mat1_t, const eaw::vec3& mat2_t,
                                      bool full_random, bool has_bone2, eaw::SimRng& rng);
 
+// Stage F (188-209): the 2D range gate — sqrt((muzzle.y-aim.y)^2 + (muzzle.x-aim.x)^2) within
+// [min_range, weapon_range + target_extent] (extent added unconditionally). Exposed for the in-game
+// geometry oracle (§8.52): replayed over captured 385e70/385c70 geometry vs the binary's verdict.
+bool fire_range_gate_pass(const eaw::vec3& muzzle, const eaw::vec3& aim,
+                          float weapon_range, float target_extent, float min_range);
+
 // Stage J (402-413, the :410 draw): the base cooldown countdown.
 //   draw = range_i((int)(min*scale), (int)(max*scale))
 //   return (int)( ((int64_t)((float)draw * gamespeed) & 0xffffffff) / 100 )

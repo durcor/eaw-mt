@@ -4464,6 +4464,8 @@ static uint32_t g_fc_calls=0, g_fc_fired=0, g_fc_bug=0, g_fc_passfire=0, g_fc_pa
 static uint32_t g_fc_blocked[DTFC_NGATE];
 static uint32_t g_fc_rec=0;            /* capped raw-record counter (DTFCREC) */
 static uint32_t g_fc_last=0xFFFFFFFFu;
+/* §8.52 geometry (range-gate) oracle counters. */
+static uint32_t g_fcg_n=0, g_fcg_inrange=0, g_fcg_fired=0, g_fcg_bug=0, g_fcg_rec=0;
 
 static uint16_t dtfc_gate_bits(int64_t p1, int64_t *p2, int64_t p3, int r1_g2a) {
     uint16_t m = 0x0FFF;                                  /* all 12 pass */
@@ -4909,7 +4911,15 @@ static void pfire_r3_cooldown(int64_t p1, int64_t *p2) {
     }
 }
 
-static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
+/* DTFCG (§8.52) — the captured param_3!=0 RANGE-GATE geometry, for offline replay through the lifted
+ * sim::fire_range_gate_pass. `valid` is set iff gate2b reached the 385e70 muzzle (LOS ok); `in_range` is
+ * the binary's own stage-F verdict over these exact floats. The lifted gate must reproduce in_range
+ * bit-for-bit (FP-transcription check) and, anchored to ground truth, in_range must be 1 whenever the
+ * binary fired (r==1). muzzle/aim are the 2D (x,y) the gate uses; wrange=3857d0, extent=397780. */
+typedef struct { float mx, my, ax, ay; float wrange, extent, minr; int valid; int in_range; } FcGeom;
+
+static int pfire_r1_gate2b_g(int64_t p1, int64_t *p2, int64_t p3, FcGeom *out) {
+    if (out) out->valid = 0;
     int64_t owner      = *(int64_t *)(p1 + 0x10);
     int64_t owner_type = *(int64_t *)(p1 + 0x20);
 
@@ -4939,10 +4949,20 @@ static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
     float dy = fpos[1] - aim[1];                                       /* :203 local_2c8.y - aim.y */
     float dx = fpos[0] - aim[0];                                       /* :204 local_2c8.x - aim.x */
     float dist = esqrt(dy*dy + dx*dx);
-    float maxr = f3857d0(p1) + f397780(p2);                            /* :206-208 */
+    float wrange = f3857d0(p1), extent = f397780(p2);                  /* :206-208 (split for the lift) */
+    float maxr = wrange + extent;
     float minr = *(float *)(owner_type + 0x23c);                       /* :209 */
-    if (dist <= maxr && minr <= dist) return 1;                        /* in range → reaches :210 spread */
-    return 0;
+    int in_range = (dist <= maxr && minr <= dist) ? 1 : 0;
+    if (out) {
+        out->mx=fpos[0]; out->my=fpos[1]; out->ax=aim[0]; out->ay=aim[1];
+        out->wrange=wrange; out->extent=extent; out->minr=minr;
+        out->in_range=in_range; out->valid=1;
+    }
+    return in_range ? 1 : 0;                                           /* in range → reaches :210 spread */
+}
+
+static int pfire_r1_gate2b(int64_t p1, int64_t *p2, int64_t p3) {
+    return pfire_r1_gate2b_g(p1, p2, p3, NULL);
 }
 
 /* ── A3 ASSEMBLY (firing_body_lift_scope.md §8.14): the takeover reimplementation of FUN_1403825b0, split
@@ -6110,6 +6130,7 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
     int armed = dt_on();
     int pf = pfire_on();
     int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0, r1_g2a=0, r1_full=0;
+    FcGeom fcg; fcg.valid=0;   /* §8.52: captured param_3!=0 range-gate geometry for offline sim:: replay */
     if (armed && p1) {
         owner      = *(int64_t *)(p1 + 0x10);
         owner_type = *(int64_t *)(p1 + 0x20);
@@ -6124,7 +6145,7 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
         if (pf < 3) {
             r1_g1 = pfire_r1_gate1(p1, (int64_t *)p2, p3);
             r1_g2a = r1_g1 ? pfire_r1_gate2a(p1, (int64_t *)p2, p3) : 0;
-            r1_full = r1_g2a ? pfire_r1_gate2b(p1, (int64_t *)p2, p3) : 0;
+            r1_full = r1_g2a ? pfire_r1_gate2b_g(p1, (int64_t *)p2, p3, &fcg) : 0;
         }
         g_b3_in_fire = 1; g_b3_last_proj = 0; g_b3_args.have = 0;  /* reset per call → have=1 ⟺ THIS call created */
     }
@@ -6218,6 +6239,23 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 snprintf(fb, sizeof fb, "DTFCREC\tbits=%03x\tfired=%d\n", fcm, (r == 1) ? 1 : 0);
                 log_write(fb); g_fc_rec++;
             }
+
+            /* DTFCG (§8.52): the geometry-stage (range gate) oracle. fcg holds the param_3!=0 range-gate
+             * geometry captured pre-trampoline; tally the ground-truth invariant (binary fired ⇒ in range)
+             * and log a capped sample of the raw floats for offline replay through sim::fire_range_gate_pass. */
+            if (fcg.valid) {
+                g_fcg_n++;
+                if (fcg.in_range) g_fcg_inrange++;
+                if (r == 1) { g_fcg_fired++; if (!fcg.in_range) g_fcg_bug++; }   /* fired but out of range → bug */
+                if (g_fcg_rec < 8192) {
+                    char gb[192];
+                    snprintf(gb, sizeof gb,
+                        "DTFCGREC\tmx=%.6g\tmy=%.6g\tax=%.6g\tay=%.6g\twr=%.6g\tex=%.6g\tmin=%.6g\tin=%d\tfired=%d\n",
+                        fcg.mx, fcg.my, fcg.ax, fcg.ay, fcg.wrange, fcg.extent, fcg.minr,
+                        fcg.in_range, (r == 1) ? 1 : 0);
+                    log_write(gb); g_fcg_rec++;
+                }
+            }
         }
         if (r == 1 && g_b3_last_proj && owner && owner_type) {
             /* tgt oracle checks rec+0x08 == param_2. At takeover the param_3==0 path may REDIRECT param_2
@@ -6252,6 +6290,10 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     g_fc_blocked[0],g_fc_blocked[1],g_fc_blocked[2],g_fc_blocked[3],g_fc_blocked[4],
                     g_fc_blocked[5],g_fc_blocked[6],g_fc_blocked[7],g_fc_blocked[8],g_fc_blocked[9],
                     g_fc_blocked[10],g_fc_blocked[11]);
+                log_write(db);
+                snprintf(db, sizeof db,
+                    "DTFCG\ttick=%u\tn=%u\tin_range=%u\tfired=%u\tbug=%u\n",
+                    tk, g_fcg_n, g_fcg_inrange, g_fcg_fired, g_fcg_bug);
                 log_write(db);
             } else {
                 snprintf(db, sizeof db,

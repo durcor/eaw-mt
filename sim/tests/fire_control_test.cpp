@@ -215,8 +215,21 @@ static void test_fire_rolls_cooldown() {
     CHECK(!fire_control_decide(in2, r2).cooldown_rolled);
 }
 
+static void test_range_gate() {
+    std::printf("test_range_gate\n");
+    // 2D distance only (z ignored): muzzle {0,0,99}, aim {3,4,-99} → dist 5.
+    CHECK(fire_range_gate_pass(vec3{0,0,99}, vec3{3,4,-99}, 5.0f, 0.0f, 0.0f));   // 5 <= 5
+    CHECK(!fire_range_gate_pass(vec3{0,0,0}, vec3{3,4,0}, 4.0f, 0.0f, 0.0f));      // 5 > 4
+    // extent extends max range (always added): 5 <= 4+2.
+    CHECK(fire_range_gate_pass(vec3{0,0,0}, vec3{3,4,0}, 4.0f, 2.0f, 0.0f));
+    // min-range floor: dist 5 < min 6 → out.
+    CHECK(!fire_range_gate_pass(vec3{0,0,0}, vec3{3,4,0}, 100.0f, 0.0f, 6.0f));
+    CHECK(fire_range_gate_pass(vec3{0,0,0}, vec3{3,4,0}, 100.0f, 0.0f, 5.0f));     // 5 >= 5 (boundary)
+}
+
 int main() {
     std::printf("=== fire_control_test ===\n");
+    test_range_gate();
     test_muzzle_select_seam();
     test_cooldown_seam();
     test_fire_rolls_cooldown();

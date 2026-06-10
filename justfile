@@ -78,7 +78,7 @@ fc-oracle capture="eaw-mt.log":
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \
     sim/tests/fire_control_oracle.cpp sim/fire_control.cpp sim/firing_aimpoint.cpp sim/firing_intercept.cpp \
     sim/firing_spawn.cpp sim/sim_parallel.cpp sim/sim_rng.cpp -o /tmp/eaw_fc_oracle
-  grep '^DTFCREC' {{capture}} > /tmp/dtfc_records.txt
+  grep -E '^(DTFCREC|DTFCGREC)' {{capture}} > /tmp/dtfc_records.txt
   /tmp/eaw_fc_oracle /tmp/dtfc_records.txt
 
 # Compile + run the lifted sim-core host validation tests (sim/). No game needed.

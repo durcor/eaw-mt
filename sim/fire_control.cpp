@@ -49,6 +49,18 @@ FireGate fire_first_blocked_gate(const FireEligibility& g) {
     return FireGate::None;
 }
 
+// Stage F range gate (188-209): 2D muzzle→aim distance within [min_range, weapon_range + target_extent].
+// The extent is added UNCONDITIONALLY here (like 383f70 phase 3). FP grouping faithful to 203-209: the
+// distance accumulates y-term THEN x-term (FUN_140776d48 = sqrtf).
+bool fire_range_gate_pass(const vec3& muzzle, const vec3& aim,
+                          f32 weapon_range, f32 target_extent, f32 min_range) {
+    const f32 dy = muzzle.y - aim.y;
+    const f32 dx = muzzle.x - aim.x;
+    const f32 dist = std::sqrt(dy * dy + dx * dx);
+    const f32 max_range = weapon_range + target_extent;
+    return dist <= max_range && min_range <= dist;
+}
+
 FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng) {
     FireControlDecision d;
 
@@ -74,14 +86,8 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
     //   min_range (weapon+0x23c) <= dist <= weapon_range (3857d0) + target_extent (397780).   (extent
     // is added UNCONDITIONALLY here, like 383f70's phase 3.)
     if (!in.muzzle_valid) { d.outcome = FireOutcome::NoFire_OutOfRange; return d; }
-    {
-        const f32 dy = in.muzzle.y - d.aim_point.y;
-        const f32 dx = in.muzzle.x - d.aim_point.x;
-        const f32 dist = std::sqrt(dy * dy + dx * dx);          // FUN_140776d48, y-term then x-term
-        const f32 max_range = in.weapon_range + in.target_extent;
-        if (!(dist <= max_range && in.min_range <= dist)) {
-            d.outcome = FireOutcome::NoFire_OutOfRange; return d;
-        }
+    if (!fire_range_gate_pass(in.muzzle, d.aim_point, in.weapon_range, in.target_extent, in.min_range)) {
+        d.outcome = FireOutcome::NoFire_OutOfRange; return d;
     }
 
     // ── Stage G: launch-point select (210-225) ───────────────────────────────────────────────────────

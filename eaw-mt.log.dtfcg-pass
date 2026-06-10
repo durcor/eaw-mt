@@ -1,0 +1,18 @@
+# DTFCG in-game GEOMETRY-stage oracle (range gate, sim::fire_range_gate_pass) — §8.52 — PASS
+# captured 2026-06-09 from a live space battle, EAW_ORACLE + EAW_DIFFTRACE=1
+
+## in-game tally (binary fired => in range, always):
+DTFCG	tick=1024	n=342699	in_range=190012	fired=718	bug=0
+DTFCG	tick=2048	n=374873	in_range=220046	fired=1049	bug=0
+
+## gate-ladder + cross-check:
+DTFC	tick=2048	calls=411439	fired=1492	bug=0	pass_fire=1492	pass_nofire=409936	blk=Own0,Tgt0,Ctx0,Tgtbl11,Qry0,Cap0,Chg0,Self0,Fog0,Dip0,Arc0,Wpn0
+DTR1SUM	tick=2048	g1_n=411439	g1_ok=1492	g1_bug=0	g1_nofire=409936	g2_ok=1492	g2_bug=0	g2_nofire=409936	g3_ok=1049	g3_bug=0	g3_nofire=218997	g3_skip=36555
+
+## offline replay (real sim::fire_range_gate_pass over 8192 captured geometries):
+=== fire_control_oracle ===
+[gate ladder]  records=8192  fired=143  bug=0
+  block distribution (first-blocking gate):
+    None             8192
+[range gate]   records=8192  fired=143  transcribe_mismatch=0  ground_bug=0
+ALL PASS — gate ladder clean on 143 shots; range gate matches the binary on all 8192 records (143 real shots)
