@@ -2244,6 +2244,29 @@ cone, the same substream seam) the same way; then route the whole pf=3 create th
 decision+geometry+`cmd`) + the `SpawnCommand` applier, making the sim the SOLE writer and retiring `pfire_fire_reimpl` — the migration's
 terminal state (one validated transcription driving the game).
 
+### 8.68 B3.8.10 — THE FLIP, step 3b cont.: muzzle-cone (spawn_pos) drive — the sim drives the FULL projectile geometry = PASS (2026-06-11)
+The last geometry piece: the muzzle-cone draw (3825b0:210-225) that sets the spawn position basis (S[8/9/6]) and the lead's shooter_ref.
+Verified faithful (rule 2): `sim::firing_select_muzzle_point` matches the body's draw branch-for-branch — `full_random` (owner_type+0x4f==1)
+⇒ `range_f(mat1.k, mat2.k)` ×3 ↔ `ffbb0(mat1[k], mat2[k])` ×3; `!has_bone2` (p1+0x3c<0) ⇒ `mat1`, no draw ↔ the binary's `||`
+short-circuit; else `percent(50)?mat1:mat2` ↔ `ffdb0(&LCG, 0x32)`. Only the RNG source differs (substream). New export
+`fc_bridge_select_muzzle(mat1[3], mat2[3], full_random, has_bone2, seed)`; at `EAW_PFIRE_APPLY>=3`, `pfire_r1c_geom` drives `S[8]=mp.x`,
+`S[9]=mp.y`, `S[6]=mp.z` from the sim on a per-fire substream in place of `ffbb0`/`ffdb0`. Validated in-cone (each axis within
+`[min,max]` of `mat1[k]`/`mat2[k]`) + DTWA-B3 + stability.
+
+**RESULT = PASS** (ICW space battles, EAW_ORACLE + pfire=3 + pfireapply=3 + difftrace=1; evidence `eaw-launch-muzdrive.out`): `DTBRIDGE
+load … muzzle_fn=ok`; across **5 multi-battle summaries the sim drove the muzzle cone for a cumulative `mz_n=266,983` live fires, every one
+in-cone (`mz_oob=0`)**, the spread drive co-running clean (`spr_oob=0`), the DTWA-B3 identity gate clean (`_bad` all 0), and **zero crash
+signatures, stable**. ⇒ **the validated `sim/` code now drives the COMPLETE live projectile state — spawn-position basis (muzzle cone) +
+direction (spread) + identity (damage/lifetime/vis/muzzle_speed)** — gated/reversible, every constituent oracle-validated. `EAW_PFIRE_APPLY=3`
+is the full-geometry drive level. Release `winmm.dll` rebuilt after.
+
+**Flip status:** the validated-BEHAVIOUR portion of the flip is closed — every RNG-free field and every RNG-dependent geometry seam of the
+fire path is now driven by the lifted `sim/` code in-game, with `pfire_fire_reimpl` reduced to pure ORCHESTRATION (gate ladder + leaf calls
+that feed the marshalling + the create call) around sim-produced values. The TERMINAL consolidation — collapsing that orchestration into a
+single `fc_bridge_decide` call (full `FireControlInputs` marshal → one decision+geometry+`cmd`) + a `SpawnCommand` applier, making the sim
+the sole writer and DELETING `pfire_fire_reimpl` — is a structural refactor that adds no new validated behaviour (every piece is already
+sim-driven), now fully de-risked. It is the clean next unit of work.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

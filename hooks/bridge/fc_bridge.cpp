@@ -180,4 +180,20 @@ int fc_bridge_apply_spread(float dx, float dy, float dz, int no_spread,
     return 1;
 }
 
+// §8.68 B3.8.10 — APPLY-SIDE geometry drive: muzzle-point select (spawn_pos cone). Runs the REAL
+// sim::firing_select_muzzle_point (the faithful lift of the body's 210-225 muzzle-cone draw) on a per-fire
+// SimRng substream, returning the muzzle point that becomes S[8/9/6] = the spawn position basis. The hook
+// drives the body's muzzle-cone draw with this in place of the binary's ffbb0/ffdb0 — same cone, different
+// RNG sample (§8.42). Scalar boundary.
+extern "C" __declspec(dllexport)
+int fc_bridge_select_muzzle(float m1x, float m1y, float m1z, float m2x, float m2y, float m2z,
+                            int full_random, int has_bone2, unsigned int seed, float* out_m)
+{
+    eaw::vec3 mat1{m1x, m1y, m1z}, mat2{m2x, m2y, m2z};
+    eaw::SimRng rng(seed);
+    eaw::vec3 m = sim::firing_select_muzzle_point(mat1, mat2, full_random != 0, has_bone2 != 0, rng);
+    if (out_m) { out_m[0] = m.x; out_m[1] = m.y; out_m[2] = m.z; }
+    return 1;
+}
+
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }

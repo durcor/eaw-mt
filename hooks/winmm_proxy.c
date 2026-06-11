@@ -4592,12 +4592,15 @@ typedef int (*FcBridgeInitFn)(float,float,int,float,unsigned int,unsigned int,in
                               float*,unsigned int*,int*,float*);
 /* §8.67 B3.8.9 apply-side geometry drive: dir[3] + no_spread + base/sec/dist/norm + seed → dispersed dir[3] */
 typedef int (*FcBridgeSpreadFn)(float,float,float,int,float,float,float,float,unsigned int,float*);
+/* §8.68 B3.8.10 apply-side muzzle-cone drive: mat1[3] + mat2[3] + full_random + has_bone2 + seed → point[3] */
+typedef int (*FcBridgeMuzzleFn)(float,float,float,float,float,float,int,int,unsigned int,float*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
 static FcBridgeLeadFn  g_brg_lead  = NULL;
 static FcBridgeDecFn   g_brg_dec   = NULL;
 static FcBridgeInitFn  g_brg_init  = NULL;
 static FcBridgeSpreadFn g_brg_spread = NULL;
+static FcBridgeMuzzleFn g_brg_muzzle = NULL;
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
@@ -4635,13 +4638,14 @@ static void brg_init_once(void) {
         g_brg_dec   = (FcBridgeDecFn)GetProcAddress(h, "fc_bridge_decide_observe");
         g_brg_init  = (FcBridgeInitFn)GetProcAddress(h, "fc_bridge_build_init");
         g_brg_spread = (FcBridgeSpreadFn)GetProcAddress(h, "fc_bridge_apply_spread");
+        g_brg_muzzle = (FcBridgeMuzzleFn)GetProcAddress(h, "fc_bridge_select_muzzle");
     }
-    char lb[280];
+    char lb[320];
     snprintf(lb, sizeof lb,
-             "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\tdec_fn=%s\tinit_fn=%s\tspread_fn=%s\n",
+             "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\tdec_fn=%s\tinit_fn=%s\tspread_fn=%s\tmuzzle_fn=%s\n",
              h ? "ok" : "FAIL", g_brg_gate ? "ok" : "FAIL", g_brg_range ? "ok" : "FAIL",
              g_brg_lead ? "ok" : "FAIL", g_brg_dec ? "ok" : "FAIL", g_brg_init ? "ok" : "FAIL",
-             g_brg_spread ? "ok" : "FAIL");
+             g_brg_spread ? "ok" : "FAIL", g_brg_muzzle ? "ok" : "FAIL");
     log_write(lb);
 }
 
@@ -4747,7 +4751,9 @@ static inline float pfire_ffbb0_range(R1_ffbb0Fn f, uint32_t *lcg, float lo, flo
 typedef float (*R2_374890Fn)(int64_t, int32_t, int64_t);
 typedef float (*R2_53ff30Fn)(int64_t, int64_t, int32_t);
 static uint32_t g_pfap_spr_seq = 0;            /* per-fire substream counter (distinct draw per shot) */
-static uint32_t g_pfap_spr_n = 0, g_pfap_spr_oob = 0;   /* geometry-drive fires / out-of-cone (= bug) */
+static uint32_t g_pfap_spr_n = 0, g_pfap_spr_oob = 0;   /* spread-drive fires / out-of-cone (= bug) */
+static uint32_t g_pfap_mz_seq = 0;             /* per-fire muzzle-cone substream counter */
+static uint32_t g_pfap_mz_n = 0, g_pfap_mz_oob = 0;     /* muzzle-cone-drive fires / out-of-cone (= bug) */
 static int pfire_apply(void);                  /* §8.65 flag reader (defined below, before pfire_fire_reimpl) */
 
 /* :210-260 R1c geometry. RNG draws (1ffbb0 spread / 1ffdb0 / 381dc0 dispersion) read the global LCG slot
@@ -4759,7 +4765,27 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
     int64_t owner_type = *(int64_t *)(p1 + 0x20);
     uint32_t *LCG = (uint32_t *)(g_dt_imgbase + 0xa13e24);
 
-    if (*(int8_t *)(owner_type + 0x4f) == 1) {                  /* :210 weapon has spread → 3 LCG draws */
+    /* §8.68 B3.8.10 — APPLY-SIDE MUZZLE-CONE DRIVE (EAW_PFIRE_APPLY>=3): drive the spawn-pos muzzle-cone
+     * draw (:210-225) via the SIM's firing_select_muzzle_point (faithful lift, §8.68) on a per-fire
+     * substream, in place of the binary's ffbb0/ffdb0. Same cone (mat1↔mat2 columns), different RNG sample
+     * (§8.42). full_random = owner_type+0x4f==1; has_bone2 = p1+0x3c>=0. Validated in-cone + DTWA-B3 + stab. */
+    if (pfire_apply() >= 3 && (brg_init_once(), g_brg_muzzle)) {
+        int full_random = (*(int8_t *)(owner_type + 0x4f) == 1);
+        int has_bone2   = (*(int32_t *)(p1 + 0x3c) >= 0);
+        uint32_t seed = scan_substream_seed((uint32_t)*(int32_t *)(owner + 0x50), g_pfap_mz_seq++);
+        float mp[3] = { mat1[3], mat1[7], mat1[11] };
+        g_brg_muzzle(mat1[3], mat1[7], mat1[11], mat2[3], mat2[7], mat2[11],
+                     full_random, has_bone2, seed, mp);
+        S[8] = mp[0]; S[9] = mp[1]; S[6] = mp[2];        /* muzzle point → spawn-pos basis (x,y,z) */
+        /* in-cone: each axis within [min,max] of (mat1[k], mat2[k]) (full_random); exact mat1/mat2 (pick). */
+        float lox=mat1[3]<mat2[3]?mat1[3]:mat2[3],  hix=mat1[3]>mat2[3]?mat1[3]:mat2[3];
+        float loy=mat1[7]<mat2[7]?mat1[7]:mat2[7],  hiy=mat1[7]>mat2[7]?mat1[7]:mat2[7];
+        float loz=mat1[11]<mat2[11]?mat1[11]:mat2[11], hiz=mat1[11]>mat2[11]?mat1[11]:mat2[11];
+        float e = 1e-4f;
+        g_pfap_mz_n++;
+        if (mp[0] < lox-e || mp[0] > hix+e || mp[1] < loy-e || mp[1] > hiy+e ||
+            mp[2] < loz-e || mp[2] > hiz+e) g_pfap_mz_oob++;
+    } else if (*(int8_t *)(owner_type + 0x4f) == 1) {          /* :210 weapon has spread → 3 LCG draws */
         R1_ffbb0Fn fbb0 = (R1_ffbb0Fn)(g_dt_imgbase + 0x1ffbb0);
         /* spread cone: uniform random between the two muzzle matrices' translation columns (mat1[k],mat2[k]) */
         S[8] = pfire_ffbb0_range(fbb0, LCG, mat1[3],  mat2[3]);   /* :211 x */
@@ -6732,9 +6758,10 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 log_write(db);
                 /* §8.65 B3.8.7 apply-side drive: how many live records the sim wrote (DTB3SUM gates it). */
                 snprintf(db, sizeof db,
-                    "DTAPPLY\ttick=%u\tapply=%d\tn=%u\tdmg=%u\tlife=%u\tvis=%u\tms=%u\tspr_n=%u\tspr_oob=%u\n",
+                    "DTAPPLY\ttick=%u\tapply=%d\tn=%u\tdmg=%u\tlife=%u\tvis=%u\tms=%u\t"
+                    "spr_n=%u\tspr_oob=%u\tmz_n=%u\tmz_oob=%u\n",
                     tk, pfire_apply(), g_pfap_n, g_pfap_dmg, g_pfap_life, g_pfap_vis, g_pfap_ms,
-                    g_pfap_spr_n, g_pfap_spr_oob);
+                    g_pfap_spr_n, g_pfap_spr_oob, g_pfap_mz_n, g_pfap_mz_oob);
                 log_write(db);
             }
         }
