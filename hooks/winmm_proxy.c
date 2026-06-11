@@ -4594,6 +4594,17 @@ typedef int (*FcBridgeInitFn)(float,float,int,float,unsigned int,unsigned int,in
 typedef int (*FcBridgeSpreadFn)(float,float,float,int,float,float,float,float,unsigned int,float*);
 /* §8.68 B3.8.10 apply-side muzzle-cone drive: mat1[3] + mat2[3] + full_random + has_bone2 + seed → point[3] */
 typedef int (*FcBridgeMuzzleFn)(float,float,float,float,float,float,int,int,unsigned int,float*);
+/* §8.71 B3.9.2 builder API (the full-route marshaller calls these) */
+typedef void (*FcInResetFn)(void);
+typedef void (*FcInGatesFn)(unsigned int);
+typedef void (*FcInAimFn)(int,float,float,float);
+typedef void (*FcInRangeFn)(int,float,float,float,float,float,float);
+typedef void (*FcInStagegFn)(float,float,float,float,float,float,int,int);
+typedef void (*FcInLeadFn)(float,float,float,float,float,float,float,float,float,float,float,int);
+typedef void (*FcInSpreadFn)(int,float,float,float,float);
+typedef void (*FcInSpawnCreateFn)(unsigned long long,unsigned int,int,unsigned int,unsigned int,unsigned long long,int,int);
+typedef void (*FcInSpawnPayloadFn)(float,float,int,float,unsigned int,unsigned int,int,int,int,float,float,float,int,float);
+typedef int  (*FcInDecideFn)(unsigned int,int*,float*,float*,float*,unsigned int*,unsigned long long*,int*,float*,unsigned int*,float*,int*,int*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
 static FcBridgeLeadFn  g_brg_lead  = NULL;
@@ -4601,6 +4612,13 @@ static FcBridgeDecFn   g_brg_dec   = NULL;
 static FcBridgeInitFn  g_brg_init  = NULL;
 static FcBridgeSpreadFn g_brg_spread = NULL;
 static FcBridgeMuzzleFn g_brg_muzzle = NULL;
+/* §8.71 builder API pointers */
+static FcInResetFn        g_in_reset=NULL;   static FcInGatesFn   g_in_gates=NULL;
+static FcInAimFn          g_in_aim=NULL;     static FcInRangeFn   g_in_range=NULL;
+static FcInStagegFn       g_in_stageg=NULL;  static FcInLeadFn    g_in_lead=NULL;
+static FcInSpreadFn       g_in_spread=NULL;  static FcInSpawnCreateFn  g_in_screate=NULL;
+static FcInSpawnPayloadFn g_in_spay=NULL;    static FcInDecideFn  g_in_decide=NULL;
+static uint32_t g_marsh_n=0, g_marsh_outcome_bad=0, g_marsh_id_bad=0;   /* §8.71 marshaller observe */
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
@@ -4639,6 +4657,16 @@ static void brg_init_once(void) {
         g_brg_init  = (FcBridgeInitFn)GetProcAddress(h, "fc_bridge_build_init");
         g_brg_spread = (FcBridgeSpreadFn)GetProcAddress(h, "fc_bridge_apply_spread");
         g_brg_muzzle = (FcBridgeMuzzleFn)GetProcAddress(h, "fc_bridge_select_muzzle");
+        g_in_reset  = (FcInResetFn)GetProcAddress(h, "fc_bridge_in_reset");
+        g_in_gates  = (FcInGatesFn)GetProcAddress(h, "fc_bridge_in_gates");
+        g_in_aim    = (FcInAimFn)GetProcAddress(h, "fc_bridge_in_aim");
+        g_in_range  = (FcInRangeFn)GetProcAddress(h, "fc_bridge_in_range");
+        g_in_stageg = (FcInStagegFn)GetProcAddress(h, "fc_bridge_in_stageg");
+        g_in_lead   = (FcInLeadFn)GetProcAddress(h, "fc_bridge_in_lead");
+        g_in_spread = (FcInSpreadFn)GetProcAddress(h, "fc_bridge_in_spread");
+        g_in_screate= (FcInSpawnCreateFn)GetProcAddress(h, "fc_bridge_in_spawn_create");
+        g_in_spay   = (FcInSpawnPayloadFn)GetProcAddress(h, "fc_bridge_in_spawn_payload");
+        g_in_decide = (FcInDecideFn)GetProcAddress(h, "fc_bridge_in_decide");
     }
     char lb[320];
     snprintf(lb, sizeof lb,
@@ -5405,6 +5433,90 @@ static void pfire_apply_drive(int64_t proj, int64_t p1, int64_t p2, int64_t lVar
     *(float *)(rec + 0x6c) = o_ms; g_pfap_ms++;                          /* muzzle speed */
 }
 
+/* §8.71 B3.9.2 — TERMINAL CONSOLIDATION increment 3: the FULL MARSHALLER + observe. Assemble a complete
+ * FireControlInputs through the bridge BUILDER (§8.70) from the reimpl's already-computed lead bundle
+ * (g_fc_marshal, the RNG-divergent part) + fresh pure-leaf reads (385e70 muzzle/matrices, 3857d0/397780
+ * range, 374890/53ff30 spread mags, the §8.63/64 spawn payload), run fc_bridge_in_decide, and validate it
+ * against the projectile the reimpl just created: outcome must be Fire (the binary fired), and the RNG-FREE
+ * create identity (firer/target/damage/lifetime/vis) must match the live rec. muzzle_speed + pos/dir are
+ * EXCLUDED — they flow from decide's own substream geometry (divergent by design, in-cone-validated at the
+ * drive). Drives nothing. The marshaller is RNG-free (pure reads + the 399e20 lead is inside g_fc_marshal),
+ * so re-calling the leaves does not perturb the live stream. Outcome!=Fire can happen rarely when decide's
+ * stage-G shooter_ref diverges enough to zero the lead (the §8.62 seam) — tallied, not asserted. */
+static void pfire_marshal_observe(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7,
+                                  int64_t local_238, int64_t proj) {
+    if (!g_in_decide || !g_fc_marshal.valid || !proj) return;
+    int64_t rec = *(int64_t *)(proj + 0xe8);
+    if (!rec) return;
+    int64_t owner = *(int64_t *)(p1 + 0x10), owner_type = *(int64_t *)(p1 + 0x20), tmpl = lVar7;
+    int32_t guided_flag = *(int32_t *)(lVar7 + 0x1fe8);
+
+    g_in_reset();
+    g_in_gates(0x0FFFu);                                  /* reimpl reached create ⇒ all gates passed */
+    g_in_aim(1, g_fc_marshal.aim[0], g_fc_marshal.aim[1], g_fc_marshal.aim[2]);
+
+    float muz[4] = {0,0,0,0}, mat1[16], mat2[16];
+    memcpy(mat1, (void *)(g_dt_imgbase + 0x800820), 48);
+    memcpy(mat2, (void *)(g_dt_imgbase + 0x800820), 48);
+    ((R1_385e70Fn)(g_dt_imgbase + 0x385e70))(p1, muz, mat1, mat2);
+    float wr   = ((R1_3857d0Fn)(g_dt_imgbase + 0x3857d0))(p1);
+    float ext  = ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)p2);
+    float minr = *(float *)(owner_type + 0x23c);
+    g_in_range(1, muz[0], muz[1], muz[2], wr, ext, minr);
+
+    int full_random = (*(int8_t *)(owner_type + 0x4f) == 1);
+    int has_bone2   = (*(int32_t *)(p1 + 0x3c) >= 0);
+    g_in_stageg(mat1[3],mat1[7],mat1[11], mat2[3],mat2[7],mat2[11], full_random, has_bone2);
+
+    g_in_lead(g_fc_marshal.tp[0],g_fc_marshal.tp[1],g_fc_marshal.tp[2],
+              g_fc_marshal.tv[0],g_fc_marshal.tv[1],g_fc_marshal.tv[2],
+              g_fc_marshal.fv[0],g_fc_marshal.fv[1],g_fc_marshal.fv[2],
+              g_fc_marshal.gs, g_fc_marshal.ps, g_fc_marshal.reach);
+
+    int   no_spread = (*(int8_t *)(g_dt_imgbase + 0xb3934dULL) == 1);
+    float base = ((R2_374890Fn)(g_dt_imgbase + 0x374890))(*(int64_t *)(owner + 0x298), guided_flag, owner);
+    int64_t ovb = *(int64_t *)(owner + 0x230);
+    if (*(int8_t *)(owner + 0x38a) != -1 && ovb != 0) base = *(float *)(ovb + 0x14);
+    int64_t lVar9 = *(int64_t *)((int64_t)p2 + 0x53 * 8);
+    int64_t mask  = lVar9 ? *(int64_t *)(lVar9 + 0x1648) : 0;
+    float sec  = ((R2_53ff30Fn)(g_dt_imgbase + 0x53ff30))(owner_type, mask, guided_flag);
+    float dy = muz[1] - g_fc_marshal.aim[1], dx = muz[0] - g_fc_marshal.aim[0];
+    float dist = ((R1_SqrtFn)(g_dt_imgbase + 0x776d48))(dy*dy + dx*dx);
+    g_in_spread(no_spread, base, sec, dist, /*norm=3857d0=*/wr);
+
+    int32_t order_pre = local_238 ? *(int32_t *)(local_238 + 0x394) : 0;
+    int is_charge = (local_238 && order_pre < 0);
+    g_in_screate((unsigned long long)owner, (uint32_t)lVar7, /*team*/-1, /*flags*/0,
+                 (uint32_t)*(int32_t *)(owner + 0x50), (unsigned long long)p2,
+                 p3 ? *(int32_t *)(p3 + 0x18) : -1, (guided_flag == 1));
+    float od = *(float *)(owner_type + 0x478), td = *(float *)(tmpl + 0x474);
+    int32_t ol = *(int32_t *)(owner_type + 0x4a0); uint32_t tl = *(uint32_t *)(tmpl + 0x440);
+    int32_t vo = *(int32_t *)(owner_type + 0x4a4);
+    int64_t mode = g_dt_imgbase ? *(int64_t *)(g_dt_imgbase + GAME_MODE_PTR_RVA) : 0;
+    int32_t vbase = mode ? *(int32_t *)(mode + 0x10) : 0;
+    float bspd = ((R1_3857d0Fn)(g_dt_imgbase + 0x3857d0))(p1), tspd = *(float *)(tmpl + 0x4bc);
+    float pext = ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)p2), subext = 0.0f;
+    int add_sub = (((R2_39b1a0Fn)(g_dt_imgbase + 0x39b1a0))((int64_t *)p2) != 0 &&
+                   ((R2_372210Fn)(g_dt_imgbase + 0x372210))(*(int64_t *)(owner + 0x298)) == 0);
+    if (add_sub) subext = ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)(*(int64_t *)(p2 + 0x2b0)));
+    g_in_spay(od, td, is_charge ? 1 : 0, 1.0f, (uint32_t)ol, tl, (vo > 0) ? 1 : 0, vbase, vo,
+              bspd, tspd, pext, add_sub, subext);
+
+    int gate=0; float pos[3],ld[3],gl[3]; uint32_t firer=0,life=0; unsigned long long tgt=0;
+    int sub=0, vis=0, gd=0; float dmg=0, ms=0;
+    uint32_t seed = scan_substream_seed((uint32_t)*(int32_t *)(owner + 0x50), g_marsh_n);
+    int outcome = g_in_decide(seed, &gate, pos, ld, gl, &firer, &tgt, &sub, &dmg, &life, &ms, &vis, &gd);
+    g_marsh_n++;
+    if (outcome != 5) { g_marsh_outcome_bad++; return; }   /* binary fired ⇒ Fire (rare NoLead = §8.62 seam) */
+    int bad = 0;
+    if (firer != (uint32_t)*(int32_t *)(rec + 0x58))               bad = 1;
+    if (tgt   != (unsigned long long)*(int64_t *)(rec + 0x08))     bad = 1;
+    if (!is_charge && !brg_feq(dmg, *(float *)(rec + 0x64)))       bad = 1;
+    if (life  != *(uint32_t *)(rec + 0x68))                        bad = 1;
+    if (vo > 0 && vis != *(int32_t *)(rec + 0x60))                 bad = 1;
+    if (bad) g_marsh_id_bad++;
+}
+
 /* ── A3 ASSEMBLY: the unified takeover reimplementation of FUN_1403825b0 (firing_body_lift_scope.md §8.14).
  * Mirrors 3825b0:60-497 (gates+geometry via the shared pfire_compute_geom → R2a/R2b applier → R3 cooldown).
  * Returns 0 = no fire, 1 = fired, PFIRE_FALLBACK(2) = "I didn't handle this — run the binary":
@@ -5440,6 +5552,8 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
         int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2r, lVar7, local_238, S);
         pfire_r2b_emit(p1, proj, (int64_t *)p2r, p3r, lVar7, S);
         pfire_apply_drive(proj, p1, p2r, lVar7, local_238, S);   /* §8.65 gated bit-exact apply-side drive */
+        if (pfire_apply() >= 1)                                  /* §8.71 full-marshaller observe (drives nothing) */
+            pfire_marshal_observe(p1, p2r, p3r, lVar7, local_238, proj);
     }
 
     /* ---- R3 cooldown + listener rebind (403-497) ---- self-write + Class-2b rebind (inline at 1-shard).
@@ -6762,6 +6876,11 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     "spr_n=%u\tspr_oob=%u\tmz_n=%u\tmz_oob=%u\n",
                     tk, pfire_apply(), g_pfap_n, g_pfap_dmg, g_pfap_life, g_pfap_vis, g_pfap_ms,
                     g_pfap_spr_n, g_pfap_spr_oob, g_pfap_mz_n, g_pfap_mz_oob);
+                log_write(db);
+                /* §8.71 full-marshaller observe: outcome!=Fire (rare §8.62 NoLead seam) + identity vs rec. */
+                snprintf(db, sizeof db,
+                    "DTMARSH\ttick=%u\tn=%u\toutcome_bad=%u\tid_bad=%u\n",
+                    tk, g_marsh_n, g_marsh_outcome_bad, g_marsh_id_bad);
                 log_write(db);
             }
         }

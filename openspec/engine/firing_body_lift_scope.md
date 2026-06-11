@@ -2307,6 +2307,26 @@ proven. **NEXT (increment 3):** the hook full MARSHALLER — call these setters 
 computed reads/`S[]` (gates `fcm`, range `fcg`, lead bundle, spread/muzzle params §8.67/68, spawn payload §8.63/64), then `fc_bridge_in_decide`
 → the (step-4) applier.
 
+### 8.71 B3.9.2 — TERMINAL CONSOLIDATION, increment 3: the full MARSHALLER (assemble + decide) = PASS (2026-06-11)
+`pfire_marshal_observe` (winmm_proxy.c) assembles a COMPLETE `FireControlInputs` through the §8.70 builder and runs the real
+`fire_control_decide`, validated against the projectile the reimpl just created. Mechanism: reuse the already-captured `g_fc_marshal` lead
+bundle (the RNG-divergent aim/shooter_ref/target/lead/reach — hard to recompute) + fresh PURE-leaf reads for the rest (`385e70`
+muzzle+matrices, `3857d0`/`397780` range, `374890`/`53ff30` spread magnitudes + the `owner+0x230` override, the §8.63/64 spawn payload). The
+marshaller draws NO RNG (the lead `399e20` is inside `g_fc_marshal`; the spread/muzzle draws happen inside `decide`'s own substream), so
+re-calling the leaves does not perturb the live stream. INVARIANT: outcome == Fire (the binary fired) + the RNG-FREE create identity
+(firer/target/damage/lifetime/vis) matches the live `rec`. muzzle_speed + pos/dir EXCLUDED (they flow from `decide`'s substream geometry,
+divergent by design; in-cone-validated at the drive). Gates passed `0x0FFF` (the reimpl reaching the create ⇒ all gates passed).
+
+**RESULT = PASS** (ICW battles, EAW_ORACLE + pfire=3 + pfireapply=1 + difftrace=1; evidence `eaw-launch-marsh.out`): across **5 multi-battle
+summaries the marshaller ran `n=52,982` times, every one `outcome_bad=0` (`fc_bridge_in_decide` returned Fire on every real fire) and
+`id_bad=0` (the create identity assembled through the full struct matched the live rec exactly)**, zero crashes. Notably `outcome_bad=0` even
+without the §8.62 `inject_shooter_ref` — `decide`'s own substream stage-G shooter_ref never diverged enough to zero the lead in these
+battles. ⇒ **the full `FireControlInputs` marshaller is proven**: the complete struct assembles correctly from live engine state and the real
+`fire_control_decide` produces the correct decision + create payload. **NEXT (increment 4):** the `SpawnCommand` APPLIER — replace
+`pfire_r2a_create_init`/`r2b` with: `29f810` create (mgr=`*(owner+0x2b8)`, template, team, `cmd.pos`) → write the rec from `cmd.projectile`
+(`firing_apply_projectile_record`) → `20acd0` orient → Class-2b emit. Then (5) the gated `EAW_PFIRE_APPLY=4` route (marshal → decide → applier
+→ keep `pfire_r3_cooldown`+opp), (6) validate, (7) delete.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
