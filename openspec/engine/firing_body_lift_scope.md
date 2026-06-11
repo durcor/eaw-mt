@@ -2201,6 +2201,29 @@ then drive the substream-divergent launch geometry (`launch_dir`/`spawn_pos` via
 position-observe (on-target, not bit-exact) + DTWORLD — and finally route the whole pf=3 create through `fc_bridge_decide`, retiring
 `pfire_fire_reimpl`.
 
+### 8.66 B3.8.8 — step 3b GATE: `firing_apply_spread` ≡ `381dc0` confirmed against the decompile (fidelity verified) (2026-06-11)
+Before driving live projectile DIRECTIONS via the sim's spread lift, the `firing_apply_spread` ↔ `381dc0` fidelity had to be VERIFIED, not
+assumed (rule 2) — §b2 marked the lift DONE but validated it only host-side against `sim_rng.h`'s reproducibility contract, never against
+`381dc0`'s actual structure. `decomp/381dc0.c` (RVA 0x381dc0, 558 B) read directly confirms the transcription is faithful, branch-for-branch:
+- `DAT_140b3934d == 1` → copy `param_4` (the lead) unperturbed — `firing_apply_spread`'s `no_spread` early-return. ✓
+- else `base = 374890(owner+0x298, guided, owner)` (override: `owner+0x38a != -1 && owner+0x230 != 0` ⇒ `base = *(owner+0x230 +0x14)`);
+  if `base > 0`: each axis `dir.axis + ffbb0(&DAT_140a13e24, -base, base)` — the `(uint)fVar3 ^ DAT_140800860` 2nd arg is Ghidra's render
+  of the XMM sign-flip (`DAT_140800860 = 0x80000000`) ⇒ `lo = -base`, so `ffbb0(&LCG, -base, base) = uniform[-base, base]`. ✓ (matches the
+  lift's `range_f(-base_spread, base_spread)` ×3.)
+- else `sec = 53ff30(owner_type, mask, guided)`; if `sec > 0 && dist > 0`: `norm = 3857d0(p1)`; if `norm <= 0` → copy; else
+  `m = (sec*dist)/norm`, each axis `dir.axis + ffbb0(&LCG, -m, m)`. ✓ (matches the lift's secondary branch exactly.)
+- else copy. ✓
+
+⇒ **`firing_apply_spread` is a faithful, branch-exact transcription of `381dc0`; the ONLY divergence is the RNG source** (binary `1ffbb0`
+off the global LCG `0xa13e24` vs the lift's `SimRng::range_f` substream), which is the §8.42 retrofit BY DESIGN — same spread cone, different
+sample, determinism-equivalent for gameplay. So the launch-geometry drive (replacing the body's `381dc0` dispersion with the sim's
+`firing_apply_spread` on a per-fire substream) is well-founded and SAFE (not a behavior change beyond the intended RNG-source swap, which
+`EAW_PFIRE_GEOM_SS` already does for the reimpl's `381dc0` path). **NEXT (the geometry drive, EAW_PFIRE_APPLY≥2):** add
+`fc_bridge_apply_spread`; in `pfire_r1c_geom` marshal `base`/`sec`/`norm`/`dist`/`no_spread` (the `374890`/`53ff30`/`3857d0` reads + the
+override) + the lead `S[4..6]`, seed a per-fire substream, and use the sim's dispersed dir for `S[0..2]` in place of `381dc0`. Validate:
+each axis within `[lead − m, lead + m]` (in-cone), DTWA-B3 identity clean, + stability — then `spawn_pos` (the `firing_select_muzzle_point`
+cone) the same way, and finally route the whole create through `fc_bridge_decide`, retiring `pfire_fire_reimpl`.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
