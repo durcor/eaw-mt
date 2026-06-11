@@ -134,7 +134,7 @@ void* fire_update_opp_target(const OppTargetInputs& in, CommandSink& sink) {
 }
 
 FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng,
-                                        CommandSink* sink) {
+                                        CommandSink* sink, const eaw::vec3* inject_shooter_ref) {
     FireControlDecision d;
 
     // ── Stage A/C/D: eligibility (62-163) — ordered early-out ladder ──────────────────────────────────
@@ -165,8 +165,13 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
 
     // ── Stage G: launch-point select (210-225) ───────────────────────────────────────────────────────
     // The muzzle point fed to the lead solver. Draws BEFORE the lead/spread/cooldown seams (binary order).
-    const vec3 shooter_ref = firing_select_muzzle_point(in.muzzle_mat1_t, in.muzzle_mat2_t,
-                                                        in.full_random_dir, in.has_muzzle_bone2, rng);
+    // `inject_shooter_ref` (in-game observe oracle, §8.62): when non-null, use the binary's ACTUAL stage-G
+    // result and skip the substream draw — so the composed outcome is bit-comparable to the binary's LCG
+    // path (the takeover proper passes null → draws from the substream, the §8.42 retrofit).
+    const vec3 shooter_ref = inject_shooter_ref
+        ? *inject_shooter_ref
+        : firing_select_muzzle_point(in.muzzle_mat1_t, in.muzzle_mat2_t,
+                                     in.full_random_dir, in.has_muzzle_bone2, rng);
 
     // ── Stage H: lead solve + reach (226-238) ────────────────────────────────────────────────────────
     // 399450 lead solver (here its 399e20 fallback, firing_intercept_lead). A zero lead vector is the

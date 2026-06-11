@@ -84,4 +84,52 @@ int fc_bridge_intercept_lead(float tpx, float tpy, float tpz,
     return sol ? 1 : 0;
 }
 
+// §8.62 B3.8.4 — the COMPOSED outcome observe. Runs the REAL sim::fire_control_decide end-to-end on the
+// live marshalled inputs (gates → aim → range → lead → reach), returning its FireOutcome. Scalar
+// boundary: the hook passes the outcome-determining fields it already captures + the binary's ACTUAL
+// stage-G shooter_ref, which is injected so the lead is bit-comparable to the binary's LCG path (the
+// takeover proper passes null and draws shooter_ref from the substream). The spawn/cooldown/opp inputs
+// are left neutral — they do not affect the Fire/NoFire verdict. This is the §8.54 composed-outcome
+// oracle, now run in-process through the giant function on the full marshalled struct (the foundation
+// for the control-flow flip). Returns FireOutcome as int (0=Ineligible,1=NoAim,2=OutOfRange,3=NoLead,
+// 4=Unreachable,5=Fire); *out_blocked_gate = the FireGate when Ineligible.
+extern "C" __declspec(dllexport)
+int fc_bridge_decide_observe(unsigned int gate_bits,
+                             const float* context_aim, int muzzle_valid, const float* muzzle,
+                             float weapon_range, float target_extent, float min_range,
+                             const float* target_pos, const float* target_vel, const float* frame_vel,
+                             float gamespeed, float proj_speed, const float* shooter_ref,
+                             int aim_reachable, unsigned int rng_seed, int* out_blocked_gate)
+{
+    sim::FireControlInputs in;
+    in.gates.owner_present     = (gate_bits >> 0)  & 1;
+    in.gates.target_present    = (gate_bits >> 1)  & 1;
+    in.gates.context_match     = (gate_bits >> 2)  & 1;
+    in.gates.target_targetable = (gate_bits >> 3)  & 1;
+    in.gates.target_queryable  = (gate_bits >> 4)  & 1;
+    in.gates.capability_match  = (gate_bits >> 5)  & 1;
+    in.gates.order_charge_ok   = (gate_bits >> 6)  & 1;
+    in.gates.not_self_target   = (gate_bits >> 7)  & 1;
+    in.gates.not_fogged        = (gate_bits >> 8)  & 1;
+    in.gates.diplomacy_ok      = (gate_bits >> 9)  & 1;
+    in.gates.firing_arc_ok     = (gate_bits >> 10) & 1;
+    in.gates.weapon_selected   = (gate_bits >> 11) & 1;
+    in.has_explicit_context = true;
+    in.context_aim   = eaw::vec3{context_aim[0], context_aim[1], context_aim[2]};
+    in.muzzle_valid  = muzzle_valid != 0;
+    in.muzzle        = eaw::vec3{muzzle[0], muzzle[1], muzzle[2]};
+    in.weapon_range  = weapon_range;  in.target_extent = target_extent;  in.min_range = min_range;
+    in.target_pos    = eaw::vec3{target_pos[0], target_pos[1], target_pos[2]};
+    in.target_vel    = eaw::vec3{target_vel[0], target_vel[1], target_vel[2]};
+    in.frame_vel     = eaw::vec3{frame_vel[0], frame_vel[1], frame_vel[2]};
+    in.gamespeed     = gamespeed;     in.proj_speed = proj_speed;
+    in.aim_reachable = aim_reachable != 0;
+
+    eaw::vec3 sref{shooter_ref[0], shooter_ref[1], shooter_ref[2]};
+    eaw::SimRng rng(rng_seed);
+    sim::FireControlDecision d = sim::fire_control_decide(in, rng, /*sink=*/nullptr, &sref);
+    if (out_blocked_gate) *out_blocked_gate = static_cast<int>(d.blocked_gate);
+    return static_cast<int>(d.outcome);
+}
+
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }

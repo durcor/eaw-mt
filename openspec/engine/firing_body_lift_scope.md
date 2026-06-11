@@ -2111,6 +2111,34 @@ gate (bridge outcome == binary == old reimpl) before the old C transcription is 
 piecewise: the three validated sub-decisions compose `fire_control_decide`'s RNG-free outcome; the residue to marshal is the spawn payload
 + stage-J cooldown (already §8.55/§8.57 bit-exact offline) + the RNG substream seam.
 
+### 8.62 B3.8.4 — COMPANION-DLL MIGRATION STEP 4 (FOUNDATION): the REAL fire_control_decide runs in-process on the full marshalled struct = PASS (2026-06-10, user chose full-takeover-substream+PFOBS)
+**User decision (rule-6 gate):** the takeover runs the real `fc_bridge_decide` whose `SimRng` substream makes geometry statistically-
+equivalent (not bit-identical) to the binary's LCG — validated by PFOBS position-observe, accepting DTWORLD divergence as the §8.42 retrofit
+property. This is the foundational increment of that flip: prove the **whole** `fire_control_decide` (the giant function that will DRIVE)
+executes in-process on live marshalled inputs and composes correctly, **before** any control-flow change (this still drives nothing).
+**Mechanism:** (1) a minimal sim/ change — `fire_control_decide` gains an optional `inject_shooter_ref` (default null → draws stage G from
+the substream, the real takeover; non-null → uses the binary's actual stage-G result, so the lead is bit-comparable for the observe), the
+same "expose for the in-game oracle" pattern as `fire_range_gate_pass` (§8.52). (2) A scalar-boundary bridge export
+`fc_bridge_decide_observe(gate_bits, aim, muzzle, range floats, tgt pos/vel/frame_vel, gamespeed, proj_speed, shooter_ref, reach, seed)`
+that builds the `FireControlInputs` internally and runs the real `fire_control_decide` with the injected ref, returning the `FireOutcome`.
+(3) Hook marshalling: `pfire_compute_geom` stashes the lead/stage-G/target bundle (`g_fc_marshal`) during the pf==2 observe; the DTFC block
+combines it with the gate bits (`fcm`) + range geometry (`fcg`) and calls the bridge. **Invariant:** the pf==2 observe runs ONLY on a REAL
+binary spawn (gated by `g_b3_args.have`, PFOBS-validated vs `g_b3_args.pos`), so `g_fc_marshal.valid` ⟹ the binary fired this projectile ⇒
+the composed outcome MUST be Fire; `d_nofire` counts the dangerous direction (the bridge would SUPPRESS a real shot).
+
+**RESULT = PASS** (ICW space battles, EAW_ORACLE + `pfire=2` + EAW_DIFFTRACE=1; evidence `eaw-launch-decobs.out`): `DTBRIDGE load …
+dec_fn=ok`; across **4 summaries / multiple battles, every one `d_nofire=0`** (and `g_*=0 rg_*=0 l_*=0` still), peak **`d_calls=41394`** —
+the real `fire_control_decide` ran end-to-end in-process on the full marshalled struct and produced Fire for every real binary spawn, zero
+suppressions. ⇒ **the giant decision function executes correctly in-process on live marshalled data; the marshalling plumbing the flip needs
+(`g_fc_marshal` + `inject_shooter_ref`) is built and exercised.** **Methodology #30 banked:** the first run compared the composed outcome to
+the 3825b0 return `r==1` and showed `d_mismatch=6076` (~96%) — a FALSE alarm; PFOBS-SUM (`n=35942 match=35942`) proved the observe fires only
+on real spawns, so `r==1` (DTFC `fired=1157`) is a NARROWER 3825b0-return condition, NOT the spawn signal. The fix was the comparison, not the
+lift (`d_under` was 0 throughout — the tell). Also banked: kill the running game BEFORE relaunch (a `mv eaw-mt.log` + relaunch left two
+instances running; harmless here — separate fds, single writer per log — but wasteful). **NEXT — the actual flip (a further increment, still
+inside the user-approved step 4):** widen the marshal to the spawn payload + stage-J cooldown + opp-target (the apply side), then route pf=3's
+fire create through `fc_bridge_decide` (substream RNG) + a SpawnCommand applier, validated by PFOBS position-observe (on-target, not bit-exact)
++ the DTWORLD/DTWA-B3 structural gates — retiring `pfire_fire_reimpl`.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

@@ -203,7 +203,8 @@ struct FireControlDecision {
 // the new own-slot value in `opp_target`); a null sink skips stage K (the pre-§8.56 behaviour — the
 // caller does not model the opp-target record).
 FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng& rng,
-                                        CommandSink* sink = nullptr);
+                                        CommandSink* sink = nullptr,
+                                        const eaw::vec3* inject_shooter_ref = nullptr);
 
 // Stage K (3825b0:494-499): the opportunity-target record update, the binary's exact branch shape:
 //   *(+0xa8) == target  ⇒ no-op (returns current)

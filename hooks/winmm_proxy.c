@@ -4580,13 +4580,33 @@ typedef int (*FcBridgeRangeFn)(float,float,float,float,float,float,float); /* §
 /* §8.61 B3.8.3 lead solver: 15 input floats + gamespeed + proj_speed + out_lead[3] → solution verdict */
 typedef int (*FcBridgeLeadFn)(float,float,float,float,float,float,float,float,float,
                               float,float,float,float,float,float,float,float,float*);
+/* §8.62 B3.8.4 composed outcome: gate_bits + aim[3] + muzzle_valid + muzzle[3] + 3 range floats +
+ * tgt_pos/vel/frame_vel[3] + gamespeed + proj_speed + shooter_ref[3] + reach + seed + out_gate → outcome */
+typedef int (*FcBridgeDecFn)(unsigned int, const float*, int, const float*, float, float, float,
+                             const float*, const float*, const float*, float, float, const float*,
+                             int, unsigned int, int*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
 static FcBridgeLeadFn  g_brg_lead  = NULL;
+static FcBridgeDecFn   g_brg_dec   = NULL;
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
 static uint32_t g_brgl_calls = 0, g_brgl_mismatch = 0, g_brgl_verdict = 0;   /* lead solve (§8.61) */
+static uint32_t g_brgd_calls = 0, g_brgd_nofire = 0;                         /* composed outcome (§8.62) */
+
+/* §8.62 marshal bundle: the lead/stage-G/target inputs fc_bridge_decide_observe needs, filled by
+ * pfire_compute_geom during the pf==2 observe (it has them all local) and consumed in the DTFC block of
+ * the same hook invocation (single-threaded). `valid` is reset per hook call. */
+typedef struct {
+    int   valid;
+    float aim[3];           /* context_aim = S[12..14] (the lead's aim/muzzle param) */
+    float sref[3];          /* shooter_ref = S[4..6] (the binary's stage-G result, injected) */
+    float tp[3], tv[3], fv[3];
+    float gs, ps;
+    int   reach;            /* 383ba0 verdict on the binary's lead */
+} FcMarshal;
+static FcMarshal g_fc_marshal;
 
 /* bit-exact float compare (the §8.53 lead invariant is bit-for-bit vs the binary 399e20 output). */
 static inline int brg_feq(float a, float b) {
@@ -4601,11 +4621,12 @@ static void brg_init_once(void) {
         g_brg_gate  = (FcBridgeGateFn)GetProcAddress(h, "fc_bridge_gate_from_bits");
         g_brg_range = (FcBridgeRangeFn)GetProcAddress(h, "fc_bridge_range_gate");
         g_brg_lead  = (FcBridgeLeadFn)GetProcAddress(h, "fc_bridge_intercept_lead");
+        g_brg_dec   = (FcBridgeDecFn)GetProcAddress(h, "fc_bridge_decide_observe");
     }
-    char lb[160];
-    snprintf(lb, sizeof lb, "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\n",
+    char lb[200];
+    snprintf(lb, sizeof lb, "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\tdec_fn=%s\n",
              h ? "ok" : "FAIL", g_brg_gate ? "ok" : "FAIL", g_brg_range ? "ok" : "FAIL",
-             g_brg_lead ? "ok" : "FAIL");
+             g_brg_lead ? "ok" : "FAIL", g_brg_dec ? "ok" : "FAIL");
     log_write(lb);
 }
 
@@ -4776,12 +4797,25 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
             if (sim_zero != bin_zero) g_brgl_verdict++;   /* fire-relevant: disagree on solution existence */
         }
 
+        /* reach predicate (:238 fire-gate) on the lead — the last RNG-free fire/no-fire factor. Only
+         * meaningful when the lead is non-zero (the body checks it only then); 1/0. Computed once here,
+         * reused by the DTFCLREC log and the §8.62 marshal bundle. */
+        int lead_nz = (lx*lx + ly*ly + lz*lz != 0.0f);
+        float leadv[4] = { lx, ly, lz, 0.0f };
+        int reach = lead_nz ? (((R1_383ba0Fn)(g_dt_imgbase + 0x383ba0))(p1, leadv) != 0 ? 1 : 0) : 0;
+
+        /* §8.62 B3.8.4: stash the lead/stage-G/target inputs the composed-outcome observe needs. The DTFC
+         * block (same hook invocation) combines this with the gate bits + range geometry and runs the
+         * REAL fire_control_decide. shooter_ref = S[4..6] is injected there so the lead is bit-comparable. */
+        g_fc_marshal.valid = 1;
+        g_fc_marshal.aim[0]=S[12]; g_fc_marshal.aim[1]=S[13]; g_fc_marshal.aim[2]=S[14];
+        g_fc_marshal.sref[0]=S[4]; g_fc_marshal.sref[1]=S[5]; g_fc_marshal.sref[2]=S[6];
+        g_fc_marshal.tp[0]=tp0; g_fc_marshal.tp[1]=tp1; g_fc_marshal.tp[2]=tp2;
+        g_fc_marshal.tv[0]=tv0; g_fc_marshal.tv[1]=tv1; g_fc_marshal.tv[2]=tv2;
+        g_fc_marshal.fv[0]=fv0; g_fc_marshal.fv[1]=fv1; g_fc_marshal.fv[2]=fv2;
+        g_fc_marshal.gs=gs; g_fc_marshal.ps=fSpeed; g_fc_marshal.reach=reach;
+
         if (g_fcl_rec < 8192) {
-            /* reach predicate (:238 fire-gate) on the lead — the last RNG-free fire/no-fire factor. Only
-             * meaningful when the lead is non-zero (the body checks it only then); record 1/0. */
-            int lead_nz = (lx*lx + ly*ly + lz*lz != 0.0f);
-            float leadv[4] = { lx, ly, lz, 0.0f };
-            int reach = lead_nz ? (((R1_383ba0Fn)(g_dt_imgbase + 0x383ba0))(p1, leadv) != 0 ? 1 : 0) : 0;
             char lb[576];
             snprintf(lb, sizeof lb,
                 "DTFCLREC\ttp=%.9g,%.9g,%.9g\ttv=%.9g,%.9g,%.9g\tfv=%.9g,%.9g,%.9g\tmz=%.9g,%.9g,%.9g\t"
@@ -6289,6 +6323,7 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
     int pf = pfire_on();
     int64_t owner=0, owner_type=0, local238=0; int32_t order_pre=0; int r1_g1=0, r1_g2a=0, r1_full=0;
     FcGeom fcg; fcg.valid=0;   /* §8.52: captured param_3!=0 range-gate geometry for offline sim:: replay */
+    g_fc_marshal.valid = 0;    /* §8.62: reset the composed-outcome marshal bundle each hook call */
     if (armed && p1) {
         owner      = *(int64_t *)(p1 + 0x10);
         owner_type = *(int64_t *)(p1 + 0x20);
@@ -6440,6 +6475,30 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     if ((bin != 0) != (fcg.in_range != 0)) g_brgg_mismatch++;   /* bridge != binary verdict */
                     if (r == 1 && !bin) g_brgg_bug++;                           /* bridge rejected a fired shot */
                 }
+
+                /* §8.62 B3.8.4: COMPOSED-OUTCOME observe — run the REAL fire_control_decide end-to-end
+                 * in-process on the full marshalled inputs (gates fcm + this range geometry + the
+                 * lead/stage-G bundle g_fc_marshal filled by the pf==2 observe). The binary's stage-G
+                 * shooter_ref is injected, so gates→range→lead→reach are all bit-comparable. The marshal
+                 * is filled by pfire_observe_geom, which runs ONLY on a REAL binary spawn (it is gated by
+                 * g_b3_args.have and PFOBS-validates against g_b3_args.pos) — so g_fc_marshal.valid ⟹ the
+                 * binary actually fired this projectile. INVARIANT: the composed outcome must be Fire
+                 * (d_nofire counts the dangerous direction — the bridge would SUPPRESS a real shot). The
+                 * no-fire direction is covered on ALL calls by the §8.59/§8.60 gate+range observes. NB the
+                 * 3825b0 return `r==1` is a NARROWER condition, NOT the spawn signal, so it is not used
+                 * here. This is the foundation for the flip: the fc_bridge_decide that will DRIVE is run
+                 * alongside, driving nothing. */
+                if (g_brg_dec && g_fc_marshal.valid) {
+                    float muzzle3[3] = { fcg.mx, fcg.my, 0.0f };
+                    int gate_out = 0;
+                    int outcome = g_brg_dec(fcm, g_fc_marshal.aim, 1, muzzle3,
+                                            fcg.wrange, fcg.extent, fcg.minr,
+                                            g_fc_marshal.tp, g_fc_marshal.tv, g_fc_marshal.fv,
+                                            g_fc_marshal.gs, g_fc_marshal.ps, g_fc_marshal.sref,
+                                            g_fc_marshal.reach, 0u, &gate_out);
+                    g_brgd_calls++;
+                    if (outcome != 5) g_brgd_nofire++;   /* sim::FireOutcome::Fire==5; else suppression */
+                }
             }
 
             /* DTFCJ (§8.55): stage-J cooldown oracle — fired shots only (stage J runs only on the fired
@@ -6505,10 +6564,12 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 snprintf(db, sizeof db,
                     "DTBRIDGE\ttick=%u\tloaded=%d\tg_calls=%u\tg_mismatch=%u\tg_bug=%u\t"
                     "rg_calls=%u\trg_mismatch=%u\trg_bug=%u\t"
-                    "l_calls=%u\tl_mismatch=%u\tl_verdict=%u\n",
+                    "l_calls=%u\tl_mismatch=%u\tl_verdict=%u\t"
+                    "d_calls=%u\td_nofire=%u\n",
                     tk, g_brg_gate ? 1 : 0, g_brg_calls, g_brg_mismatch, g_brg_bug,
                     g_brgg_calls, g_brgg_mismatch, g_brgg_bug,
-                    g_brgl_calls, g_brgl_mismatch, g_brgl_verdict);
+                    g_brgl_calls, g_brgl_mismatch, g_brgl_verdict,
+                    g_brgd_calls, g_brgd_nofire);
                 log_write(db);
             } else {
                 snprintf(db, sizeof db,
