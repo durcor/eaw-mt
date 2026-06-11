@@ -1,6 +1,7 @@
-// Feasibility spike: thin extern "C" bridge exporting the validated sim::fire_control_decide
-// into a Windows PE DLL loadable by the (pure-C) hook. Proves §8.51's "C++ can't link" was an
-// assumption, not a constraint.
+// Companion DLL bridging the validated sim:: fire-control lift into the game: a thin extern "C"
+// surface the (pure-C) winmm hook LoadLibrary's, so the in-game fire path runs the SAME code the
+// §8.51-8.57 oracle validated instead of a parallel C transcription. §8.58 proved this links into a
+// self-contained PE DLL (KERNEL32/msvcrt/ntdll only). B3.8 migrates the hook onto it, observe-first.
 #include "fire_control.h"
 #include "sim_rng.h"
 #include <windows.h>
@@ -22,6 +23,30 @@ extern "C" __declspec(dllexport)
 int fc_bridge_first_blocked(const void* elig_blob)
 {
     const sim::FireEligibility& g = *reinterpret_cast<const sim::FireEligibility*>(elig_blob);
+    return static_cast<int>(sim::fire_first_blocked_gate(g));
+}
+
+// §8.58 B3.8.1 — the in-process equivalence entry. Takes the 12-bit gate mask the hook's
+// dtfc_gate_bits already produces (bit i set = gate i passes, sim::FireGate order — the SAME
+// encoding the offline §8.51 oracle replays) and returns the first-blocked sim::FireGate as an int.
+// Scalar in / scalar out: NO struct layout crosses the C->C++ boundary, so the marshalling is
+// immune to ABI/padding drift between the pure-C hook and the C++ bridge.
+extern "C" __declspec(dllexport)
+int fc_bridge_gate_from_bits(unsigned int bits)
+{
+    sim::FireEligibility g;
+    g.owner_present     = (bits >> 0)  & 1;
+    g.target_present    = (bits >> 1)  & 1;
+    g.context_match     = (bits >> 2)  & 1;
+    g.target_targetable = (bits >> 3)  & 1;
+    g.target_queryable  = (bits >> 4)  & 1;
+    g.capability_match  = (bits >> 5)  & 1;
+    g.order_charge_ok   = (bits >> 6)  & 1;
+    g.not_self_target   = (bits >> 7)  & 1;
+    g.not_fogged        = (bits >> 8)  & 1;
+    g.diplomacy_ok      = (bits >> 9)  & 1;
+    g.firing_arc_ok     = (bits >> 10) & 1;
+    g.weapon_selected   = (bits >> 11) & 1;
     return static_cast<int>(sim::fire_first_blocked_gate(g));
 }
 

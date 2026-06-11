@@ -66,9 +66,28 @@ build-winmm-profile:
 # per-function timing profiler, no body-patching subcallee hooks). Use this for oracle captures: it is
 # far less perturbative and avoids the body-patcher battle-load crash (c0000005 in b375380). Still
 # runtime-gated by EAW_DIFFTRACE=1. Shares the winmm.dll output path, so rebuild release after.
-build-winmm-oracle:
+# Depends on build-fc-bridge so the §8.58 companion DLL is deployed alongside (the DTBRIDGE in-process
+# equivalence check LoadLibrary's it; absent ⇒ DTBRIDGE logs load FAIL + skips, the capture is unaffected).
+build-winmm-oracle: build-fc-bridge
   nix develop --command x86_64-w64-mingw32-gcc -DEAW_ORACLE -shared -o patches/experimental/winmm.dll hooks/winmm_proxy.c -lkernel32
   cp patches/experimental/winmm.dll {{game-dir}}
+
+# §8.58 B3.8: build + deploy the sim/ fire-control companion DLL (fc_bridge.dll) next to winmm.dll. The
+# validated sim:: lift, self-contained PE (KERNEL32/msvcrt/ntdll only — see `just fc-bridge-spike`), that
+# the hook LoadLibrary's to run the fire-control decision in-game. -static* folds in libstdc++/libgcc;
+# -ffp-contract=off keeps the lifted math un-FMA'd to match the binary's SSE.
+build-fc-bridge:
+  nix develop --command bash -c '\
+    set -e; cd /tmp && rm -rf fc_bridge_build && mkdir fc_bridge_build && cd fc_bridge_build; \
+    R="{{justfile_directory()}}"; \
+    for f in fire_control firing_aimpoint firing_intercept firing_spawn sim_parallel sim_rng; do \
+      x86_64-w64-mingw32-g++ -std=c++17 -O2 -ffp-contract=off -Wall -I$R/sim -c $R/sim/$f.cpp -o $f.o; \
+    done; \
+    x86_64-w64-mingw32-g++ -std=c++17 -O2 -ffp-contract=off -Wall -I$R/sim -c $R/hooks/bridge/fc_bridge.cpp -o fc_bridge.o; \
+    x86_64-w64-mingw32-g++ -shared -o $R/patches/experimental/fc_bridge.dll fc_bridge.o \
+      fire_control.o firing_aimpoint.o firing_intercept.o firing_spawn.o sim_parallel.o sim_rng.o \
+      -static -static-libgcc -static-libstdc++ -lkernel32'
+  cp patches/experimental/fc_bridge.dll {{game-dir}}
 
 # §8.51: in-game STRUCTURAL ORACLE for the sim/ fire_control gate ladder. Capture first:
 #   just build-winmm-oracle  &&  just difftrace=1 launch-foc-desktop   (play a space battle → DTFCREC lines)

@@ -2043,6 +2043,31 @@ the live engine reads into a `sim::FireControlInputs` at the `3825b0` detour and
 `pfire_fire_reimpl`; (b) the existing DTFC oracle becomes the equivalence gate (bridge verdict == binary == old reimpl); (c) decide
 companion-DLL vs. `winmm_proxy`-as-g++ (companion DLL is lower-risk — leaves the 12.5 K-line hook as C, adds one `LoadLibrary`).
 
+### 8.59 B3.8.1 — COMPANION-DLL MIGRATION STEP 1: in-process bridge equivalence, live in-game = PASS (2026-06-10, user picked companion-DLL)
+First step of the §8.58 migration onto the **companion-DLL** path (user-selected, the lower-risk option): prove the validated `sim/`
+code loads + executes correctly **inside the live `swfoc.exe` process** before widening the marshalled surface. The companion DLL gains a
+scalar-boundary export `fc_bridge_gate_from_bits(uint16_t)` (`hooks/bridge/fc_bridge.cpp`) — it unpacks the 12-bit gate mask (the SAME
+encoding `dtfc_gate_bits` feeds the offline §8.51 oracle) into a `sim::FireEligibility` and returns `sim::fire_first_blocked_gate` as an
+int. **Scalar in / scalar out — NO struct layout crosses the C→C++ boundary**, so the marshalling is immune to ABI/padding drift between
+the pure-C hook and the C++ bridge. Build: `just build-fc-bridge` (now a dependency of `build-winmm-oracle`) compiles+deploys
+`fc_bridge.dll` next to `winmm.dll`. The hook lazily `LoadLibrary`s it once (no DllMain-order dependence; absent ⇒ logs `DTBRIDGE load
+FAIL` + skips, capture unaffected) and, at the existing DTFC capture point (inside the `pf<3` observe path — **the bridge drives nothing**,
+`r` stays the binary's verdict), tallies two invariants per live fire decision: (1) `mismatch` = the in-process DLL verdict ≠ a trivial
+bit-scan first-blocked (catches a cross-language load/ABI fault); (2) `bug` = the §8.51 headline (the bridge must never block a shot the
+binary fired).
+
+**RESULT = PASS** (ICW menu-demo space battles, EAW_ORACLE + EAW_DIFFTRACE=1; evidence `eaw-launch-bridgeobs.out`): `DTBRIDGE load
+dll=ok fn=ok` — the companion DLL loaded inside the game and the export resolved. Across **10 periodic summaries spanning multiple
+battles, every one `loaded=1 mismatch=0 bug=0`** — over the run the in-process bridge call returned the correct first-blocked gate on
+**every** live fire-control decision and never blocked a fired shot. **Cross-check:** the per-summary bridge `calls` exactly equals the
+co-located `DTFC calls` (e.g. `789508`/`789508`, `fired=4153 bug=0`), confirming the bridge ran on every evaluation, fully consistent with
+the offline §8.51 oracle. ⇒ **the cross-language in-process path is proven on live data** — every future widening (range gate → lead →
+full `fc_bridge_decide` takeover) rides this same validated loader. **Lesson banked (methodology #29):** the hook opens its log with a
+RELATIVE `fopen("eaw-mt.log","w")`, so under the bwrap `--chdir <projectdir>` launch the log lands in the **project root**, not the game
+dir — watch `./eaw-mt.log`, not `{{game-dir}}/eaw-mt.log`. **NEXT (step 2):** widen the marshalled surface — add a `fc_bridge_range_gate`
+export fed the DTFCG geometry the hook already captures (the §8.52 stage-F filter), same observe-first equivalence tally; then lead-solve;
+then marshal the full `sim::FireControlInputs` for the `fc_bridge_decide` takeover that retires `pfire_fire_reimpl`.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
