@@ -84,6 +84,34 @@ fc-oracle capture="eaw-mt.log":
   grep -E '^(DTFCREC|DTFCGREC|DTFCLREC)' {{capture}} > /tmp/dtfc_records.txt
   /tmp/eaw_fc_oracle /tmp/dtfc_records.txt
 
+# §8.58: sim→DLL bridge feasibility spike. Compiles the sim/ fire-control TUs for the Windows target
+# (x86_64-w64-mingw32-g++), links a self-contained PE companion DLL (-static libstdc++/libgcc, the §8.44
+# Win32-TLS-only rule keeps mcfgthread/emutls out), verifies the import surface is system-only (KERNEL32/
+# msvcrt/ntdll — NO libstdc++-6/libgcc_s_seh-1/libwinpthread-1/libmcfgthread-2), then loads it under wine64
+# via a pure-C LoadLibrary loader and calls across the C→C++ boundary. PASS proves §8.51's "C++ can't link
+# into the pure-C hook" is false. Seed sources live in hooks/bridge/.
+fc-bridge-spike:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  W="/tmp/fc_bridge_spike"; mkdir -p "$W"
+  nix develop --command bash -c '
+    set -e; cd "'"$W"'"
+    for f in fire_control firing_aimpoint firing_intercept firing_spawn sim_parallel sim_rng; do
+      x86_64-w64-mingw32-g++ -std=c++17 -O2 -ffp-contract=off -Wall -I'"{{justfile_directory()}}"'/sim \
+        -c '"{{justfile_directory()}}"'/sim/$f.cpp -o $f.o
+    done
+    x86_64-w64-mingw32-g++ -std=c++17 -O2 -ffp-contract=off -Wall -I'"{{justfile_directory()}}"'/sim \
+      -c '"{{justfile_directory()}}"'/hooks/bridge/fc_bridge.cpp -o fc_bridge.o
+    x86_64-w64-mingw32-g++ -shared -o fc_bridge.dll fc_bridge.o \
+      fire_control.o firing_aimpoint.o firing_intercept.o firing_spawn.o sim_parallel.o sim_rng.o \
+      -static -static-libgcc -static-libstdc++ -lkernel32
+    echo "== imports =="; x86_64-w64-mingw32-objdump -p fc_bridge.dll | grep -i "DLL Name"
+    if x86_64-w64-mingw32-objdump -p fc_bridge.dll | grep -iqE "libstdc|libgcc|libwinpthread|libmcfgthread|libssp"; then
+      echo "FAIL: forbidden runtime dep present"; exit 1; fi
+    x86_64-w64-mingw32-gcc -O2 -o loader.exe '"{{justfile_directory()}}"'/hooks/bridge/loader.c -lkernel32
+    WINEDEBUG=-all {{wine}} ./loader.exe 2>/dev/null
+  '
+
 # Compile + run the lifted sim-core host validation tests (sim/). No game needed.
 sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \

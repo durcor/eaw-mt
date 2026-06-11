@@ -2013,6 +2013,36 @@ g<=0 zero-both tail incl. the §8.55 asm-corrected ebx write, burst scaling) res
 the in-game envelope. ⇒ **stage J is closed: lifted (§8.55) + in-game bit-exact (this).** The fire body's remaining binary residue
 is unchanged: curved-lead `399450` (dormant), stage-G `385e70` pose, roll-branch side effects, the opaque hoisted reads.
 
+### 8.58 B3.8.0 — sim→DLL BRIDGE FEASIBILITY SPIKE: §8.51's "C++ can't link into the pure-C hook" is DISPROVEN (2026-06-10)
+Every oracle from §8.51–§8.57 validates a *transcription*: the in-game fire takeover (`EAW_PFIRE=3`) runs `pfire_fire_reimpl`, a
+second C transcription inside `winmm_proxy.c`, while the bit-exact-validated logic lives in `sim::fire_control_decide` (host-only g++).
+That duality is the standing hazard the §Select lift banked ("every oracle validates *a* transcription, and we maintain two"). §8.51
+recorded the reason as a *constraint* — "sim/ C++ can't link into the pure-C hook DLL" — but it was **taken as given, never tested**.
+This spike tests it directly (artifacts seeded in `hooks/bridge/`, reproduce with `just fc-bridge-spike`):
+
+1. **Compiles for Windows unchanged.** All 6 fire-control TUs (`fire_control` `firing_aimpoint` `firing_intercept` `firing_spawn`
+   `sim_parallel` `sim_rng`) compile clean for the `x86_64-w64-mingw32-g++` (GCC 15.2.0) Windows target — **zero warnings, zero source
+   changes** (`-std=c++17 -O2 -ffp-contract=off -Wall`). The sim/ lift was already portable; nothing host-specific leaked in.
+2. **Links into a self-contained PE DLL.** A thin `extern "C"` shim (`fc_bridge.cpp`: `fc_bridge_decide` wraps `fire_control_decide`,
+   `fc_bridge_first_blocked` wraps the pure gate leaf) links with `-shared -static -static-libgcc -static-libstdc++` into a 537 KB
+   `fc_bridge.dll` exporting both undecorated `extern "C"` names.
+3. **No forbidden runtime deps (the §8.44 hazard avoided).** `objdump -p` import surface = **`KERNEL32.dll` + `msvcrt.dll` +
+   `ntdll.dll` ONLY** — identical to the existing pure-C `winmm.dll`. **None** of `libstdc++-6` / `libgcc_s_seh-1` / `libwinpthread-1`
+   / `libmcfgthread-2` (the c0000135-load-fail set from the §8.44 memory). `-static*` folds the C++ runtime in statically; the
+   Win32-TLS-only rule (no `__thread`) keeps emutls/mcfgthread out.
+4. **Loads + calls correctly under Wine.** A pure-C loader (`loader.c`, the LoadLibrary+GetProcAddress path the hook would use) loads
+   the DLL under wine64, resolves both exports, and calls across the C→C++ boundary: `first_blocked(all-pass) → 0 (FireGate::None)`,
+   `first_blocked(owner-absent) → 1 (FireGate::OwnerPresent)` — **bit-correct, exit=0 PASS, no crash**.
+
+**⇒ §8.51's constraint is false as stated.** The validated `sim/` C++ can ship in-game via a static-linked companion PE DLL the hook
+LoadLibrary's, OR by migrating `winmm_proxy` itself to g++. **Significance:** this is the prerequisite the §8.45 CS-flip blocker named
+("the `sim/` lift compiled into the engine") — engine-source code now *can* run in the game. Once wired, the threaded takeover runs the
+**single** validated transcription and every future lift lands in-game for free instead of being re-transcribed into hook C, retiring
+the dual-transcription hazard. **NEXT (the migration proper, gated decision — multi-subsystem, needs sign-off per rule 6):** (a) marshal
+the live engine reads into a `sim::FireControlInputs` at the `3825b0` detour and route `pfire=3` through `fc_bridge_decide` instead of
+`pfire_fire_reimpl`; (b) the existing DTFC oracle becomes the equivalence gate (bridge verdict == binary == old reimpl); (c) decide
+companion-DLL vs. `winmm_proxy`-as-g++ (companion DLL is lower-risk — leaves the 12.5 K-line hook as C, adds one `LoadLibrary`).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
