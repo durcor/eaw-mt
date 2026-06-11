@@ -2181,6 +2181,26 @@ drive):** build the `SpawnCommand` applier (create via `29f810` from the command
 then FLIP pf=3's fire create through `fc_bridge_decide`'s `cmd` (substream RNG for launch_dir/spawn_pos), validated by PFOBS position-observe
 (on-target, not bit-exact) + DTWORLD/DTWA-B3 structural gates — retiring `pfire_fire_reimpl`.
 
+### 8.65 B3.8.7 — THE FLIP, step 3a: gated bit-exact APPLY-SIDE DRIVE — the sim writes live sim state = PASS (2026-06-11)
+The threshold step: the validated sim apply-lift now WRITES live projectile state in-game, gated + reversible. Mirroring the §pfire
+STAGE-A discipline (identity passthrough before the divergent takeover), this drives only the RNG-free fields the sim produces bit-exactly
+(§8.63/§8.64), so it is a behavioral NO-OP — but it crosses from "observe" to "drive". At `EAW_PFIRE=3 + EAW_PFIRE_APPLY=1` (new flag,
+default OFF; `just … pfire=3 pfireapply=1 difftrace=1`), `pfire_apply_drive` runs after the reimpl's inline create and OVERWRITES the live
+record's `damage` (rec+0x64, non-charge), `lifetime` (+0x68), `vis` (+0x60, when present), `muzzle_speed` (+0x6c) with the sim's
+`fc_bridge_build_init` output. **Crucially the drive has the live `S[]`**, so the muzzle-speed `|Δz|` uses `aim_z=S[2]` / `aimpoint_z=S[10]`
+(the exact pre-transform values) — correct for GUIDED too, unlike the post-hoc §8.64 observe. **DTWA-B3 is the gate**: it reads those exact
+rec fields after the overwrite, so a wrong driven value shows as a `_bad`.
+
+**RESULT = PASS** (ICW space battles, EAW_ORACLE + pfire=3 + pfireapply=1 + difftrace=1; evidence `eaw-launch-applydrive.out`): across **5
+multi-battle summaries the sim drove a cumulative `n=60,631` live projectile records** (damage/lifetime/muzzle_speed each), and the DTWA-B3
+gate stayed perfectly clean — **every `_bad` (firer/tgt/dmg/life/vis) = 0 across all 25 field·summary checks**, `dmg=N/0 life=N/0` — i.e.
+every sim-written record matches the binary's expected values. **Zero crash signatures; game stable across battles.** ⇒ **the validated
+`sim/` code now drives live in-game sim state**, the first time engine-source output is written into the running game — gated, reversible,
+and oracle-gated. **NEXT (step 3b → the real takeover):** make the sim the SOLE writer (skip the reimpl's inline rec-fill for these fields),
+then drive the substream-divergent launch geometry (`launch_dir`/`spawn_pos` via `fc_bridge_decide`'s `cmd`) — validated by PFOBS
+position-observe (on-target, not bit-exact) + DTWORLD — and finally route the whole pf=3 create through `fc_bridge_decide`, retiring
+`pfire_fire_reimpl`.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

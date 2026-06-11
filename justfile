@@ -45,6 +45,12 @@ pfirereorder := ""
 # G1 substream baseline despite OS thread scheduling. Needs pfire=4 pfiregeomss=1 pfireshards>=2 difftrace=1.
 # Override: just pfire=4 pfireshards=4 pfiregeomss=1 pfirepool=1 difftrace=1 launch-foc-desktop
 pfirepool := ""
+# B3.8.7 (§8.65) THE FLIP step 3a — gated bit-exact apply-side DRIVE: at EAW_PFIRE=3 + EAW_PFIRE_APPLY=1 the
+# sim's firing_build_projectile_init (via fc_bridge.dll) OVERWRITES the live projectile record's RNG-free
+# identity fields (damage/lifetime/vis/muzzle_speed) — bit-exact, so a behavioral no-op gated + validated by
+# DTWA-B3 (DTB3SUM dmg/life/vis must stay all-ok). Default OFF. Needs pfire=3 difftrace=1.
+# Override: just pfire=3 pfireapply=1 difftrace=1 launch-foc-desktop
+pfireapply := ""
 save-dir  :=env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
@@ -330,6 +336,7 @@ launch-foc-desktop:
       EAW_PFIRE_GEOM_SS={{pfiregeomss}} \
       EAW_PFIRE_REORDER={{pfirereorder}} \
       EAW_PFIRE_POOL={{pfirepool}} \
+      EAW_PFIRE_APPLY={{pfireapply}} \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \

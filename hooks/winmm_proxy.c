@@ -5287,6 +5287,58 @@ static int pfire_compute_geom(int64_t p1, int64_t *p2arg, int64_t p3,
     return 1;
 }
 
+/* §8.65 B3.8.7 — THE FLIP, step 3a: gated bit-exact APPLY-SIDE DRIVE. At EAW_PFIRE=3 + EAW_PFIRE_APPLY=1,
+ * after the reimpl creates the projectile, the SIM's firing_build_projectile_init (via fc_bridge.dll)
+ * OVERWRITES the live record's RNG-free identity fields (damage rec+0x64 / lifetime +0x68 / vis +0x60 /
+ * muzzle_speed +0x6c) with its own computed values. These are §8.63/§8.64 bit-exact, so the overwrite is a
+ * behavioral NO-OP — but it crosses the threshold: the validated sim apply-lift now WRITES live sim state,
+ * gated + reversible (default OFF), and DTWA-B3 (which reads those exact rec fields) directly gates it. In
+ * the DRIVE the muzzle-speed |Δz| uses the live S[] (aim_z=S[2], aimpoint_z=S[10]) — the exact pre-transform
+ * values, so it is correct for GUIDED too (unlike the post-hoc §8.64 observe that had to exclude guided).
+ * Charge-path damage (3952a0 charge_mod) is left to the reimpl (not overwritten). */
+static int g_pfire_apply = -1;
+static int pfire_apply(void) {
+    if (g_pfire_apply < 0) {
+        const char *e = getenv("EAW_PFIRE_APPLY");
+        g_pfire_apply = (e && e[0]) ? atoi(e) : 0;
+    }
+    return g_pfire_apply;
+}
+static uint32_t g_pfap_n = 0, g_pfap_dmg = 0, g_pfap_life = 0, g_pfap_vis = 0, g_pfap_ms = 0;
+
+static void pfire_apply_drive(int64_t proj, int64_t p1, int64_t p2, int64_t lVar7,
+                              int64_t local_238, const float *S) {
+    if (!pfire_apply() || !proj) return;
+    brg_init_once();
+    if (!g_brg_init) return;
+    int64_t rec = *(int64_t *)(proj + 0xe8);
+    if (!rec) return;
+    int64_t owner = *(int64_t *)(p1 + 0x10), owner_type = *(int64_t *)(p1 + 0x20), tmpl = lVar7;
+    int32_t order_pre = local_238 ? *(int32_t *)(local_238 + 0x394) : 0;
+    int     is_charge = (local_238 && order_pre < 0);
+    float    od = *(float *)(owner_type + 0x478), td = *(float *)(tmpl + 0x474);
+    int32_t  ol = *(int32_t *)(owner_type + 0x4a0); uint32_t tl = *(uint32_t *)(tmpl + 0x440);
+    int32_t  vo = *(int32_t *)(owner_type + 0x4a4);
+    int64_t  mode = g_dt_imgbase ? *(int64_t *)(g_dt_imgbase + GAME_MODE_PTR_RVA) : 0;  /* == GAME_MODE_DAT_RVA */
+    int32_t  vbase = mode ? *(int32_t *)(mode + 0x10) : 0;
+    /* muzzle-speed inputs — live S[] (aim_z=S[2] pre-transform, aimpoint_z=S[10]); correct for guided too. */
+    float    bspd = ((R1_3857d0Fn)(g_dt_imgbase + 0x3857d0))(p1), tspd = *(float *)(tmpl + 0x4bc);
+    float    ext = ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)p2), subext = 0.0f;
+    int      add_sub = (((R2_39b1a0Fn)(g_dt_imgbase + 0x39b1a0))((int64_t *)p2) != 0 &&
+                        ((R2_372210Fn)(g_dt_imgbase + 0x372210))(*(int64_t *)(owner + 0x298)) == 0);
+    if (add_sub) subext = ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)(*(int64_t *)(p2 + 0x2b0)));
+    float    o_dmg = 0.0f, o_ms = 0.0f; uint32_t o_life = 0; int32_t o_vis = 0;
+    g_brg_init(od, td, /*apply_charge=*/0, /*charge_mod=*/1.0f,
+               (uint32_t)ol, tl, (vo > 0) ? 1 : 0, vbase, vo,
+               bspd, tspd, ext, add_sub, subext, S[2], S[10],
+               &o_dmg, &o_life, &o_vis, &o_ms);
+    g_pfap_n++;
+    if (!is_charge) { *(float *)(rec + 0x64) = o_dmg;  g_pfap_dmg++; }   /* damage (non-charge) */
+    *(uint32_t *)(rec + 0x68) = o_life; g_pfap_life++;                   /* lifetime */
+    if (vo > 0) { *(int32_t *)(rec + 0x60) = o_vis; g_pfap_vis++; }      /* vis frame */
+    *(float *)(rec + 0x6c) = o_ms; g_pfap_ms++;                          /* muzzle speed */
+}
+
 /* ── A3 ASSEMBLY: the unified takeover reimplementation of FUN_1403825b0 (firing_body_lift_scope.md §8.14).
  * Mirrors 3825b0:60-497 (gates+geometry via the shared pfire_compute_geom → R2a/R2b applier → R3 cooldown).
  * Returns 0 = no fire, 1 = fired, PFIRE_FALLBACK(2) = "I didn't handle this — run the binary":
@@ -5321,6 +5373,7 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
         g_pfdbg_inline++;                              /* DEBUG: reached R2 inline (level<4 or buffer full) */
         int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2r, lVar7, local_238, S);
         pfire_r2b_emit(p1, proj, (int64_t *)p2r, p3r, lVar7, S);
+        pfire_apply_drive(proj, p1, p2r, lVar7, local_238, S);   /* §8.65 gated bit-exact apply-side drive */
     }
 
     /* ---- R3 cooldown + listener rebind (403-497) ---- self-write + Class-2b rebind (inline at 1-shard).
@@ -6636,6 +6689,11 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
             } else {
                 snprintf(db, sizeof db,
                     "DTR1SUM\ttick=%u\tTAKEOVER(EAW_PFIRE=3): reimpl drives the fire body; r-vs-gate observe disabled (r is the reimpl's own verdict)\n", tk);
+                log_write(db);
+                /* §8.65 B3.8.7 apply-side drive: how many live records the sim wrote (DTB3SUM gates it). */
+                snprintf(db, sizeof db,
+                    "DTAPPLY\ttick=%u\tapply=%d\tn=%u\tdmg=%u\tlife=%u\tvis=%u\tms=%u\n",
+                    tk, pfire_apply(), g_pfap_n, g_pfap_dmg, g_pfap_life, g_pfap_vis, g_pfap_ms);
                 log_write(db);
             }
         }
