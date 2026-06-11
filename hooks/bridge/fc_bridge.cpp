@@ -132,4 +132,27 @@ int fc_bridge_decide_observe(unsigned int gate_bits,
     return static_cast<int>(d.outcome);
 }
 
+// §8.63 B3.8.5 — APPLY-SIDE: the projectile-init payload. Runs the REAL sim::firing_build_projectile_init
+// on the marshalled create-args and returns the THREE computed identity fields (damage / lifetime /
+// vis_frame) — the ones whose owner-vs-template / charge / base+offset branch logic the sim lift owns
+// (firer_id/target/sub_id are passthroughs already validated by the DTWA-B3 oracle). The hook compares
+// these against the binary's actual projectile record (rec+0x64 / +0x68 / +0x60). Scalar boundary.
+extern "C" __declspec(dllexport)
+int fc_bridge_build_init(float owner_damage, float template_damage, int apply_charge, float charge_mod,
+                         unsigned int owner_lifetime, unsigned int template_lifetime,
+                         int has_vis_frame, int vis_base, int vis_offset,
+                         float* o_damage, unsigned int* o_lifetime, int* o_vis)
+{
+    sim::ProjectileFiringInputs in;
+    in.owner_damage      = owner_damage;     in.template_damage   = template_damage;
+    in.apply_charge      = apply_charge != 0; in.charge_mod       = charge_mod;
+    in.owner_lifetime    = owner_lifetime;   in.template_lifetime = template_lifetime;
+    in.has_vis_frame     = has_vis_frame != 0; in.vis_base        = vis_base;  in.vis_offset = vis_offset;
+    sim::ProjectileInit p = sim::firing_build_projectile_init(in);
+    if (o_damage)   *o_damage   = p.damage;
+    if (o_lifetime) *o_lifetime = p.lifetime;
+    if (o_vis)      *o_vis      = p.vis_frame;
+    return 1;
+}
+
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }

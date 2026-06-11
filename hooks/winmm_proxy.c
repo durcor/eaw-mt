@@ -4585,15 +4585,20 @@ typedef int (*FcBridgeLeadFn)(float,float,float,float,float,float,float,float,fl
 typedef int (*FcBridgeDecFn)(unsigned int, const float*, int, const float*, float, float, float,
                              const float*, const float*, const float*, float, float, const float*,
                              int, unsigned int, int*);
+/* §8.63 B3.8.5 apply-side build-init: damage/lifetime/vis inputs → computed (damage,lifetime,vis) */
+typedef int (*FcBridgeInitFn)(float,float,int,float,unsigned int,unsigned int,int,int,int,
+                              float*,unsigned int*,int*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
 static FcBridgeLeadFn  g_brg_lead  = NULL;
 static FcBridgeDecFn   g_brg_dec   = NULL;
+static FcBridgeInitFn  g_brg_init  = NULL;
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
 static uint32_t g_brgl_calls = 0, g_brgl_mismatch = 0, g_brgl_verdict = 0;   /* lead solve (§8.61) */
 static uint32_t g_brgd_calls = 0, g_brgd_nofire = 0;                         /* composed outcome (§8.62) */
+static uint32_t g_brgi_calls = 0, g_brgi_dmg = 0, g_brgi_life = 0, g_brgi_vis = 0; /* build-init (§8.63) */
 
 /* §8.62 marshal bundle: the lead/stage-G/target inputs fc_bridge_decide_observe needs, filled by
  * pfire_compute_geom during the pf==2 observe (it has them all local) and consumed in the DTFC block of
@@ -4622,11 +4627,13 @@ static void brg_init_once(void) {
         g_brg_range = (FcBridgeRangeFn)GetProcAddress(h, "fc_bridge_range_gate");
         g_brg_lead  = (FcBridgeLeadFn)GetProcAddress(h, "fc_bridge_intercept_lead");
         g_brg_dec   = (FcBridgeDecFn)GetProcAddress(h, "fc_bridge_decide_observe");
+        g_brg_init  = (FcBridgeInitFn)GetProcAddress(h, "fc_bridge_build_init");
     }
-    char lb[200];
-    snprintf(lb, sizeof lb, "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\tdec_fn=%s\n",
+    char lb[240];
+    snprintf(lb, sizeof lb,
+             "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\tdec_fn=%s\tinit_fn=%s\n",
              h ? "ok" : "FAIL", g_brg_gate ? "ok" : "FAIL", g_brg_range ? "ok" : "FAIL",
-             g_brg_lead ? "ok" : "FAIL", g_brg_dec ? "ok" : "FAIL");
+             g_brg_lead ? "ok" : "FAIL", g_brg_dec ? "ok" : "FAIL", g_brg_init ? "ok" : "FAIL");
     log_write(lb);
 }
 
@@ -6094,6 +6101,30 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
         if (*(int32_t *)(rec + 0x60) == exp_vis) g_b3_vis_ok++; else g_b3_vis_bad++;
       } }
 
+    /* §8.63 B3.8.5: APPLY-SIDE build-init observe. Run the REAL sim::firing_build_projectile_init via the
+     * companion DLL on the SAME create-args (owner-vs-template damage/lifetime, base+offset vis) and
+     * compare its computed (damage,lifetime,vis_frame) against the binary's actual record (rec+0x64/+0x68/
+     * +0x60). This validates the apply-side lift in-game — the first marshalling step of the flip. Damage
+     * is skipped on the charge path (charge_mod = 3952a0(...) is a stateful engine call we avoid, exactly
+     * as the inline check above does). Drives nothing. */
+    brg_init_once();
+    if (g_brg_init) {
+        float    od = *(float *)(owner_type + 0x478), td = *(float *)(tmpl + 0x474);
+        int32_t  ol2 = *(int32_t *)(owner_type + 0x4a0);
+        uint32_t tl  = *(uint32_t *)(tmpl + 0x440);
+        int32_t  vo2 = *(int32_t *)(owner_type + 0x4a4);
+        int64_t  mode2 = g_dt_imgbase ? *(int64_t *)(g_dt_imgbase + GAME_MODE_DAT_RVA) : 0;
+        int32_t  vbase = mode2 ? *(int32_t *)(mode2 + 0x10) : 0;
+        float    o_dmg = 0.0f; uint32_t o_life = 0; int32_t o_vis = 0;
+        g_brg_init(od, td, /*apply_charge=*/0, /*charge_mod=*/1.0f,
+                   (uint32_t)ol2, tl, (vo2 > 0) ? 1 : 0, vbase, vo2,
+                   &o_dmg, &o_life, &o_vis);
+        g_brgi_calls++;
+        if (!is_charge && !bits_eq_f(o_dmg, *(float *)(rec + 0x64))) g_brgi_dmg++;
+        if (o_life != *(uint32_t *)(rec + 0x68)) g_brgi_life++;
+        if (vo2 > 0 && o_vis != *(int32_t *)(rec + 0x60)) g_brgi_vis++;
+    }
+
     /* R2 (§8.14): validate the captured 29f810 create args the applier will reconstruct.
      * mgr == *(owner+0x2b8) re-confirms the I2 manager-resolution; template == proj+0x298 (tmpl). */
     if (g_b3_args.have) {
@@ -6565,11 +6596,13 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     "DTBRIDGE\ttick=%u\tloaded=%d\tg_calls=%u\tg_mismatch=%u\tg_bug=%u\t"
                     "rg_calls=%u\trg_mismatch=%u\trg_bug=%u\t"
                     "l_calls=%u\tl_mismatch=%u\tl_verdict=%u\t"
-                    "d_calls=%u\td_nofire=%u\n",
+                    "d_calls=%u\td_nofire=%u\t"
+                    "i_calls=%u\ti_dmg=%u\ti_life=%u\ti_vis=%u\n",
                     tk, g_brg_gate ? 1 : 0, g_brg_calls, g_brg_mismatch, g_brg_bug,
                     g_brgg_calls, g_brgg_mismatch, g_brgg_bug,
                     g_brgl_calls, g_brgl_mismatch, g_brgl_verdict,
-                    g_brgd_calls, g_brgd_nofire);
+                    g_brgd_calls, g_brgd_nofire,
+                    g_brgi_calls, g_brgi_dmg, g_brgi_life, g_brgi_vis);
                 log_write(db);
             } else {
                 snprintf(db, sizeof db,

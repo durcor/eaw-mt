@@ -2139,6 +2139,28 @@ inside the user-approved step 4):** widen the marshal to the spawn payload + sta
 fire create through `fc_bridge_decide` (substream RNG) + a SpawnCommand applier, validated by PFOBS position-observe (on-target, not bit-exact)
 + the DTWORLD/DTWA-B3 structural gates — retiring `pfire_fire_reimpl`.
 
+### 8.63 B3.8.5 — THE FLIP, APPLY-SIDE MARSHALLING (step 1): projectile-init payload validated in-process = PASS (2026-06-10)
+First increment of the actual flip (user-directed): marshal the APPLY side so `fc_bridge_decide` can produce a complete `SpawnCommand`,
+validated observe-first before driving. The create record has RNG-free identity fields the sim's apply lift OWNS the branch logic for —
+**damage** (owner-vs-template, optional charge-scale), **lifetime** (owner-vs-template), **vis_frame** (base+offset) — vs the passthroughs
+(firer_id/target/sub_id) the DTWA-B3 oracle already validates. New scalar export `fc_bridge_build_init(owner/template damage, charge,
+owner/template lifetime, vis base/offset) → (damage, lifetime, vis)` runs the REAL `sim::firing_build_projectile_init`. It is wired INSIDE
+`dtwa_b3_check` (which already reads the exact engine fields — `owner_type+0x478`, `tmpl+0x474`, `owner_type+0x4a0`, `tmpl+0x440`,
+`owner_type+0x4a4`, `mode+0x10`), comparing the bridge's output against the binary's actual record (`rec+0x64`/`+0x68`/`+0x60`). Damage is
+skipped on the charge path (the `3952a0` charge_mod is a stateful engine call, exactly as the inline check skips it). Drives nothing.
+
+**RESULT = PASS** (ICW space battles, EAW_ORACLE + `pfire=2` + EAW_DIFFTRACE=1; evidence `eaw-launch-initobs.out`): `DTBRIDGE load …
+init_fn=ok`; across **6 summaries / multiple battles, every one `i_dmg=0 i_life=0 i_vis=0`** at peak **`i_calls=2126`** — the sim's
+`firing_build_projectile_init` reproduces the binary's damage/lifetime/vis bit-for-bit on every created projectile. Cross-check: `i_calls`
+tracks DTB3SUM `n` exactly (270/270 in the first window), confirming it runs once per real binary projectile create, consistent with the
+inline DTWA-B3 asserts (`dmg=270/0 life=270/0`). (`vis` path was not exercised in these battles — `vo>0` never held, so `i_vis=0` is "no
+divergence, untested"; a unit-population that sets `owner_type+0x4a4>0` would exercise it.) ⇒ **the apply-side identity lift is validated
+in-game; the first slice of the create payload is marshalled.** **NEXT (apply-side step 2):** marshal the muzzle-speed payload (base/template
++ the LEFT-added target_extent/subextent/|Δz| terms — RNG-free geometry) + the launch-geometry (`spawn_pos`/`launch_dir`/`target_rot`/
+`guided_delta`, RNG/substream — PFOBS-validated), completing `ProjectileFiringInputs`; then build the `SpawnCommand` applier (create via
+`29f810` from the command, in canonical order) and flip pf=3's create through `fc_bridge_decide`'s `cmd`, validated by PFOBS position-observe
++ DTWORLD/DTWA-B3 — retiring `pfire_fire_reimpl`.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
