@@ -63,4 +63,25 @@ int fc_bridge_range_gate(float mx, float my, float ax, float ay,
     return sim::fire_range_gate_pass(muzzle, aim, weapon_range, target_extent, min_range) ? 1 : 0;
 }
 
+// §8.61 B3.8.3 — stage-H projectile-intercept lead solver (§8.53, the binary's 399e20 fallback path).
+// Scalar boundary: the hook passes the same DTFCL inputs it captures (tgt_pos, tgt_vel, frame_vel,
+// muzzle, shooter_ref, gamespeed, proj_speed); the lead is returned through out_lead[3] and the
+// return value is the solution-existence verdict (1/0). Calls the SAME sim::firing_intercept_lead the
+// offline §8.53 oracle replays bit-exact against the binary's 399e20 output.
+extern "C" __declspec(dllexport)
+int fc_bridge_intercept_lead(float tpx, float tpy, float tpz,
+                             float tvx, float tvy, float tvz,
+                             float fvx, float fvy, float fvz,
+                             float mzx, float mzy, float mzz,
+                             float srx, float sry, float srz,
+                             float gamespeed, float proj_speed, float* out_lead)
+{
+    bool sol = false;
+    eaw::vec3 lead = sim::firing_intercept_lead(
+        eaw::vec3{tpx, tpy, tpz}, eaw::vec3{tvx, tvy, tvz}, eaw::vec3{fvx, fvy, fvz},
+        eaw::vec3{mzx, mzy, mzz}, eaw::vec3{srx, sry, srz}, gamespeed, proj_speed, &sol);
+    if (out_lead) { out_lead[0] = lead.x; out_lead[1] = lead.y; out_lead[2] = lead.z; }
+    return sol ? 1 : 0;
+}
+
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }

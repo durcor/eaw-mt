@@ -4577,11 +4577,21 @@ static uint16_t dtfc_gate_bits(int64_t p1, int64_t *p2, int64_t p3, int r1_g2a) 
  * dependence); absent DLL ⇒ logs FAIL + the check is skipped, the rest of the capture is unaffected. */
 typedef int (*FcBridgeGateFn)(unsigned int);   /* fc_bridge_gate_from_bits(bits) → sim::FireGate int */
 typedef int (*FcBridgeRangeFn)(float,float,float,float,float,float,float); /* §8.59 B3.8.2 range gate */
+/* §8.61 B3.8.3 lead solver: 15 input floats + gamespeed + proj_speed + out_lead[3] → solution verdict */
+typedef int (*FcBridgeLeadFn)(float,float,float,float,float,float,float,float,float,
+                              float,float,float,float,float,float,float,float,float*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
+static FcBridgeLeadFn  g_brg_lead  = NULL;
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
+static uint32_t g_brgl_calls = 0, g_brgl_mismatch = 0, g_brgl_verdict = 0;   /* lead solve (§8.61) */
+
+/* bit-exact float compare (the §8.53 lead invariant is bit-for-bit vs the binary 399e20 output). */
+static inline int brg_feq(float a, float b) {
+    uint32_t ua, ub; memcpy(&ua, &a, 4); memcpy(&ub, &b, 4); return ua == ub;
+}
 
 static void brg_init_once(void) {
     if (g_brg_tried) return;
@@ -4590,10 +4600,12 @@ static void brg_init_once(void) {
     if (h) {
         g_brg_gate  = (FcBridgeGateFn)GetProcAddress(h, "fc_bridge_gate_from_bits");
         g_brg_range = (FcBridgeRangeFn)GetProcAddress(h, "fc_bridge_range_gate");
+        g_brg_lead  = (FcBridgeLeadFn)GetProcAddress(h, "fc_bridge_intercept_lead");
     }
-    char lb[128];
-    snprintf(lb, sizeof lb, "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\n",
-             h ? "ok" : "FAIL", g_brg_gate ? "ok" : "FAIL", g_brg_range ? "ok" : "FAIL");
+    char lb[160];
+    snprintf(lb, sizeof lb, "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\n",
+             h ? "ok" : "FAIL", g_brg_gate ? "ok" : "FAIL", g_brg_range ? "ok" : "FAIL",
+             g_brg_lead ? "ok" : "FAIL");
     log_write(lb);
 }
 
@@ -4737,7 +4749,7 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
      * at 399e20's offsets, and log them + the 399e20 output for offline BIT-EXACT replay through the lifted
      * sim::firing_intercept_lead. RNG-free (399e20 + its inlined 393b70 predict are pure math). %.9g round-trips
      * a float exactly. */
-    if (dt_on() && g_fcl_rec < 8192) {
+    if (dt_on()) {
         int64_t tgt = (int64_t)p2;
         int64_t ref = *(int64_t *)(tgt + 0xa8) ? *(int64_t *)(tgt + 0xa8) + 0x164 : tgt + 0x248;
         float tp0=*(float*)(tgt+0x78),  tp1=*(float*)(tgt+0x7c),  tp2=*(float*)(tgt+0x80);
@@ -4746,18 +4758,38 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
         float gs=(float)*(int32_t*)(g_dt_imgbase + 0xb0a340);  /* DAT_140b0a340: 399e20 reads (float)DAT, an INT→float convert (=30), NOT a raw float */
         float eo[4]={0,0,0,0};
         ((R1_399e20Fn)(g_dt_imgbase + 0x399e20))(owner, eo, tgt, &S[12], &S[4], fSpeed);
-        /* reach predicate (:238 fire-gate) on the lead — the last RNG-free fire/no-fire factor. Only
-         * meaningful when the lead is non-zero (the body checks it only then); record 1/0. */
-        int lead_nz = (lx*lx + ly*ly + lz*lz != 0.0f);
-        float leadv[4] = { lx, ly, lz, 0.0f };
-        int reach = lead_nz ? (((R1_383ba0Fn)(g_dt_imgbase + 0x383ba0))(p1, leadv) != 0 ? 1 : 0) : 0;
-        char lb[576];
-        snprintf(lb, sizeof lb,
-            "DTFCLREC\ttp=%.9g,%.9g,%.9g\ttv=%.9g,%.9g,%.9g\tfv=%.9g,%.9g,%.9g\tmz=%.9g,%.9g,%.9g\t"
-            "sr=%.9g,%.9g,%.9g\tgs=%.9g\tps=%.9g\teo=%.9g,%.9g,%.9g\treach=%d\n",
-            tp0,tp1,tp2, tv0,tv1,tv2, fv0,fv1,fv2, S[12],S[13],S[14], S[4],S[5],S[6], gs, fSpeed,
-            eo[0],eo[1],eo[2], reach);
-        log_write(lb); g_fcl_rec++;
+
+        /* §8.61 B3.8.3: live in-process lead-solve equivalence. Recompute the lead through the companion
+         * DLL on the SAME inputs the binary's 399e20 just consumed, and require bit-exact agreement with
+         * its output `eo` (the §8.53 invariant: exact=8192 offline) AND the solution-existence verdict.
+         * Runs on EVERY lead solve (not just the capped log sample), so it is a strictly stronger test
+         * than the offline 8192-record replay. brg_init_once here too (this runs before the DTFC block). */
+        brg_init_once();
+        if (g_brg_lead) {
+            float bl[3] = {0,0,0};
+            g_brg_lead(tp0,tp1,tp2, tv0,tv1,tv2, fv0,fv1,fv2, S[12],S[13],S[14], S[4],S[5],S[6],
+                       gs, fSpeed, bl);
+            g_brgl_calls++;
+            if (!(brg_feq(bl[0],eo[0]) && brg_feq(bl[1],eo[1]) && brg_feq(bl[2],eo[2]))) g_brgl_mismatch++;
+            int sim_zero = (bl[0]==0.0f && bl[1]==0.0f && bl[2]==0.0f);
+            int bin_zero = (eo[0]==0.0f && eo[1]==0.0f && eo[2]==0.0f);
+            if (sim_zero != bin_zero) g_brgl_verdict++;   /* fire-relevant: disagree on solution existence */
+        }
+
+        if (g_fcl_rec < 8192) {
+            /* reach predicate (:238 fire-gate) on the lead — the last RNG-free fire/no-fire factor. Only
+             * meaningful when the lead is non-zero (the body checks it only then); record 1/0. */
+            int lead_nz = (lx*lx + ly*ly + lz*lz != 0.0f);
+            float leadv[4] = { lx, ly, lz, 0.0f };
+            int reach = lead_nz ? (((R1_383ba0Fn)(g_dt_imgbase + 0x383ba0))(p1, leadv) != 0 ? 1 : 0) : 0;
+            char lb[576];
+            snprintf(lb, sizeof lb,
+                "DTFCLREC\ttp=%.9g,%.9g,%.9g\ttv=%.9g,%.9g,%.9g\tfv=%.9g,%.9g,%.9g\tmz=%.9g,%.9g,%.9g\t"
+                "sr=%.9g,%.9g,%.9g\tgs=%.9g\tps=%.9g\teo=%.9g,%.9g,%.9g\treach=%d\n",
+                tp0,tp1,tp2, tv0,tv1,tv2, fv0,fv1,fv2, S[12],S[13],S[14], S[4],S[5],S[6], gs, fSpeed,
+                eo[0],eo[1],eo[2], reach);
+            log_write(lb); g_fcl_rec++;
+        }
     }
     { static int dbg = 0; if (dbg < 8) { dbg++; char b[256];
         snprintf(b, sizeof b, "[eaw-mt] PFLEAD spd=%.3f aim=%.2f,%.2f,%.2f dir=%.2f,%.2f,%.2f lead=%.4f,%.4f,%.4f\n",
@@ -6466,14 +6498,17 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     "DTFCJ\ttick=%u\tn=%u\troll=%u\tbtwn=%u\trec=%u\n",
                     tk, g_fcj_n, g_fcj_roll, g_fcj_btwn, g_fcj_rec);
                 log_write(db);
-                /* §8.58/§8.59: companion-DLL in-process equivalence. PASS = loaded=1 and every
-                 * mismatch/bug=0 — gate ladder (g_*, §8.58) AND range gate (rg_*, §8.59) bit-agree with
-                 * the binary live, and neither rejects a fired shot. */
+                /* §8.58/§8.59/§8.61: companion-DLL in-process equivalence. PASS = loaded=1 and every
+                 * mismatch/bug/verdict=0 — gate ladder (g_*, §8.58), range gate (rg_*, §8.59) AND lead
+                 * solve (l_*, §8.61, pf==2 only) bit-agree with the binary live, none rejects a fired
+                 * shot / disagrees on solution existence. */
                 snprintf(db, sizeof db,
                     "DTBRIDGE\ttick=%u\tloaded=%d\tg_calls=%u\tg_mismatch=%u\tg_bug=%u\t"
-                    "rg_calls=%u\trg_mismatch=%u\trg_bug=%u\n",
+                    "rg_calls=%u\trg_mismatch=%u\trg_bug=%u\t"
+                    "l_calls=%u\tl_mismatch=%u\tl_verdict=%u\n",
                     tk, g_brg_gate ? 1 : 0, g_brg_calls, g_brg_mismatch, g_brg_bug,
-                    g_brgg_calls, g_brgg_mismatch, g_brgg_bug);
+                    g_brgg_calls, g_brgg_mismatch, g_brgg_bug,
+                    g_brgl_calls, g_brgl_mismatch, g_brgl_verdict);
                 log_write(db);
             } else {
                 snprintf(db, sizeof db,

@@ -2088,6 +2088,29 @@ is now in-game in-process validated through the companion DLL.** **NEXT (step 3)
 export fed the DTFCL inputs the hook captures under `pfire=2` (§8.53), same observe-first tally; then marshal the full
 `sim::FireControlInputs` for the `fc_bridge_decide` takeover that retires `pfire_fire_reimpl`.
 
+### 8.61 B3.8.3 — COMPANION-DLL MIGRATION STEP 3: lead-solve widened, in-process equivalence live = PASS (2026-06-10)
+Widens the in-process bridge to stage H — the projectile-intercept lead solver (§8.53, the binary's `399e20` fallback path, the spot with
+the known transcription concern). New scalar-boundary export `fc_bridge_intercept_lead(tp,tv,fv,mz,sr, gamespeed, proj_speed, out_lead[3])
+→ solution-verdict` (`hooks/bridge/fc_bridge.cpp`) calls the SAME `sim::firing_intercept_lead` that `fire_control_decide` and the offline
+§8.53 oracle use. In `pfire_compute_geom` (the pf==2 observe path) the hook already calls the binary `399e20` directly on the body's
+aim(`&S[12]`)/muzzle(`&S[4]`)/speed and reads the target inputs at `399e20`'s exact offsets; the bridge is now called on those SAME inputs
+and its lead is required to agree with the binary's output `eo` **bit-for-bit** (`l_mismatch`, via a raw-bits float compare — the §8.53
+invariant was `exact=8192` offline) AND on the solution-existence verdict (`l_verdict`, the fire-relevant bit). **The equivalence runs on
+EVERY lead solve (the log stays capped at 8192), so it is a strictly STRONGER test than the offline 8192-record replay.** `brg_init_once`
+is also invoked here (this block runs before the DTFC block that first loads the DLL). The `DTBRIDGE` summary now carries all three ladders
+(`g_*` gate, `rg_*` range, `l_*` lead).
+
+**RESULT = PASS** (ICW space battles, EAW_ORACLE + `pfire=2` + EAW_DIFFTRACE=1; evidence `eaw-launch-leadobs.out`): `DTBRIDGE load …
+lead_fn=ok`; across **6 summaries spanning multiple battles, every one `l_mismatch=0 l_verdict=0`** (and `g_*=0 rg_*=0` still), peak
+**`l_calls=67533`** live lead solves — the companion DLL reproduced the binary `399e20` output bit-for-bit on every live fire-path lead
+solve, including the solution-existence verdict, ~8× the offline §8.53 sample and with no FP-environment divergence (bit-exact, so not even
+a 1-ULP `near`). ⇒ **the param_3≠0 fire/no-fire geometry is now fully in-game in-process validated through the companion DLL: gates
+(§8.59) → range (§8.60) → lead (this).** **NEXT (step 4, the takeover):** marshal the full `sim::FireControlInputs` at the `3825b0`
+detour and route `pfire=3` through `fc_bridge_decide` instead of `pfire_fire_reimpl` — the DTFC/DTWA-B3 oracle becomes the equivalence
+gate (bridge outcome == binary == old reimpl) before the old C transcription is retired. The marshalling surface is now de-risked
+piecewise: the three validated sub-decisions compose `fire_control_decide`'s RNG-free outcome; the residue to marshal is the spawn payload
++ stage-J cooldown (already §8.55/§8.57 bit-exact offline) + the RNG substream seam.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
