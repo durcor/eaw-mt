@@ -2267,6 +2267,28 @@ single `fc_bridge_decide` call (full `FireControlInputs` marshal → one decisio
 the sole writer and DELETING `pfire_fire_reimpl` — is a structural refactor that adds no new validated behaviour (every piece is already
 sim-driven), now fully de-risked. It is the clean next unit of work.
 
+### 8.69 B3.9.0 — TERMINAL CONSOLIDATION, increment 1: `fire_control_decide` driver-enablement (the `cmd` carries the computed geometry) (2026-06-11)
+Starting the staged consolidation (build the full route alongside `pfire_fire_reimpl`, validate, THEN delete). Increment 1 = the first
+real prerequisite, surfaced by scoping the route: **`fire_control_decide` was lifted as a DECISION/outcome composer, NOT a create-driver.**
+Its produced `cmd` used the MARSHALLED `in.spawn.spawn_pos`/`aim_z`/`aimpoint_z`, never the geometry it computes internally (`shooter_ref`,
+`d.launch_dir`) — so `cmd.pos` and the muzzle-speed `|Δz|` would be stale when it DRIVES. The §8.54 oracle only checked the OUTCOME, so the
+gap was invisible. Fixed in `sim/fire_control.cpp` (additive, outcome-preserving): after stage I, wire `spawn.spawn_pos = shooter_ref`,
+`spawn.aim_z = d.launch_dir.z`, `spawn.aimpoint_z = shooter_ref.z`. Verified correct against the binary `S[]` correspondence (rule 2): the
+spawn position is the stage-G muzzle-cone point (`S[8..10] == shooter_ref`); the muzzle-speed `|Δz|` uses the dispersed dir z (`S[2] ==
+d.launch_dir.z`) and the spawn-pos z (`S[10] == shooter_ref.z`). **Host `fire_control_test` ALL PASS** (13 cases incl. `test_fire_emits_spawn`)
+— no outcome regression; bridge still self-contained (KERNEL32/msvcrt/ntdll only).
+
+**Scoped plan for the remaining consolidation (from the integration analysis):** (2) a bridge BUILDER API (grouped C setters over a plain
+`static sim::FireControlInputs` — NOT thread_local, to avoid the §8.44 emutls/mcfgthread dep — since pf=3 is single-threaded) + a
+`fc_bridge_in_decide` that returns the outcome + the create payload; (3) a hook full MARSHALLER assembling the struct from the reimpl's
+already-computed reads/`S[]`; (4) a `SpawnCommand` APPLIER replicating `pfire_r2a_create_init` + `r2b` (29f810 create → `firing_apply_
+projectile_record` from `cmd.projectile` → `20acd0` orient → Class-2b) — the largest piece; (5) wire a gated `EAW_PFIRE_APPLY=4` route in
+`pfire_fire_reimpl` (marshal → `fc_bridge_decide` → applier → keep `pfire_r3_cooldown`+opp as post-steps, since stage-J/K aren't sim-driven
+yet), fallback intact; (6) validate (DTWA-B3 on the driven create + in-cone + stability across battles); (7) THEN delete `pfire_fire_reimpl`
+/ `pfire_compute_geom` / `pfire_r2a_create_init` — a safe removal once (6) passes. **Note for later:** full deletion incl. cooldown/opp needs
+the stage-J modifier-ladder (§8.55 `535cb0`/`33fb70` fold) + stage-K marshalling, not yet built — until then the consolidated route keeps
+`pfire_r3_cooldown` + the opp handling as post-`fc_bridge_decide` steps.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

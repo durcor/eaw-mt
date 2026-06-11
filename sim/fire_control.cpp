@@ -190,6 +190,14 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
 
     ProjectileFiringInputs spawn = in.spawn;
     spawn.launch_dir = d.launch_dir;
+    // §8.69 (driver-enablement): wire the COMPUTED geometry into the spawn payload so `cmd` is complete
+    // when fire_control_decide is used as the in-game create-driver (not just the outcome oracle). The
+    // binary's spawn position is the stage-G muzzle-cone point (S[8..10] == shooter_ref), and the
+    // muzzle-speed |Δz| term uses the dispersed dir z (S[2] == d.launch_dir.z) and the spawn-pos z
+    // (S[10] == shooter_ref.z). Outcome is unchanged (these feed only cmd), so the §8.54 oracle is intact.
+    spawn.spawn_pos  = shooter_ref;
+    spawn.aim_z      = d.launch_dir.z;
+    spawn.aimpoint_z = shooter_ref.z;
     d.cmd = firing_make_spawn(spawn);
     d.outcome = FireOutcome::Fire;
 
