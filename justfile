@@ -140,6 +140,15 @@ fc-bridge-spike:
     WINEDEBUG=-all {{wine}} ./loader.exe 2>/dev/null
   '
 
+# §8.70 builder-API smoke (terminal consolidation step 2): build fc_bridge.dll + drive its builder
+# (reset → grouped setters → fc_bridge_in_decide) under wine exactly as the hook will, validating the
+# marshalling plumbing (ineligible / out-of-range / fire + payload) end-to-end through the DLL.
+fc-builder-smoke: build-fc-bridge
+  nix develop --command bash -c '\
+    set -e; cd /tmp && cp '"{{justfile_directory()}}"'/patches/experimental/fc_bridge.dll .; \
+    x86_64-w64-mingw32-gcc -O2 -o builder_smoke.exe '"{{justfile_directory()}}"'/hooks/bridge/builder_smoke.c -lkernel32; \
+    WINEDEBUG=-all {{wine}} ./builder_smoke.exe 2>/dev/null'
+
 # Compile + run the lifted sim-core host validation tests (sim/). No game needed.
 sim-test:
   nix develop --command g++ -std=c++17 -O2 -Wall -Wextra -Isim \

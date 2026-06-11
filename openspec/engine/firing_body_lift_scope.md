@@ -2289,6 +2289,24 @@ yet), fallback intact; (6) validate (DTWA-B3 on the driven create + in-cone + st
 the stage-J modifier-ladder (§8.55 `535cb0`/`33fb70` fold) + stage-K marshalling, not yet built — until then the consolidated route keeps
 `pfire_r3_cooldown` + the opp handling as post-`fc_bridge_decide` steps.
 
+### 8.70 B3.9.1 — TERMINAL CONSOLIDATION, increment 2: the BUILDER API (the marshalling mechanism) = PASS (2026-06-11)
+The marshalling-mechanism decision for the full route: rather than cross the ~50-field `FireControlInputs` (a fragile C-mirror) or a 50-arg
+call, the bridge exposes **grouped C setters over a single PLAIN `static sim::FireControlInputs`** (`fc_bridge_in_reset` + `_gates` / `_aim`
+/ `_range` / `_stageg` / `_lead` / `_spread` / `_spawn_create` / `_spawn_payload`) + `fc_bridge_in_decide(seed, …)` that runs the REAL
+`fire_control_decide` and returns the outcome + the full create payload (pos / launch_dir / guided_lead / firer / target / sub / damage /
+lifetime / muzzle_speed / vis / guided) the applier (step 4) will consume. **PLAIN static, NOT `thread_local`** — `thread_local` pulls the
+emutls/mcfgthread dep the §8.44 rule forbids, and the pf=3 fire path is single-threaded. The §8.69 driver-enablement means the geometry
+(spawn_pos / aim_z / aimpoint_z) is computed inside decide, so it is NOT marshalled; cooldown_mods / opp stay neutral (post-step handling).
+
+**RESULT = PASS.** Bridge builds clean + stays self-contained (KERNEL32/msvcrt/ntdll only — 10 new `fc_bridge_in_*` exports, no new deps). A
+Windows smoke loader (`hooks/bridge/builder_smoke.c`, `just fc-builder-smoke`) drives the builder under wine exactly as the hook will
+(reset → setters → decide) and validates the plumbing end-to-end: ineligible (gate-3 cleared) → `Ineligible` / blocked_gate=4; muzzle-invalid
+→ `OutOfRange`; target beyond range → `OutOfRange`; eligible+reachable+lead → **`Fire` with the correct payload** (firer=7, target=0x1234,
+sub=-1, damage=5, lifetime=40). ⇒ the setters fill the struct and decide reads it correctly through the DLL — the marshalling mechanism is
+proven. **NEXT (increment 3):** the hook full MARSHALLER — call these setters from `pfire_fire_reimpl`'s flow with the reimpl's already-
+computed reads/`S[]` (gates `fcm`, range `fcg`, lead bundle, spread/muzzle params §8.67/68, spawn payload §8.63/64), then `fc_bridge_in_decide`
+→ the (step-4) applier.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

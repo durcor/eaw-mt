@@ -196,4 +196,104 @@ int fc_bridge_select_muzzle(float m1x, float m1y, float m1z, float m2x, float m2
     return 1;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// §8.70 B3.9.1 — BUILDER API for the full fc_bridge_decide route (terminal consolidation step 2).
+// Grouped C setters fill a single PLAIN static FireControlInputs (NOT thread_local — that pulls the
+// emutls/mcfgthread dep the §8.44 hook rule forbids; the pf=3 fire path is single-threaded), then
+// fc_bridge_in_decide runs the REAL fire_control_decide and returns the outcome + the create payload the
+// hook applier needs. The geometry (spawn_pos / aim_z / aimpoint_z) is computed INSIDE decide (§8.69), so
+// it is NOT marshalled here — the hook supplies only the decision inputs + spread magnitudes + the
+// identity/create payload. cooldown_mods / opp are left neutral (the consolidated route keeps the reimpl's
+// pfire_r3_cooldown + opp as post-steps until stage J/K are lifted into the drive).
+static sim::FireControlInputs g_bin;
+
+extern "C" __declspec(dllexport) void fc_bridge_in_reset(void) { g_bin = sim::FireControlInputs{}; }
+
+extern "C" __declspec(dllexport) void fc_bridge_in_gates(unsigned int b) {
+    g_bin.gates.owner_present     = (b >> 0)  & 1;  g_bin.gates.target_present    = (b >> 1)  & 1;
+    g_bin.gates.context_match     = (b >> 2)  & 1;  g_bin.gates.target_targetable = (b >> 3)  & 1;
+    g_bin.gates.target_queryable  = (b >> 4)  & 1;  g_bin.gates.capability_match  = (b >> 5)  & 1;
+    g_bin.gates.order_charge_ok   = (b >> 6)  & 1;  g_bin.gates.not_self_target   = (b >> 7)  & 1;
+    g_bin.gates.not_fogged        = (b >> 8)  & 1;  g_bin.gates.diplomacy_ok      = (b >> 9)  & 1;
+    g_bin.gates.firing_arc_ok     = (b >> 10) & 1;  g_bin.gates.weapon_selected   = (b >> 11) & 1;
+}
+extern "C" __declspec(dllexport) void fc_bridge_in_aim(int has_ctx, float x, float y, float z) {
+    g_bin.has_explicit_context = has_ctx != 0;  g_bin.context_aim = eaw::vec3{x, y, z};
+}
+extern "C" __declspec(dllexport)
+void fc_bridge_in_range(int mv, float mx, float my, float mz, float wr, float ex, float mr) {
+    g_bin.muzzle_valid = mv != 0;  g_bin.muzzle = eaw::vec3{mx, my, mz};
+    g_bin.weapon_range = wr;  g_bin.target_extent = ex;  g_bin.min_range = mr;
+}
+extern "C" __declspec(dllexport)
+void fc_bridge_in_stageg(float m1x, float m1y, float m1z, float m2x, float m2y, float m2z,
+                         int full_random, int has_bone2) {
+    g_bin.muzzle_mat1_t = eaw::vec3{m1x, m1y, m1z};  g_bin.muzzle_mat2_t = eaw::vec3{m2x, m2y, m2z};
+    g_bin.full_random_dir = full_random != 0;  g_bin.has_muzzle_bone2 = has_bone2 != 0;
+}
+extern "C" __declspec(dllexport)
+void fc_bridge_in_lead(float tpx, float tpy, float tpz, float tvx, float tvy, float tvz,
+                       float fvx, float fvy, float fvz, float gs, float ps, int reach) {
+    g_bin.target_pos = eaw::vec3{tpx, tpy, tpz};  g_bin.target_vel = eaw::vec3{tvx, tvy, tvz};
+    g_bin.frame_vel = eaw::vec3{fvx, fvy, fvz};
+    g_bin.gamespeed = gs;  g_bin.proj_speed = ps;  g_bin.aim_reachable = reach != 0;
+}
+extern "C" __declspec(dllexport)
+void fc_bridge_in_spread(int no_spread, float base, float sec, float dist, float norm) {
+    g_bin.no_spread = no_spread != 0;  g_bin.base_spread = base;  g_bin.sec_spread = sec;
+    g_bin.spread_dist = dist;  g_bin.spread_norm = norm;
+}
+extern "C" __declspec(dllexport)
+void fc_bridge_in_spawn_create(unsigned long long requester, unsigned int template_id, int team,
+                               unsigned int flags, unsigned int firer_id, unsigned long long target,
+                               int target_sub_id, int guided) {
+    g_bin.spawn.requester = reinterpret_cast<void*>(requester);  g_bin.spawn.template_id = template_id;
+    g_bin.spawn.team = team;  g_bin.spawn.flags = flags;
+    g_bin.spawn.firer_id = firer_id;  g_bin.spawn.target = reinterpret_cast<void*>(target);
+    g_bin.spawn.target_sub_id = target_sub_id;  g_bin.spawn.guided = guided != 0;
+}
+extern "C" __declspec(dllexport)
+void fc_bridge_in_spawn_payload(float owner_damage, float template_damage, int apply_charge,
+                                float charge_mod, unsigned int owner_lifetime,
+                                unsigned int template_lifetime, int has_vis, int vis_base, int vis_offset,
+                                float base_speed, float template_speed, float target_extent,
+                                int add_subextent, float target_subextent) {
+    g_bin.spawn.owner_damage = owner_damage;  g_bin.spawn.template_damage = template_damage;
+    g_bin.spawn.apply_charge = apply_charge != 0;  g_bin.spawn.charge_mod = charge_mod;
+    g_bin.spawn.owner_lifetime = owner_lifetime;  g_bin.spawn.template_lifetime = template_lifetime;
+    g_bin.spawn.has_vis_frame = has_vis != 0;  g_bin.spawn.vis_base = vis_base;
+    g_bin.spawn.vis_offset = vis_offset;
+    g_bin.spawn.base_speed = base_speed;  g_bin.spawn.template_speed = template_speed;
+    g_bin.spawn.target_extent = target_extent;  g_bin.spawn.add_subextent = add_subextent != 0;
+    g_bin.spawn.target_subextent = target_subextent;
+}
+
+// Run the real fire_control_decide over the built inputs (substream RNG, no inject, null sink). Returns the
+// FireOutcome int; on Fire, fills the create payload the applier consumes. out arrays are [3].
+extern "C" __declspec(dllexport)
+int fc_bridge_in_decide(unsigned int seed, int* out_gate, float* o_pos, float* o_launch_dir,
+                        float* o_guided_lead, unsigned int* o_firer, unsigned long long* o_target,
+                        int* o_sub, float* o_damage, unsigned int* o_lifetime, float* o_muzzle_speed,
+                        int* o_vis, int* o_guided) {
+    eaw::SimRng rng(seed);
+    sim::FireControlDecision d = sim::fire_control_decide(g_bin, rng, /*sink=*/nullptr);
+    if (out_gate) *out_gate = static_cast<int>(d.blocked_gate);
+    if (d.outcome == sim::FireOutcome::Fire) {
+        const sim::SpawnCommand& c = d.cmd;
+        const sim::ProjectileInit& p = c.projectile;
+        if (o_pos)         { o_pos[0] = c.pos[0]; o_pos[1] = c.pos[1]; o_pos[2] = c.pos[2]; }
+        if (o_launch_dir)  { o_launch_dir[0]=p.launch_dir[0]; o_launch_dir[1]=p.launch_dir[1]; o_launch_dir[2]=p.launch_dir[2]; }
+        if (o_guided_lead) { o_guided_lead[0]=p.guided_lead[0]; o_guided_lead[1]=p.guided_lead[1]; o_guided_lead[2]=p.guided_lead[2]; }
+        if (o_firer)        *o_firer = p.firer_id;
+        if (o_target)       *o_target = reinterpret_cast<unsigned long long>(p.target);
+        if (o_sub)          *o_sub = p.target_sub_id;
+        if (o_damage)       *o_damage = p.damage;
+        if (o_lifetime)     *o_lifetime = p.lifetime;
+        if (o_muzzle_speed) *o_muzzle_speed = p.muzzle_speed;
+        if (o_vis)          *o_vis = p.vis_frame;
+        if (o_guided)       *o_guided = p.guided ? 1 : 0;
+    }
+    return static_cast<int>(d.outcome);
+}
+
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }
