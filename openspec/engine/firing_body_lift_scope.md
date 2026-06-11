@@ -2224,6 +2224,26 @@ override) + the lead `S[4..6]`, seed a per-fire substream, and use the sim's dis
 each axis within `[lead − m, lead + m]` (in-cone), DTWA-B3 identity clean, + stability — then `spawn_pos` (the `firing_select_muzzle_point`
 cone) the same way, and finally route the whole create through `fc_bridge_decide`, retiring `pfire_fire_reimpl`.
 
+### 8.67 B3.8.9 — THE FLIP, step 3b: APPLY-SIDE GEOMETRY DRIVE — the sim drives live projectile DIRECTIONS = PASS (2026-06-11)
+The first time the sim drives RNG-dependent live geometry (not just the RNG-free identity of §8.65). New scalar export
+`fc_bridge_apply_spread(dir, no_spread, base, sec, dist, norm, seed)` runs the REAL `sim::firing_apply_spread` (the §8.66-verified
+branch-exact lift of `381dc0`) on a per-fire `SimRng` substream. At `EAW_PFIRE=3 + EAW_PFIRE_APPLY=2`, `pfire_r1c_geom` marshals the spread
+magnitudes (`374890(owner+0x298,guided,owner)` base with the `owner+0x38a!=-1 && owner+0x230!=0 ⇒ *(owner+0x230+0x14)` override;
+`53ff30(owner_type,mask,guided)` secondary; `3857d0(p1)` normalizer; `DAT_140b3934d` no-spread) + the lead `S[4..6]`, seeds a per-fire
+substream (`scan_substream_seed(firer_id, g_pfap_spr_seq++)`), and writes the sim's dispersed dir to `S[0..2]` IN PLACE OF the binary's
+`381dc0`. Same spread cone (§8.66), different RNG sample (§8.42 retrofit) ⇒ a determinism-equivalent gameplay change, not a behavior break.
+The launch direction flows on into the create orient/pos. Validation: in-cone (each axis within `[lead−m, lead+m]`, `m` recomputed from the
+same branch) + DTWA-B3 identity + stability.
+
+**RESULT = PASS** (ICW space battles, EAW_ORACLE + pfire=3 + pfireapply=2 + difftrace=1; evidence `eaw-launch-geomdrive.out`): `DTBRIDGE
+load … spread_fn=ok`; across **5 multi-battle summaries the sim drove the dispersion for a cumulative `spr_n=63,314` live fires, every one
+in-cone (`spr_oob=0`)**, the DTWA-B3 identity gate stayed clean (`_bad` all 0, 20 field·summary checks), and **zero crash signatures, stable
+across battles**. ⇒ **the validated `sim/` code now drives live projectile DIRECTIONS in-game** (substream spread), on top of the §8.65
+identity drive. Release `winmm.dll` rebuilt after. **NEXT (closing the flip):** drive `spawn_pos` (the `firing_select_muzzle_point` muzzle
+cone, the same substream seam) the same way; then route the whole pf=3 create through `fc_bridge_decide` (one call producing the full
+decision+geometry+`cmd`) + the `SpawnCommand` applier, making the sim the SOLE writer and retiring `pfire_fire_reimpl` — the migration's
+terminal state (one validated transcription driving the game).
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

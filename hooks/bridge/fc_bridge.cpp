@@ -163,4 +163,21 @@ int fc_bridge_build_init(float owner_damage, float template_damage, int apply_ch
     return 1;
 }
 
+// §8.67 B3.8.9 — APPLY-SIDE geometry drive: weapon dispersion. Runs the REAL sim::firing_apply_spread
+// (the branch-exact lift of 381dc0, §8.66) on a per-fire SimRng substream, returning the dispersed launch
+// direction. The hook drives the body's S[0..2] with this in place of the binary's 381dc0 — same spread
+// cone, different RNG sample (the §8.42 substream retrofit). Scalar boundary.
+extern "C" __declspec(dllexport)
+int fc_bridge_apply_spread(float dx, float dy, float dz, int no_spread,
+                           float base_spread, float sec_spread, float dist, float norm,
+                           unsigned int seed, float* out_dir)
+{
+    eaw::vec3 dir{dx, dy, dz};
+    eaw::SimRng rng(seed);
+    eaw::vec3 o = sim::firing_apply_spread(dir, no_spread != 0, base_spread, sec_spread,
+                                           dist, norm, rng);
+    if (out_dir) { out_dir[0] = o.x; out_dir[1] = o.y; out_dir[2] = o.z; }
+    return 1;
+}
+
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }

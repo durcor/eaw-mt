@@ -4590,11 +4590,14 @@ typedef int (*FcBridgeDecFn)(unsigned int, const float*, int, const float*, floa
 typedef int (*FcBridgeInitFn)(float,float,int,float,unsigned int,unsigned int,int,int,int,
                               float,float,float,int,float,float,float,
                               float*,unsigned int*,int*,float*);
+/* §8.67 B3.8.9 apply-side geometry drive: dir[3] + no_spread + base/sec/dist/norm + seed → dispersed dir[3] */
+typedef int (*FcBridgeSpreadFn)(float,float,float,int,float,float,float,float,unsigned int,float*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
 static FcBridgeLeadFn  g_brg_lead  = NULL;
 static FcBridgeDecFn   g_brg_dec   = NULL;
 static FcBridgeInitFn  g_brg_init  = NULL;
+static FcBridgeSpreadFn g_brg_spread = NULL;
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
@@ -4631,12 +4634,14 @@ static void brg_init_once(void) {
         g_brg_lead  = (FcBridgeLeadFn)GetProcAddress(h, "fc_bridge_intercept_lead");
         g_brg_dec   = (FcBridgeDecFn)GetProcAddress(h, "fc_bridge_decide_observe");
         g_brg_init  = (FcBridgeInitFn)GetProcAddress(h, "fc_bridge_build_init");
+        g_brg_spread = (FcBridgeSpreadFn)GetProcAddress(h, "fc_bridge_apply_spread");
     }
-    char lb[240];
+    char lb[280];
     snprintf(lb, sizeof lb,
-             "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\tdec_fn=%s\tinit_fn=%s\n",
+             "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\tlead_fn=%s\tdec_fn=%s\tinit_fn=%s\tspread_fn=%s\n",
              h ? "ok" : "FAIL", g_brg_gate ? "ok" : "FAIL", g_brg_range ? "ok" : "FAIL",
-             g_brg_lead ? "ok" : "FAIL", g_brg_dec ? "ok" : "FAIL", g_brg_init ? "ok" : "FAIL");
+             g_brg_lead ? "ok" : "FAIL", g_brg_dec ? "ok" : "FAIL", g_brg_init ? "ok" : "FAIL",
+             g_brg_spread ? "ok" : "FAIL");
     log_write(lb);
 }
 
@@ -4735,6 +4740,15 @@ static int pfire_spawn_buf_append(int64_t p1, int64_t p2, int64_t p3, int64_t lV
 static inline float pfire_ffbb0_range(R1_ffbb0Fn f, uint32_t *lcg, float lo, float hi) {
     return f(lcg, lo, hi);
 }
+
+/* §8.67 B3.8.9 spread-magnitude leaves (381dc0:internal, §8.66 decode): the base/secondary spread getters,
+ * both FLOAT-return (XMM0). 374890(owner+0x298, guided, owner) = base; 53ff30(owner_type, mask, guided) =
+ * secondary; 3857d0(p1) = normalizer (reuse R1_3857d0Fn). Marshalled for the apply-side geometry drive. */
+typedef float (*R2_374890Fn)(int64_t, int32_t, int64_t);
+typedef float (*R2_53ff30Fn)(int64_t, int64_t, int32_t);
+static uint32_t g_pfap_spr_seq = 0;            /* per-fire substream counter (distinct draw per shot) */
+static uint32_t g_pfap_spr_n = 0, g_pfap_spr_oob = 0;   /* geometry-drive fires / out-of-cone (= bug) */
+static int pfire_apply(void);                  /* §8.65 flag reader (defined below, before pfire_fire_reimpl) */
 
 /* :210-260 R1c geometry. RNG draws (1ffbb0 spread / 1ffdb0 / 381dc0 dispersion) read the global LCG slot
  * DAT_140a13e24 — which, under EAW_PFIRE_GEOM_SS, the a76b0-scope substream swap (pfire_geom_ss_begin) has
@@ -4856,14 +4870,40 @@ static int pfire_r1c_geom(int64_t p1, int64_t *p2, int64_t lVar7, float *S, floa
     S[4] = S[0]; S[5] = S[1];        /* :250 local_2c8 = (lead.x, lead.y) */
     S[6] = S[2];                     /* :251 local_2c0 = lead.z */
     int32_t uVar16 = *(int32_t *)(lVar7 + 0x1fe8);              /* :252 guided flag (genuine int32) */
-    R1_381dc0Fn f381dc0 = (R1_381dc0Fn)(g_dt_imgbase + 0x381dc0);
-    /* §8.44 STEP-2: 381dc0 dispersion uses a GLOBAL scratch (§8.14 "locked scratch") AND reads the global LCG
-     * slot internally — both must be exclusive. Lock + snapshot before unlock. INERT under the step-1 coarse CS.
-     * (At the CS-flip, this lock ALSO brackets the TLS→global LCG swap so the dispersion draw is per-ship.) */
-    EnterCriticalSection(&g_pfire_scratch_cs);
-    pf = f381dc0(p1, buf220, dist, &S[4], mask, uVar16);        /* :253 dispersion (dist = float arg3) */
-    S[0] = pf[0]; S[1] = pf[1]; S[2] = pf[2];                   /* :255-257 local_2d8.. = dispersed dir */
-    LeaveCriticalSection(&g_pfire_scratch_cs);
+    /* §8.67 B3.8.9 — APPLY-SIDE GEOMETRY DRIVE (EAW_PFIRE_APPLY>=2): drive the dispersion via the SIM's
+     * firing_apply_spread (the §8.66 branch-exact lift of 381dc0) on a per-fire substream, in place of the
+     * binary's 381dc0. Same spread cone (§8.66), different RNG sample (the §8.42 retrofit). The lead is
+     * S[4..6]; the magnitudes are the 374890/53ff30/3857d0 reads + the owner+0x230 override (381dc0 decode).
+     * Validated in-cone (each axis within [lead-m, lead+m]) + DTWA-B3 identity + stability. */
+    if (pfire_apply() >= 2 && (brg_init_once(), g_brg_spread)) {
+        /* owner / owner_type are the pfire_r1c_geom function-scope locals (declared at entry). */
+        int   no_spread = (*(int8_t *)(g_dt_imgbase + 0xb3934dULL) == 1);
+        float base = ((R2_374890Fn)(g_dt_imgbase + 0x374890))(*(int64_t *)(owner + 0x298), uVar16, owner);
+        int64_t ov = *(int64_t *)(owner + 0x230);                /* 381dc0 base override */
+        if (*(int8_t *)(owner + 0x38a) != -1 && ov != 0) base = *(float *)(ov + 0x14);
+        float sec  = ((R2_53ff30Fn)(g_dt_imgbase + 0x53ff30))(owner_type, mask, uVar16);
+        float norm = ((R1_3857d0Fn)(g_dt_imgbase + 0x3857d0))(p1);
+        uint32_t seed = scan_substream_seed((uint32_t)*(int32_t *)(owner + 0x50), g_pfap_spr_seq++);
+        float od[3] = { S[4], S[5], S[6] };
+        g_brg_spread(S[4], S[5], S[6], no_spread, base, sec, dist, norm, seed, od);
+        S[0] = od[0]; S[1] = od[1]; S[2] = od[2];                /* sim-dispersed dir drives the body */
+        /* in-cone check: |od - lead| <= m (the magnitude the sim would have used). m=0 ⇒ od==lead. */
+        float m = 0.0f;
+        if (!no_spread) { if (base > 0.0f) m = base;
+                          else if (sec > 0.0f && dist > 0.0f && norm > 0.0f) m = (sec * dist) / norm; }
+        float tol = m + (m > 0.0f ? m * 1e-4f : 1e-6f);
+        g_pfap_spr_n++;
+        if (fabsf(od[0]-S[4]) > tol || fabsf(od[1]-S[5]) > tol || fabsf(od[2]-S[6]) > tol) g_pfap_spr_oob++;
+    } else {
+        R1_381dc0Fn f381dc0 = (R1_381dc0Fn)(g_dt_imgbase + 0x381dc0);
+        /* §8.44 STEP-2: 381dc0 dispersion uses a GLOBAL scratch (§8.14 "locked scratch") AND reads the global
+         * LCG slot internally — both must be exclusive. Lock + snapshot before unlock. INERT under the step-1
+         * coarse CS. (At the CS-flip, this lock ALSO brackets the TLS→global LCG swap → per-ship dispersion.) */
+        EnterCriticalSection(&g_pfire_scratch_cs);
+        pf = f381dc0(p1, buf220, dist, &S[4], mask, uVar16);     /* :253 dispersion (dist = float arg3) */
+        S[0] = pf[0]; S[1] = pf[1]; S[2] = pf[2];                /* :255-257 local_2d8.. = dispersed dir */
+        LeaveCriticalSection(&g_pfire_scratch_cs);
+    }
 
     R1_20acd0Fn f20acd0 = (R1_20acd0Fn)(g_dt_imgbase + 0x20acd0);
     f20acd0(&S[4], &S[8], &S[0]);    /* :258 20acd0(&local_2c8,&local_2b8,&local_2d8) → Euler in local_2c8 */
@@ -6692,8 +6732,9 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 log_write(db);
                 /* §8.65 B3.8.7 apply-side drive: how many live records the sim wrote (DTB3SUM gates it). */
                 snprintf(db, sizeof db,
-                    "DTAPPLY\ttick=%u\tapply=%d\tn=%u\tdmg=%u\tlife=%u\tvis=%u\tms=%u\n",
-                    tk, pfire_apply(), g_pfap_n, g_pfap_dmg, g_pfap_life, g_pfap_vis, g_pfap_ms);
+                    "DTAPPLY\ttick=%u\tapply=%d\tn=%u\tdmg=%u\tlife=%u\tvis=%u\tms=%u\tspr_n=%u\tspr_oob=%u\n",
+                    tk, pfire_apply(), g_pfap_n, g_pfap_dmg, g_pfap_life, g_pfap_vis, g_pfap_ms,
+                    g_pfap_spr_n, g_pfap_spr_oob);
                 log_write(db);
             }
         }
