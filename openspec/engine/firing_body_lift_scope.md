@@ -2161,6 +2161,26 @@ in-game; the first slice of the create payload is marshalled.** **NEXT (apply-si
 `29f810` from the command, in canonical order) and flip pf=3's create through `fc_bridge_decide`'s `cmd`, validated by PFOBS position-observe
 + DTWORLD/DTWA-B3 — retiring `pfire_fire_reimpl`.
 
+### 8.64 B3.8.6 — THE FLIP, APPLY-SIDE MARSHALLING (step 2): muzzle-speed validated in-process = PASS (ballistic) (2026-06-10)
+Completes the RNG-free apply-side payload — muzzle speed (3825b0:306-320): `base = 3857d0(p1) else tmpl+0x4bc`, then the LEFT-added
+`+ 397780(p2)` extent, `+ 397780(p2[0x56])` subextent (iff `39b1a0(p2) && !372210(owner+0x298)`), `+ |aim_z − aimpoint_z|`. `fc_bridge_build_init`
+was extended with these inputs (the hook marshals them inside `dtwa_b3_check`, re-calling the pure leaves), and the sim's `muzzle_speed`
+is compared bit-exact to the binary's `rec+0x6c`. The `|Δz|` term needs `aim_z` = the dispersed dir z and `aimpoint_z` = the spawn-pos z;
+sourced as `aim_z = rec+0x44` and `aimpoint_z = g_b3_args.pos[2]` (the captured 29f810 param_4).
+
+**RESULT = PASS (ballistic)** (ICW battles, EAW_ORACLE + `pfire=2` + EAW_DIFFTRACE=1; evidence `eaw-launch-msobs.out`): across **6 multi-battle
+summaries, every one `i_ms=0`** at peak **`i_ms_n=2302`** ballistic creates — bit-exact muzzle speed — alongside `i_dmg=0 i_life=0 i_vis=0`
+(the §8.63 fields, re-confirmed). **Methodology #31 banked (found + fixed):** the first run showed `i_ms=15/270` (~5%). The subset size was
+the tell — a class, not a transcription error. Cause: for GUIDED projectiles (`tmpl+0x1fe8==1`) the muzzle-speed `|Δz|` uses the pre-transform
+dispersed dir z (`S[2]`), but the binary later OVERWRITES `rec+0x44` with the guided-lead z, so `aim_z` is not recoverable from `rec`
+post-hoc (the ballistic path keeps `rec+0x44 == S[2]`). Excluding guided (`i_ms_guided`, ~4-5% of creates) drove the ballistic mismatch to
+0 across every battle — confirming the lift is correct and only the post-hoc `aim_z` source was guided-incompatible. ⇒ **all RNG-free
+apply-side payload fields (damage/lifetime/vis/muzzle_speed) are now in-game validated; the only un-observed apply fields are the
+substream-divergent launch geometry (launch_dir/guided_lead), which is PFOBS territory at the flip.** **NEXT (apply-side step 3 → the
+drive):** build the `SpawnCommand` applier (create via `29f810` from the command + `firing_apply_projectile_record`, in canonical order),
+then FLIP pf=3's fire create through `fc_bridge_decide`'s `cmd` (substream RNG for launch_dir/spawn_pos), validated by PFOBS position-observe
+(on-target, not bit-exact) + DTWORLD/DTWA-B3 structural gates — retiring `pfire_fire_reimpl`.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

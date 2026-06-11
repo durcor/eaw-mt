@@ -4585,9 +4585,11 @@ typedef int (*FcBridgeLeadFn)(float,float,float,float,float,float,float,float,fl
 typedef int (*FcBridgeDecFn)(unsigned int, const float*, int, const float*, float, float, float,
                              const float*, const float*, const float*, float, float, const float*,
                              int, unsigned int, int*);
-/* §8.63 B3.8.5 apply-side build-init: damage/lifetime/vis inputs → computed (damage,lifetime,vis) */
+/* §8.63 B3.8.5 / §8.64 B3.8.6 apply-side build-init: damage/lifetime/vis + muzzle-speed inputs →
+ * computed (damage, lifetime, vis, muzzle_speed) */
 typedef int (*FcBridgeInitFn)(float,float,int,float,unsigned int,unsigned int,int,int,int,
-                              float*,unsigned int*,int*);
+                              float,float,float,int,float,float,float,
+                              float*,unsigned int*,int*,float*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
 static FcBridgeLeadFn  g_brg_lead  = NULL;
@@ -4599,6 +4601,7 @@ static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* 
 static uint32_t g_brgl_calls = 0, g_brgl_mismatch = 0, g_brgl_verdict = 0;   /* lead solve (§8.61) */
 static uint32_t g_brgd_calls = 0, g_brgd_nofire = 0;                         /* composed outcome (§8.62) */
 static uint32_t g_brgi_calls = 0, g_brgi_dmg = 0, g_brgi_life = 0, g_brgi_vis = 0; /* build-init (§8.63) */
+static uint32_t g_brgi_ms_n = 0, g_brgi_ms = 0, g_brgi_ms_guided = 0;             /* muzzle-speed (§8.64) */
 
 /* §8.62 marshal bundle: the lead/stage-G/target inputs fc_bridge_decide_observe needs, filled by
  * pfire_compute_geom during the pf==2 observe (it has them all local) and consumed in the DTFC block of
@@ -6062,7 +6065,7 @@ static inline int bits_eq_f(float a, float b) {
 }
 
 static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
-                          int64_t p2, int64_t p3, int64_t local238, int32_t order_pre) {
+                          int64_t p2, int64_t p3, int64_t local238, int32_t order_pre, int64_t p1) {
     int64_t rec  = *(int64_t *)(proj + 0xe8);     /* plVar12[0x1d] motion/combat record */
     if (!rec) { g_b3_skip++; return; }
     int64_t tmpl = *(int64_t *)(proj + 0x298);    /* proj type_def == the create template lVar7 */
@@ -6115,14 +6118,39 @@ static void dtwa_b3_check(int64_t proj, int64_t owner, int64_t owner_type,
         int32_t  vo2 = *(int32_t *)(owner_type + 0x4a4);
         int64_t  mode2 = g_dt_imgbase ? *(int64_t *)(g_dt_imgbase + GAME_MODE_DAT_RVA) : 0;
         int32_t  vbase = mode2 ? *(int32_t *)(mode2 + 0x10) : 0;
-        float    o_dmg = 0.0f; uint32_t o_life = 0; int32_t o_vis = 0;
+        /* §8.64 B3.8.6 muzzle-speed inputs (3825b0:306-320): base = 3857d0(p1) else tmpl+0x4bc; +extent
+         * 397780(p2); +subextent 397780(p2[0x56]) iff 39b1a0(p2) && !372210(owner+0x298); +|Δz| where
+         * aim_z = the dispersed dir z (= binary's rec+0x44) and aimpoint_z = the spawn pos z (the captured
+         * 29f810 param_4 = g_b3_args.pos[2]). RNG-free given those two, so o_ms is bit-comparable to
+         * rec+0x6c. Needs p1 (3857d0) + the captured spawn pos (g_b3_args.have); the leaves are pure reads. */
+        /* GUIDED projectiles (tmpl+0x1fe8==1) are EXCLUDED: the muzzle-speed |Δz| uses the pre-transform
+         * dispersed dir z (S[2]); for guided the binary later overwrites rec+0x44 with the guided_lead z,
+         * so aim_z is not recoverable from rec post-hoc (ballistic keeps rec+0x44 == S[2]). */
+        int     guided = (*(int32_t *)(tmpl + 0x1fe8) == 1);
+        int     ms_ok = (p1 != 0 && g_b3_args.have && !guided);
+        float   bspd = 0.0f, tspd = *(float *)(tmpl + 0x4bc), ext = 0.0f, subext = 0.0f;
+        int     add_sub = 0; float aimz = 0.0f, apz = 0.0f;
+        if (ms_ok) {
+            bspd = ((R1_3857d0Fn)(g_dt_imgbase + 0x3857d0))(p1);
+            ext  = ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)p2);
+            add_sub = (((R2_39b1a0Fn)(g_dt_imgbase + 0x39b1a0))((int64_t *)p2) != 0 &&
+                       ((R2_372210Fn)(g_dt_imgbase + 0x372210))(*(int64_t *)(owner + 0x298)) == 0);
+            if (add_sub)
+                subext = ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)(*(int64_t *)(p2 + 0x2b0)));
+            aimz = *(float *)(rec + 0x44);   /* dispersed dir z = the aim_z fed to the |Δz| term */
+            apz  = g_b3_args.pos[2];          /* spawn pos z = aimpoint_z */
+        }
+        float    o_dmg = 0.0f, o_ms = 0.0f; uint32_t o_life = 0; int32_t o_vis = 0;
         g_brg_init(od, td, /*apply_charge=*/0, /*charge_mod=*/1.0f,
                    (uint32_t)ol2, tl, (vo2 > 0) ? 1 : 0, vbase, vo2,
-                   &o_dmg, &o_life, &o_vis);
+                   bspd, tspd, ext, add_sub, subext, aimz, apz,
+                   &o_dmg, &o_life, &o_vis, &o_ms);
         g_brgi_calls++;
         if (!is_charge && !bits_eq_f(o_dmg, *(float *)(rec + 0x64))) g_brgi_dmg++;
         if (o_life != *(uint32_t *)(rec + 0x68)) g_brgi_life++;
         if (vo2 > 0 && o_vis != *(int32_t *)(rec + 0x60)) g_brgi_vis++;
+        if (ms_ok) { g_brgi_ms_n++; if (!bits_eq_f(o_ms, *(float *)(rec + 0x6c))) g_brgi_ms++; }
+        else if (guided && p1 && g_b3_args.have) g_brgi_ms_guided++;   /* excluded (aim_z unrecoverable) */
     }
 
     /* R2 (§8.14): validate the captured 29f810 create args the applier will reconstruct.
@@ -6200,7 +6228,7 @@ static void pfire_drain_spawns(void) {
         g_b3_in_fire = 0;
         g_pfire_spawn_drained++;
         if (armed && proj && owner && owner_type)
-            dtwa_b3_check(proj, owner, owner_type, p2, p3, local_238, order_pre);
+            dtwa_b3_check(proj, owner, owner_type, p2, p3, local_238, order_pre, p1);
     }
     g_pfire_spawn_count = 0;
 }
@@ -6552,7 +6580,7 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
              * reimpl's RESOLVED p2 (g_pf_reimpl_p2), not the stale pre-redirect arg, else redirected fires
              * false-flag. (At pf<3 the binary's internal redirect is invisible, so use the entry p2 as before.) */
             int64_t chk_p2 = (pf >= 3) ? g_pf_reimpl_p2 : p2;
-            dtwa_b3_check(g_b3_last_proj, owner, owner_type, chk_p2, p3, local238, order_pre);
+            dtwa_b3_check(g_b3_last_proj, owner, owner_type, chk_p2, p3, local238, order_pre, p1);
         }
         uint32_t tk = g_dt_frame_ctr ? *g_dt_frame_ctr : 0;
         if (tk != g_b3_last && (tk & 0x3ffu) == 0) {     /* every 1024 ticks */
@@ -6597,12 +6625,13 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     "rg_calls=%u\trg_mismatch=%u\trg_bug=%u\t"
                     "l_calls=%u\tl_mismatch=%u\tl_verdict=%u\t"
                     "d_calls=%u\td_nofire=%u\t"
-                    "i_calls=%u\ti_dmg=%u\ti_life=%u\ti_vis=%u\n",
+                    "i_calls=%u\ti_dmg=%u\ti_life=%u\ti_vis=%u\ti_ms_n=%u\ti_ms=%u\ti_ms_guided=%u\n",
                     tk, g_brg_gate ? 1 : 0, g_brg_calls, g_brg_mismatch, g_brg_bug,
                     g_brgg_calls, g_brgg_mismatch, g_brgg_bug,
                     g_brgl_calls, g_brgl_mismatch, g_brgl_verdict,
                     g_brgd_calls, g_brgd_nofire,
-                    g_brgi_calls, g_brgi_dmg, g_brgi_life, g_brgi_vis);
+                    g_brgi_calls, g_brgi_dmg, g_brgi_life, g_brgi_vis,
+                    g_brgi_ms_n, g_brgi_ms, g_brgi_ms_guided);
                 log_write(db);
             } else {
                 snprintf(db, sizeof db,
