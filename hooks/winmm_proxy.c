@@ -4576,18 +4576,24 @@ static uint16_t dtfc_gate_bits(int64_t p1, int64_t *p2, int64_t p3, int r1_g2a) 
  * observes; `r` is the binary's own verdict throughout. Lazy one-shot LoadLibrary (no DllMain-order
  * dependence); absent DLL ⇒ logs FAIL + the check is skipped, the rest of the capture is unaffected. */
 typedef int (*FcBridgeGateFn)(unsigned int);   /* fc_bridge_gate_from_bits(bits) → sim::FireGate int */
-static FcBridgeGateFn g_brg_gate = NULL;
+typedef int (*FcBridgeRangeFn)(float,float,float,float,float,float,float); /* §8.59 B3.8.2 range gate */
+static FcBridgeGateFn  g_brg_gate  = NULL;
+static FcBridgeRangeFn g_brg_range = NULL;
 static int      g_brg_tried = 0;
-static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;
+static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
+static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
 
 static void brg_init_once(void) {
     if (g_brg_tried) return;
     g_brg_tried = 1;
     HMODULE h = LoadLibraryA("fc_bridge.dll");
-    if (h) g_brg_gate = (FcBridgeGateFn)GetProcAddress(h, "fc_bridge_gate_from_bits");
-    char lb[96];
-    snprintf(lb, sizeof lb, "DTBRIDGE\tload\tdll=%s\tfn=%s\n",
-             h ? "ok" : "FAIL", g_brg_gate ? "ok" : "FAIL");
+    if (h) {
+        g_brg_gate  = (FcBridgeGateFn)GetProcAddress(h, "fc_bridge_gate_from_bits");
+        g_brg_range = (FcBridgeRangeFn)GetProcAddress(h, "fc_bridge_range_gate");
+    }
+    char lb[128];
+    snprintf(lb, sizeof lb, "DTBRIDGE\tload\tdll=%s\tgate_fn=%s\trange_fn=%s\n",
+             h ? "ok" : "FAIL", g_brg_gate ? "ok" : "FAIL", g_brg_range ? "ok" : "FAIL");
     log_write(lb);
 }
 
@@ -6392,6 +6398,16 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                         fcg.in_range, (r == 1) ? 1 : 0);
                     log_write(gb); g_fcg_rec++;
                 }
+                /* §8.59 B3.8.2: live in-process range-gate equivalence. The bridge recomputes the
+                 * in-range verdict from the SAME captured geometry via sim::fire_range_gate_pass; it
+                 * must agree bit-for-bit with the binary's own verdict (fcg.in_range — the §8.52
+                 * transcribe invariant) and never reject a shot the binary fired. */
+                if (g_brg_range) {
+                    int bin = g_brg_range(fcg.mx, fcg.my, fcg.ax, fcg.ay, fcg.wrange, fcg.extent, fcg.minr);
+                    g_brgg_calls++;
+                    if ((bin != 0) != (fcg.in_range != 0)) g_brgg_mismatch++;   /* bridge != binary verdict */
+                    if (r == 1 && !bin) g_brgg_bug++;                           /* bridge rejected a fired shot */
+                }
             }
 
             /* DTFCJ (§8.55): stage-J cooldown oracle — fired shots only (stage J runs only on the fired
@@ -6450,11 +6466,14 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                     "DTFCJ\ttick=%u\tn=%u\troll=%u\tbtwn=%u\trec=%u\n",
                     tk, g_fcj_n, g_fcj_roll, g_fcj_btwn, g_fcj_rec);
                 log_write(db);
-                /* §8.58 B3.8.1: companion-DLL in-process equivalence. PASS = loaded=1, mismatch=0
-                 * (in-process bridge verdict == bit unpack on every call), bug=0 (§8.51 invariant). */
+                /* §8.58/§8.59: companion-DLL in-process equivalence. PASS = loaded=1 and every
+                 * mismatch/bug=0 — gate ladder (g_*, §8.58) AND range gate (rg_*, §8.59) bit-agree with
+                 * the binary live, and neither rejects a fired shot. */
                 snprintf(db, sizeof db,
-                    "DTBRIDGE\ttick=%u\tloaded=%d\tcalls=%u\tmismatch=%u\tbug=%u\n",
-                    tk, g_brg_gate ? 1 : 0, g_brg_calls, g_brg_mismatch, g_brg_bug);
+                    "DTBRIDGE\ttick=%u\tloaded=%d\tg_calls=%u\tg_mismatch=%u\tg_bug=%u\t"
+                    "rg_calls=%u\trg_mismatch=%u\trg_bug=%u\n",
+                    tk, g_brg_gate ? 1 : 0, g_brg_calls, g_brg_mismatch, g_brg_bug,
+                    g_brgg_calls, g_brgg_mismatch, g_brgg_bug);
                 log_write(db);
             } else {
                 snprintf(db, sizeof db,

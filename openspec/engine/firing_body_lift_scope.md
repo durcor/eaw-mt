@@ -2068,6 +2068,26 @@ dir — watch `./eaw-mt.log`, not `{{game-dir}}/eaw-mt.log`. **NEXT (step 2):** 
 export fed the DTFCG geometry the hook already captures (the §8.52 stage-F filter), same observe-first equivalence tally; then lead-solve;
 then marshal the full `sim::FireControlInputs` for the `fc_bridge_decide` takeover that retires `pfire_fire_reimpl`.
 
+### 8.60 B3.8.2 — COMPANION-DLL MIGRATION STEP 2: range gate widened, in-process equivalence live = PASS (2026-06-10)
+Widens the in-process bridge from the gate skeleton (§8.59) to the first GEOMETRY stage — the stage-F range gate (the §8.52 dominant
+RNG-free fire/no-fire filter). New scalar-boundary export `fc_bridge_range_gate(mx,my,ax,ay,weapon_range,target_extent,min_range) → int`
+(`hooks/bridge/fc_bridge.cpp`) constructs the two 2D points (the gate ignores z) and calls the SAME `sim::fire_range_gate_pass` that both
+`fire_control_decide` and the offline §8.52 oracle use. The hook resolves it in `brg_init_once` and, in the existing DTFCG block (where
+`fcg` already holds the param_3≠0 geometry captured pre-trampoline), passes the SAME floats it logs to `DTFCGREC` and tallies: `rg_mismatch`
+= the in-process bridge verdict ≠ the binary's own captured `fcg.in_range` (the §8.52 bit-exact transcribe invariant, now checked LIVE
+in-process instead of offline), `rg_bug` = the bridge rejected a shot the binary fired. The `DTBRIDGE` summary now carries both ladders
+(`g_*` gate, `rg_*` range).
+
+**RESULT = PASS** (ICW menu-demo space battles, EAW_ORACLE + EAW_DIFFTRACE=1; evidence `eaw-launch-rangegateobs.out`): `DTBRIDGE load
+dll=ok gate_fn=ok range_fn=ok`; across **6 summaries spanning multiple battles, every one `rg_mismatch=0 rg_bug=0`** (and `g_*=0` still),
+peak `rg_calls=433423` live range-gate evaluations. The verdict mix is non-degenerate (`DTFCG in_range=58372 / n=162303` in the first
+window — ~36% in-range), so `rg_mismatch=0` proves the bridge returns BOTH in-range and out-of-range correctly, not a constant. The early
+coincidence `g_calls==rg_calls` (first summary) resolved by the later windows (`g_calls=532510 > rg_calls=433423`) — confirming, as §8.52,
+that not every fire eval is a param_3≠0 range-gate call; the first window was just early-battle composition. ⇒ **the stage-F geometry stage
+is now in-game in-process validated through the companion DLL.** **NEXT (step 3):** the lead-solve verdict — add a `fc_bridge_intercept_lead`
+export fed the DTFCL inputs the hook captures under `pfire=2` (§8.53), same observe-first tally; then marshal the full
+`sim::FireControlInputs` for the `fc_bridge_decide` takeover that retires `pfire_fire_reimpl`.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

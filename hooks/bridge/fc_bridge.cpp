@@ -50,4 +50,17 @@ int fc_bridge_gate_from_bits(unsigned int bits)
     return static_cast<int>(sim::fire_first_blocked_gate(g));
 }
 
+// §8.59 B3.8.2 — stage-F range gate (§8.52). Scalar boundary: the hook passes the same DTFCG geometry
+// it already captures (muzzle x/y, aim x/y, weapon_range, target_extent, min_range — the gate is 2D, z
+// unused) and gets the in-range verdict back. Calls the SAME sim::fire_range_gate_pass that
+// fire_control_decide uses, so the in-process verdict is bit-identical to the offline §8.52 replay.
+extern "C" __declspec(dllexport)
+int fc_bridge_range_gate(float mx, float my, float ax, float ay,
+                         float weapon_range, float target_extent, float min_range)
+{
+    eaw::vec3 muzzle; muzzle.x = mx; muzzle.y = my;
+    eaw::vec3 aim;    aim.x = ax;    aim.y = ay;
+    return sim::fire_range_gate_pass(muzzle, aim, weapon_range, target_extent, min_range) ? 1 : 0;
+}
+
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }
