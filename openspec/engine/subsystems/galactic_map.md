@@ -1,9 +1,10 @@
 # Galactic Map (Strategic Layer)
 
-**Status:** Phase 2 orientation — mode-1 dispatch decoded and classified. The galactic *UI shell*
-is now fully mapped; the galactic *simulation* path is located but not yet decoded (see §"Where the
-sim actually ticks").
-**Last verified:** 2026-06-12 (galactic increment 1)
+**Status:** Phase 2 orientation — mode-1 dispatch (UI shell) mapped, and the galactic *simulation*
+driver identified: it is **Lua-coroutine-driven via Pump_Threads** (slot-43 `GameModeClass::vfunc_4`
+→ signal 0x23 → ScoringManager → Pump_Threads), complemented by the C++ `OutgoingEventQueueClass`
+(`b2ed18`) Add→drain. No separate galactic GOM C++ sweep exists. Producer enumeration = increment 3.
+**Last verified:** 2026-06-12 (galactic increments 1, 2a, 2b)
 
 This file opens the galactic-layer reverse-engineering arc. The tactical (space-battle) sim slice is
 closed (see `firing_body_lift_scope.md`, `threading_model.md`); the galactic layer is the next
@@ -66,7 +67,7 @@ tactical slice: main-thread-only, off the lockstep. The frontier is the galactic
 
 ---
 
-## Where the sim actually ticks (next increment — partially known, not yet decoded for galactic)
+## Where the sim actually ticks (ANSWERED — Lua-coroutine-driven)
 
 The per-frame **simulation dispatch** for *every* mode is `DAT_140b15418->vtable[0x2B]` (slot 43,
 offset `0x158`), the first substantive work each frame (`game_loop.md:219-224, 311`). Per blueprint:498
@@ -82,36 +83,56 @@ FUN_140220ed0(... 0x23 ) // fire signal 0x23 → ScoringManager::Service → Pum
 FUN_1403c05d0(mode[0x3e])// SetupPhaseManager lazy init (guarded)
 ```
 
-⚠️ In galactic mode the combat schedulers are inert and **signal 0x23 has listeners only in combat**
-(`DAT_140b15b10 != 0`; blueprint:498) — so the Lua-AI pump fired here does *not* run on the galactic
-map. Therefore the galactic-specific simulation work is driven by **other** per-frame paths, the ones
-to decode next:
+**✅ Increment 2b finding — the galactic sim is Lua-coroutine-driven, via this same path.** The slot-43
+body is `GameModeClass::vfunc_4` (RTTI-named base method, `decomp/35cc10.c`) and it fires signal **0x23
+unconditionally** — `FUN_140220ed0(DAT_140a10b50, &DAT_140b153e0, 0x23, mode)`, **no mode/combat gate**.
+The combat schedulers `mode[7]`/`mode[8]` are gated only by `DAT_140b15490` (a pause flag, not mode) and
+are empty in galactic. So in galactic mode the 0x23 signal still fires, and its **`TheGameScoringManager`
+listener — registered in `System_Initialize`, active in galactic/land/space (`ai.md:44`), with a
+dedicated "Galactic map load" AI-init path `FUN_14056480`←`0x55b60` (`ai.md:115`) — runs
+`Service → Pump_Threads → lua_resume`** over the galactic AI coroutines (`ai.md:30-44`). EaW has no
+native C++ Think loop (`game_loop.md:277-290`): the galactic faction AI, planet/economy logic, and story
+are **Lua coroutines pumped here**, the *same* mechanism as combat. This is why galactic-map Lua stalls
+are the project's #1 perf pain point (the Phase-5 prewarm fix was exactly first-run galactic/battle
+coroutine cost — `ai.md:101-119`).
 
-- **`FUN_1403b08c0(&DAT_140b2ed18)`** — the per-frame command/event-queue **apply/drain** seam
-  (decoded, `decomp/3b08c0.c`). NOT galactic-specific: it runs in the loop's always-section
+> Reconciles blueprint:498 ("0x23 has listeners only in combat, `DAT_140b15b10 != 0`"): the
+> `DAT_140b15b10` gate governs the *extra combat per-unit* AI listeners, **not** the ScoringManager,
+> which subscribes in every non-loading mode. Both are true; 0x23 always fires, the ScoringManager
+> always listens (galactic included), combat merely adds more listeners.
+
+The C++ side that complements the Lua pump:
+
+- **`OutgoingEventQueueClass::Add` producers** — the strategic event/command *enqueue* API:
+  `FUN_140375380` (scheduled — "OutgoingEventQueueClass::Add -- Adding scheduled event %s" `0x8657b0`,
+  8 branch sites; 5644 bytes; **virtual**, vtable `0x97bcc4`) and `FUN_140565010` (non-scheduled —
+  `0x8657f0`). These are network-replicated, player-id-keyed, serialized-payload events
+  (PENDING_TACTICAL_BATTLE_VOTE etc.) — the MP-deterministic strategic command channel. Called
+  virtually, so producers reach them through the queue vtable (full producer enumeration TODO).
+- **`FUN_1403b08c0(&DAT_140b2ed18)`** — the per-frame command/event-queue **apply/drain** that consumes
+  what `Add` enqueues (decoded, `decomp/3b08c0.c`). Runs in the loop always-section
   (`game_loop.md:54-57`), all modes. `param_1` = queue header (`+0x08` head, `+0x10` tail, `+0x18`
   count; singly-linked via `node[2]`). Gated by connection-state `DAT_140b153f8` (0/3 → local drain;
   1/2/4 → MP-ordered path `FUN_1403b03e0` when the GOM registry `[DAT_140a16fd0..fd8]` is non-empty and
   the active mode object `DAT_140b15418+0x98` flag is set). Per node it invokes the polymorphic command
   **apply** `node->vtable[0x38]` (returns char; on true stamps `node+0x14 = DAT_140b0a320` timestamp),
-  then `ScheduledEventQueueClass::vfunc_1(&DAT_140b15690, node)` + release `node->vtable[1]`. This is
-  the generic **Class-2 order/event drain** (the tactical slice scoped its galactic instance *out*) —
-  it is the *apply* side. The galactic *producers* (what enqueues strategic events) are still TODO.
-- **Galactic GameObject behaviors** — planets, fleets, and galactic units are GameObjects. Note EaW
-  has **no native C++ iterate-and-Think loop** (`game_loop.md:277-290`); per-unit logic is Lua
-  coroutines + the command-queue processor. `PlanetaryBehaviorClass` (economy/build-queue) already
-  appears as a read in tick A (`FUN_14050bf10`); how/where its per-turn advance is driven is TODO.
-- **Galactic AI / story** — the Lua "Main State" (galactic map + global scripts, `script_engine.md:19`,
-  `threading_model.md:60`) drives faction AI and story plots. Since signal-0x23 Pump_Threads is
-  combat-only, the galactic Lua pump must enter from a different site — TODO to locate. Blueprint
-  flags galactic-map Lua stalls as the project's highest perf pain point.
+  then `ScheduledEventQueueClass::vfunc_1(&DAT_140b15690, node)` + release `node->vtable[1]`. This is the
+  generic **Class-2 order/event drain** (apply side).
 
-> **TODO (galactic increment 2, in progress):** ✅ `FUN_1403b08c0` decoded = the generic Class-2
-> command/event *apply/drain* (above). Still open: the **producer** side — what advances galactic
-> planet economy / build queues / fleet movement and *enqueues* strategic events, and the galactic
-> Lua-AI pump entry (≠ the combat signal-0x23 path). Classify each against the 3-class model
-> (`threading_model.md`). Halt-and-document per blueprint rule 4 until each path is actually decoded —
-> do not assume it mirrors the tactical GOM tick.
+### Parallelization implication (galactic)
+
+The galactic sim's heavy work is **Lua (Pump_Threads)** — the *same* offload target and the *same*
+hazard as the tactical AI: Pump_Threads reads game-object state and **must complete before** the command
+queue (`FUN_1403b08c0`) writes it, each frame (`ai.md:68-75`). The galactic C++ side is the
+`b2ed18` Add→drain (Class-2 serial order/event channel). There is **no separate galactic GOM behavior
+tick to parallelize** the way the tactical movement/fire slice was — the structural opportunity is the
+Lua-pump offload + the Class-2 drain, not a per-object C++ sweep.
+
+> **TODO (galactic increment 3):** enumerate the `OutgoingEventQueueClass::Add` virtual producers (what
+> galactic gameplay enqueues which event types), and characterize the galactic Lua-pump↔command-queue
+> ordering against the 3-class model. The Lua interpreter itself (single Main State) is the parallelism
+> bottleneck — see `script_engine.md` / `threading_model.md` Model B (Lua offload, previously ruled
+> medium-risk). Halt-and-document per blueprint rule 4 before assuming an offload is safe.
 
 ---
 
