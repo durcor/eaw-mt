@@ -231,3 +231,40 @@ mapped onto the 3-class model (`threading_model.md`).
 > Halt-and-document per blueprint rule 4. The hot-path hook build + launch campaign is a subsystem-level
 > change (blueprint rule 6) — get sign-off before the build/launch, then validate the hook is
 > behavior-neutral (a control run == baseline) before trusting any capture.
+
+### Increment 2 RESULT — LUACAP built, behavior-neutral, first capture (2026-06-12, commit 2d64608)
+
+Built as designed (`hooks/winmm_proxy.c`: `index_dispatch_hook` + `install_index_dispatch_hook`;
+`g_in_pump` brackets both pump wrappers; `EAW_LUACAP=1` opt-in; `just luacap=1` knob). The inline
+trampoline uses the verified 15-byte position-independent prologue of `24a8a0` (3× `MOV [RSP+N],reg`),
+JMP back to `+0xF`. Names read via the binary's own non-throwing `lua_tolstring` `FUN_1407b9cc0(L,2)`.
+
+**Behavior-neutrality PROVEN (the gold-standard gate):** the menu space-battle DTWORLD world-hash is
+**bit-identical with vs without the hook** — `h@1024 = ea5f27913390cce2`, `h@2048 = 7f7fdaf6ca0fcbaa`
+in both the baseline (`difftrace=1`) and capture (`luacap=1 difftrace=1`) runs. The read-only capture
+does not perturb the simulation.
+
+**First capture — 24 distinct methods reached during the menu-battle pump,** classified:
+
+| Class (`threading_model.md`) | Methods |
+|---|---|
+| **Read** (pure / no sim write) | `Get`, `Get_Name`, `Get_Owner`, `Get_Position`, `Get_Type`, `Is_Category`, `Is_Pool_Safe`, `Is_Valid` |
+| **Class 2 — GOM remove/death** | `Despawn`, `Mark_Parent_Mode_Object_For_Death` |
+| **Class 2b — cross-entity order** | `Attack_Move` |
+| **Self-state write** (own object fields) | `Make_Invulnerable`, `Set_Cannot_Be_Killed`, `Prevent_AI_Usage`, `Prevent_All_Fire`, `Set_Importance`, `Set`, `Reset`, `Teleport`, `Teleport_And_Face`, `Cancel_Hyperspace`, `Cinematic_Hyperspace_In` |
+| **Class 3 — presentation** | `Hide` |
+| Unclassified (needs decompile) | `Service_Wrapper`, `Get` (generic accessor) |
+
+This **demonstrably breaks the Phase-5 "not enumerable" deadlock**: the pump-reachable game-API surface
+*is* enumerable at the chokepoint, neutrally, and the captured names map directly onto the existing
+3-class model. The write methods that cross entity/global boundaries (`Despawn`, `Mark_..._For_Death`,
+`Attack_Move`) are exactly the Class-2/2b deferred-apply surface Model B must buffer; self-state writes
+shard by object for free (same logic as the tactical slice).
+
+> **Caveats / next captures:** (1) the mode tag logged `?` for all 24 — the capturing pumps fire during
+> battle load/intro before `space_slot22_hook` sets `g_space_mode_seen` (cosmetic; refine the mode signal
+> or tag by `g_in_pump` source). (2) 24 is the *menu-demo* AI surface; a longer live battle (combat
+> methods `Fire`/`Take_Damage`/`Activate_Ability` not yet seen) and a **galactic-map session** (fleet/
+> planet/economy methods — the galactic AI surface, requires a GC/save load the menu harness doesn't
+> auto-reach) will broaden the set. (3) then targeted-decompile the boundary-crossing writers to confirm
+> their write target vs the 3-class model.
