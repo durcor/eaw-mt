@@ -274,7 +274,7 @@ extern "C" __declspec(dllexport)
 int fc_bridge_in_decide(unsigned int seed, int* out_gate, float* o_pos, float* o_launch_dir,
                         float* o_guided_lead, unsigned int* o_firer, unsigned long long* o_target,
                         int* o_sub, float* o_damage, unsigned int* o_lifetime, float* o_muzzle_speed,
-                        int* o_vis, int* o_guided) {
+                        int* o_vis, int* o_guided, float* o_pre_lead) {
     eaw::SimRng rng(seed);
     sim::FireControlDecision d = sim::fire_control_decide(g_bin, rng, /*sink=*/nullptr);
     if (out_gate) *out_gate = static_cast<int>(d.blocked_gate);
@@ -282,6 +282,7 @@ int fc_bridge_in_decide(unsigned int seed, int* out_gate, float* o_pos, float* o
         const sim::SpawnCommand& c = d.cmd;
         const sim::ProjectileInit& p = c.projectile;
         if (o_pos)         { o_pos[0] = c.pos[0]; o_pos[1] = c.pos[1]; o_pos[2] = c.pos[2]; }
+        if (o_pre_lead)    { o_pre_lead[0]=d.lead_raw.x; o_pre_lead[1]=d.lead_raw.y; o_pre_lead[2]=d.lead_raw.z; }
         if (o_launch_dir)  { o_launch_dir[0]=p.launch_dir[0]; o_launch_dir[1]=p.launch_dir[1]; o_launch_dir[2]=p.launch_dir[2]; }
         if (o_guided_lead) { o_guided_lead[0]=p.guided_lead[0]; o_guided_lead[1]=p.guided_lead[1]; o_guided_lead[2]=p.guided_lead[2]; }
         if (o_firer)        *o_firer = p.firer_id;

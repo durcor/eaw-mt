@@ -4604,7 +4604,7 @@ typedef void (*FcInLeadFn)(float,float,float,float,float,float,float,float,float
 typedef void (*FcInSpreadFn)(int,float,float,float,float);
 typedef void (*FcInSpawnCreateFn)(unsigned long long,unsigned int,int,unsigned int,unsigned int,unsigned long long,int,int);
 typedef void (*FcInSpawnPayloadFn)(float,float,int,float,unsigned int,unsigned int,int,int,int,float,float,float,int,float);
-typedef int  (*FcInDecideFn)(unsigned int,int*,float*,float*,float*,unsigned int*,unsigned long long*,int*,float*,unsigned int*,float*,int*,int*);
+typedef int  (*FcInDecideFn)(unsigned int,int*,float*,float*,float*,unsigned int*,unsigned long long*,int*,float*,unsigned int*,float*,int*,int*,float*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
 static FcBridgeLeadFn  g_brg_lead  = NULL;
@@ -5505,12 +5505,12 @@ static void pfire_fill_builder(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7
 static int pfire_marshal_decide(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7, int64_t local_238,
                                 uint32_t seed, float *o_pos, float *o_dir, uint32_t *o_firer,
                                 unsigned long long *o_tgt, float *o_dmg, uint32_t *o_life, int *o_vis,
-                                int *o_guided) {
+                                int *o_guided, float *o_pre_lead) {
     if (!g_in_decide || !g_fc_marshal.valid) return -1;
     pfire_fill_builder(p1, p2, p3, lVar7, local_238);
     int gate=0, sub=0; float gl[3], ms=0.0f;
     return g_in_decide(seed, &gate, o_pos, o_dir, gl, o_firer, o_tgt, &sub, o_dmg,
-                       o_life, &ms, o_vis, o_guided);
+                       o_life, &ms, o_vis, o_guided, o_pre_lead);
 }
 
 /* §8.71 marshaller observe: marshal+decide and validate vs the projectile the reimpl just created. */
@@ -5528,7 +5528,7 @@ static void pfire_marshal_observe(int64_t p1, int64_t p2, int64_t p3, int64_t lV
     int gate=0; float pos[3],ld[3],gl[3]; uint32_t firer=0,life=0; unsigned long long tgt=0;
     int sub=0, vis=0, gd=0; float dmg=0, ms=0;
     uint32_t seed = scan_substream_seed((uint32_t)*(int32_t *)(owner + 0x50), g_marsh_n);
-    int outcome = g_in_decide(seed, &gate, pos, ld, gl, &firer, &tgt, &sub, &dmg, &life, &ms, &vis, &gd);
+    int outcome = g_in_decide(seed, &gate, pos, ld, gl, &firer, &tgt, &sub, &dmg, &life, &ms, &vis, &gd, NULL);
     g_marsh_n++;
     if (outcome != 5) { g_marsh_outcome_bad++; return; }   /* binary fired ⇒ Fire (rare NoLead = §8.62 seam) */
     int bad = 0;
@@ -5545,13 +5545,19 @@ static void pfire_marshal_observe(int64_t p1, int64_t p2, int64_t p3, int64_t lV
  * 29f810 create / rec writes / Class-2b emit). pos = cmd.pos (29f810 param_4), dispersed dir = cmd.launch_dir
  * (r2b rec+0x3c & r2a muzzle-speed |Δz|), orient = 20acd0 Euler — mirroring pfire_r1c_geom:226-260. The
  * created proj is captured by the 29f810 spawn hook (g_b3_last_proj) so the EXISTING dtwa_b3_check validates
- * its identity. BALLISTIC + non-charge only (the caller falls back to r2a for guided/charge). */
+ * its identity. §8.72 step-7: GUIDED + CHARGE now drive too — r2a's charge branch (local_238+0x394 scale +
+ * increment) runs identically to inline; for GUIDED, S[16..18] = the sim's PRE-spread lead (cmd_pre_lead, the
+ * §8.72 o_pre_lead) so r2b's guided-delta (dispersed − lead) is internally consistent with the substream
+ * geometry (the binary's S[16..18] would be a DIFFERENT lead — different shooter_ref). cmd_pre_lead may be
+ * NULL for ballistic (r2b ignores S[16..18] then). */
 static int64_t pfire_apply_spawn_cmd(int64_t p1, int64_t *p2, int64_t p3, int64_t lVar7,
-                                     int64_t local_238, const float *cmd_pos, const float *cmd_dir) {
+                                     int64_t local_238, const float *cmd_pos, const float *cmd_dir,
+                                     const float *cmd_pre_lead) {
     float S[48]; memset(S, 0, sizeof S);
     S[8]=cmd_pos[0]; S[9]=cmd_pos[1]; S[10]=cmd_pos[2];   /* :229 spawn pos (29f810 param_4 = &S[8]) */
     S[0]=cmd_dir[0]; S[1]=cmd_dir[1]; S[2]=cmd_dir[2];    /* dispersed dir (r2b rec+0x3c; r2a |Δz| uses S[2]) */
-    S[16]=cmd_dir[0]; S[17]=cmd_dir[1]; S[18]=cmd_dir[2]; /* original lead (ballistic: unused by r2b) */
+    if (cmd_pre_lead) { S[16]=cmd_pre_lead[0]; S[17]=cmd_pre_lead[1]; S[18]=cmd_pre_lead[2]; }  /* guided base */
+    else              { S[16]=cmd_dir[0]; S[17]=cmd_dir[1]; S[18]=cmd_dir[2]; }  /* ballistic: r2b ignores */
     S[6]=cmd_dir[2];                                      /* :251 r1c S[6] (orient z input, pre-20acd0) */
     ((R1_20acd0Fn)(g_dt_imgbase + 0x20acd0))(&S[4], &S[8], &S[0]);   /* :258 dir→Euler in S[4..] */
     S[42]=S[4]; S[43]=S[5]; S[44]=S[6];                  /* :259-260 create orient (29f810 param_5 = &S[42]) */
@@ -5594,34 +5600,32 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
         g_pfdbg_inline++;                              /* DEBUG: reached R2 inline (level<4 or buffer full) */
         int64_t proj = 0;
         int used_cmd = 0;
-        /* §8.72 B3.9.3 — TERMINAL CONSOLIDATION step 5: at EAW_PFIRE_APPLY=4 DRIVE the create through the
+        /* §8.72 B3.9.3 — TERMINAL CONSOLIDATION step 5+7: at EAW_PFIRE_APPLY=4 DRIVE the create through the
          * full marshaller → fc_bridge_in_decide → SpawnCommand applier (sim is the sole geometry driver),
-         * REPLACING the inline r2a/r2b. Ballistic + non-charge only (guided lead / charge scale not yet
-         * routed through the cmd); any other case, a non-Fire decide, or non-finite cmd geometry FALLS BACK
-         * to the validated inline r2a/r2b — never drop or mis-spawn a shot. The §8.65 apply-drive still runs
-         * after (bit-exact identity overwrite); the §8.71 observe is the inline path's validator, so it is
-         * SKIPPED on the driven path (the drive's own DTMARSH counters cover it). */
+         * REPLACING the inline r2a/r2b. ALL fire kinds now drive — BALLISTIC, GUIDED (S[16..18] = the sim's
+         * pre-spread lead `o_pre_lead`, so r2b's guided-delta is substream-consistent) and CHARGE (r2a's
+         * charge branch scales damage + increments local_238+0x394 identically to inline). Only a non-Fire
+         * decide or non-finite cmd geometry FALLS BACK to the validated inline r2a/r2b — never drop or
+         * mis-spawn a shot. The §8.65 apply-drive still runs after (bit-exact identity overwrite, charge
+         * damage left to r2a); the §8.71 observe is the inline path's validator, SKIPPED on the driven path. */
         if (pfire_apply() == 4) {
             int32_t guided = lVar7 ? *(int32_t *)(lVar7 + 0x1fe8) : 0;
-            int32_t order  = local_238 ? *(int32_t *)(local_238 + 0x394) : 0;
-            if (guided != 1 && order >= 0) {
-                int64_t owner = *(int64_t *)(p1 + 0x10);
-                float cpos[3], cdir[3], cdmg=0; uint32_t cfirer=0, clife=0; unsigned long long ctgt=0;
-                int cvis=0, cgd=0;
-                uint32_t seed = scan_substream_seed((uint32_t)*(int32_t *)(owner + 0x50), g_marsh_n);
-                int outcome = pfire_marshal_decide(p1, p2r, p3r, lVar7, local_238, seed,
-                                                   cpos, cdir, &cfirer, &ctgt, &cdmg, &clife, &cvis, &cgd);
-                g_marsh_n++;
-                int finite = isfinite(cpos[0]) && isfinite(cpos[1]) && isfinite(cpos[2]) &&
-                             isfinite(cdir[0]) && isfinite(cdir[1]) && isfinite(cdir[2]);
-                if (outcome == 5 && finite) {                /* FireOutcome::Fire */
-                    proj = pfire_apply_spawn_cmd(p1, (int64_t *)p2r, p3r, lVar7, local_238, cpos, cdir);
-                    used_cmd = 1; g_marsh_drive_n++;
-                } else {
-                    g_marsh_drive_fb++;                      /* non-Fire / non-finite → inline below */
-                }
+            int64_t owner = *(int64_t *)(p1 + 0x10);
+            float cpos[3], cdir[3], clead[3]={0,0,0}, cdmg=0; uint32_t cfirer=0, clife=0;
+            unsigned long long ctgt=0; int cvis=0, cgd=0;
+            uint32_t seed = scan_substream_seed((uint32_t)*(int32_t *)(owner + 0x50), g_marsh_n);
+            int outcome = pfire_marshal_decide(p1, p2r, p3r, lVar7, local_238, seed,
+                                               cpos, cdir, &cfirer, &ctgt, &cdmg, &clife, &cvis, &cgd, clead);
+            g_marsh_n++;
+            int finite = isfinite(cpos[0]) && isfinite(cpos[1]) && isfinite(cpos[2]) &&
+                         isfinite(cdir[0]) && isfinite(cdir[1]) && isfinite(cdir[2]);
+            if (guided == 1) finite = finite && isfinite(clead[0]) && isfinite(clead[1]) && isfinite(clead[2]);
+            if (outcome == 5 && finite) {                    /* FireOutcome::Fire */
+                proj = pfire_apply_spawn_cmd(p1, (int64_t *)p2r, p3r, lVar7, local_238,
+                                             cpos, cdir, (guided == 1) ? clead : NULL);
+                used_cmd = 1; g_marsh_drive_n++;
             } else {
-                g_marsh_drive_fb++;                          /* guided / charge → inline below */
+                g_marsh_drive_fb++;                          /* non-Fire / non-finite → inline below */
             }
         }
         if (!used_cmd) {

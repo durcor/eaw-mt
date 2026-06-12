@@ -189,6 +189,7 @@ struct FireControlDecision {
     FireOutcome outcome = FireOutcome::NoFire_Ineligible;
     FireGate    blocked_gate = FireGate::None;  // which A/C/D gate blocked, when NoFire_Ineligible
     eaw::vec3   aim_point  = {};   // the resolved aim (stage E)
+    eaw::vec3   lead_raw   = {};   // PRE-spread intercept lead (stage H) — the guided-branch base (S[16..18])
     eaw::vec3   launch_dir = {};   // post-lead, post-spread launch direction (stage I)
     SpawnCommand cmd{};            // valid iff outcome == Fire
     bool        cooldown_rolled = false;  // stage J: burst counter reached 0 ⇒ the :410 draw happened

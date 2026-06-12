@@ -2346,9 +2346,26 @@ decision/identity invariants hold on the drive path too), `drive_fb=2050` (guide
 all `=n` (driven), `spr_oob=0` + `mz_oob=0` (every driven create's geometry in-cone, §8.67/68). **Zero crash markers** across 3+ battles (ticks
 reset 3×), disk stable. The handoff's earlier crash-loop is RESOLVED by the clean-replace wiring (mutually-exclusive `used_cmd`, finite-guard,
 ballistic+non-charge guard, observe-skip on driven path) — the prior attempt's defect (double-create / unguarded NaN geometry) is gone.
-⇒ **decide is the sole geometry+decision driver of the BALLISTIC create.** **NEXT (step 7, deferred):** route guided-lead + charge-scale through
-the `cmd` (so the inline `r2a`/`r2b` fallback narrows to nothing) → then retire `pfire_fire_reimpl`'s inline create. `pfire_fire_reimpl` itself
-STAYS — it still hosts the gates/geometry/`pfire_r3_cooldown` and the fallback path for guided/charge + the non-difftrace build.
+⇒ **decide is the sole geometry+decision driver of the BALLISTIC create.**
+
+#### increment 7: GUIDED + CHARGE routed through `cmd` — the inline fallback narrows to ZERO = PASS (2026-06-12)
+Removed the ballistic+non-charge guard so EVERY fire kind drives:
+- **CHARGE**: no geometry change (charge only scales damage) — the applier's reused `r2a` runs its charge branch (`local_238+0x394` scale +
+  increment) identically to inline, and the §8.65 apply-drive already SKIPS charge damage (`if (!is_charge)`), so `r2a`'s charge-scaled `rec+0x64`
+  survives. Just dropping the guard sufficed.
+- **GUIDED**: `r2b`'s guided-delta is `(dispersed_dir − pre-spread_lead)` transformed by the live target frame. The dispersed dir is the sim's
+  (`cmd.launch_dir`), so the lead must ALSO be the sim's — the binary's `S[16..18]` is a DIFFERENT lead (different stage-G shooter_ref → different
+  substream). So exposed the sim's pre-spread lead: new `FireControlDecision::lead_raw` (set in `fire_control_decide`) → new `fc_bridge_in_decide`
+  out-param `o_pre_lead` → the applier writes it to `S[16..18]` for guided (NULL/ignored for ballistic). `r2b` then does the live-target-frame
+  matrix transform itself (RNG-free), keeping the guided velocity substream-consistent. Host `fire_control_test` ALL PASS (outcome-neutral change).
+
+**RESULT = PASS** (same config, autonomous multi-battle): **5 DTMARSH summaries, `drive_n=64,124` = `n` on EVERY summary with `drive_fb=0`** — the
+inline `r2a`/`r2b` fallback is now reached for ZERO fires (down from `drive_fb=2050`). `outcome_bad=0` + `id_bad=0`, `spr_oob=0` + `mz_oob=0`, **zero
+crash markers**, disk stable. ⇒ **decide is the sole geometry+decision driver of ALL projectile creates (ballistic, guided, charge).** The inline
+`r2a`/`r2b` path REMAINS as the guarded safety fallback (non-Fire / non-finite geometry) + the entire non-difftrace (`apply<4`) path — so
+`pfire_fire_reimpl` is NOT retired (it still hosts gates/geometry/`pfire_r3_cooldown`). **NEXT (open):** stage J/K (`pfire_r3_cooldown` + opp-target)
+are still reimpl post-steps, not sim-driven — routing those through `decide`'s `cooldown`/`opp_target` outputs would close the last reimpl-owned
+write; otherwise the firing-takeover consolidation is functionally complete.
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).

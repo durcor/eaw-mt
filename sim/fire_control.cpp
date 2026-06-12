@@ -182,6 +182,7 @@ FireControlDecision fire_control_decide(const FireControlInputs& in, eaw::SimRng
                                             in.proj_speed, &has_sol);
     if (lead == vec3{}) { d.outcome = FireOutcome::NoFire_NoLead; return d; }
     if (!in.aim_reachable) { d.outcome = FireOutcome::NoFire_Unreachable; return d; }
+    d.lead_raw = lead;   // §8.72 step-7: the pre-spread lead the hook feeds r2b's guided-delta (S[16..18])
 
     // ── Stage I: dispersion + payload + spawn (250-401, 266) ──────────────────────────────────────────
     // 381dc0 perturbs the lead into the final launch dir; the b3 payload (firing_make_spawn) carries it.
