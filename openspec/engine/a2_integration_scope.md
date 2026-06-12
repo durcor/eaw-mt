@@ -115,6 +115,42 @@ shelve a2. This measurement is cheap, decisive, and must precede the takeover.
 > ceiling is wanted, the next step is the **fire-path write-audit + spatial-query thread-safety assessment**
 > (cheap, decisive, a2.0-spirit) BEFORE committing to b3 + the parallel-fire takeover.
 
+### ✅ CEILING-RAISE REASSESSMENT (2026-06-12) — the higher ceiling is GO *and* most of its machinery now exists
+
+The user asked to raise the ceiling before committing to a2.2. The assessment is **already complete** and is
+**GO** (`firing_body_lift_scope.md` §8.5–8.8): the write-audit found **no un-deferrable live cross-entity
+write** (every cross-object write is in the deferrable Class-2/2b/3 channels); the spatial-query is
+**MANAGEABLE** (its grid is frozen by the tick-start rebuild `2be640`/`20ed70` → concurrent reads safe for
+free; the only hazard is the intrusive result-list `+0x18`/`index+8`, contained by a **short-lock + copy-out**
+to a thread-local buffer, with the per-candidate eval still parallel — consumption capped at 25 by Fix B2);
+both query vfuncs (`vfunc_2` `0x395ac0`, score `vfunc_35` `0x566ba0`) are **read-only**. **Parallel-fire-pass
+ceiling: ~3.5–6×.**
+
+**Decisive update since June:** the **B3.7–B3.9 firing takeover is COMPLETE** (§8.46–8.73). `sim::fire_control_
+decide` (`sim/fire_control.{h,cpp}` + `firing_aimpoint`/`intercept`/`spawn`) now reads marshalled firer/target
+state, decides the geometry, and **defers every cross-entity write**: all projectile creates
+(ballistic/guided/charge) → `SpawnCommand`; the opportunity-target rebind (stage K, Class-2b) →
+`Command`/`listener_edits`; SFX → `SfxCommand` — leaving **only stage-J cooldown** live, which is **own-state
+/ Phase-A-safe**. It was driven LIVE in-engine (drive_n≈80k creates + 80k opp-rebinds, zero crashes,
+deterministic). **This is precisely the read-mostly + deferred-write fire decision a parallel fire pass
+needs — already built and in-engine-validated, just run serially today.**
+
+**⇒ The §5 serial-fire fallback is effectively SUPERSEDED.** That gate was decided (June) *because* the fire
+body was an un-lifted 4034 B binary blob; B3.7–B3.9 then lifted it. So a2 should target the **parallel-fire
+higher ceiling (~3.5–6×)**, not the ~2× serial-fire fallback — keeping the now-lifted `decide` serial would
+waste the lift. Remaining work to realize it (delta over the serial-fire a2):
+1. Feed `fire_control_decide`'s cross-object inputs from the `FrozenSnapshot` (target pos/health/team) + the
+   frozen team-grid (spatial query) — both already tick-start-stable.
+2. The spatial-query **short-lock + copy-out** (§8.6) — the one piece not yet built.
+3. Drain the deferred `SpawnCommand`/`Command`/`SfxCommand` in canonical order after the parallel phase
+   (`drain_parallel`, already built + host-green).
+Then `fire_control_decide` runs **inside Phase-A** (deferred writes) instead of a serial pass.
+
+**Verdict: pursue the parallel-fire a2 (higher ceiling), not the serial-fire ~2× variant — the lift that
+makes it possible is done.** a2.1 still holds: the cheap-mass is lifted; the per-object AI-pump +
+scheduled-events + DoT still go serial (cheap), but fire-control now joins Phase-A. (a2.0b retrofit-delta
+sign-off still required before the takeover.)
+
 ---
 
 ## 3. THE SECOND QUESTION — is the determinism retrofit's gameplay delta acceptable?
