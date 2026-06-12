@@ -4605,6 +4605,7 @@ typedef void (*FcInSpreadFn)(int,float,float,float,float);
 typedef void (*FcInSpawnCreateFn)(unsigned long long,unsigned int,int,unsigned int,unsigned int,unsigned long long,int,int);
 typedef void (*FcInSpawnPayloadFn)(float,float,int,float,unsigned int,unsigned int,int,int,int,float,float,float,int,float);
 typedef int  (*FcInDecideFn)(unsigned int,int*,float*,float*,float*,unsigned int*,unsigned long long*,int*,float*,unsigned int*,float*,int*,int*,float*);
+typedef unsigned long long (*FcOppObserveFn)(unsigned long long,unsigned long long,unsigned long long,int,int,int*,int*);
 static FcBridgeGateFn  g_brg_gate  = NULL;
 static FcBridgeRangeFn g_brg_range = NULL;
 static FcBridgeLeadFn  g_brg_lead  = NULL;
@@ -4618,8 +4619,11 @@ static FcInAimFn          g_in_aim=NULL;     static FcInRangeFn   g_in_range=NUL
 static FcInStagegFn       g_in_stageg=NULL;  static FcInLeadFn    g_in_lead=NULL;
 static FcInSpreadFn       g_in_spread=NULL;  static FcInSpawnCreateFn  g_in_screate=NULL;
 static FcInSpawnPayloadFn g_in_spay=NULL;    static FcInDecideFn  g_in_decide=NULL;
+static FcOppObserveFn     g_opp_observe=NULL; /* §8.73 stage-K observe */
 static uint32_t g_marsh_n=0, g_marsh_outcome_bad=0, g_marsh_id_bad=0;   /* §8.71 marshaller observe */
 static uint32_t g_marsh_drive_n=0, g_marsh_drive_fb=0;                  /* §8.72 cmd-drive: drove / fell back */
+static uint32_t g_oppk_n=0, g_oppk_slot_bad=0, g_oppk_rebind=0, g_oppk_clear=0, g_oppk_set=0,
+                g_oppk_disc=0, g_oppk_conn=0;                           /* §8.73 stage-K observe */
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
@@ -4668,6 +4672,7 @@ static void brg_init_once(void) {
         g_in_screate= (FcInSpawnCreateFn)GetProcAddress(h, "fc_bridge_in_spawn_create");
         g_in_spay   = (FcInSpawnPayloadFn)GetProcAddress(h, "fc_bridge_in_spawn_payload");
         g_in_decide = (FcInDecideFn)GetProcAddress(h, "fc_bridge_in_decide");
+        g_opp_observe = (FcOppObserveFn)GetProcAddress(h, "fc_bridge_opp_observe");
     }
     char lb[320];
     snprintf(lb, sizeof lb,
@@ -5540,6 +5545,31 @@ static void pfire_marshal_observe(int64_t p1, int64_t p2, int64_t p3, int64_t lV
     if (bad) g_marsh_id_bad++;
 }
 
+/* §8.73 B3.9.4 stage-K OBSERVE: validate the sim's fire_update_opp_target (the +0xa8 opportunity-target
+ * listener rebind — the LAST reimpl-owned Class-2b write) against the binary's R3b rebind. opp_pre =
+ * *(p1+0xa8) snapshot BEFORE pfire_r3_cooldown ran, opp_post = *(p1+0xa8) AFTER. OWN-STATE INVARIANT: the
+ * sim's returned slot == opp_post (the +0xa8 transition is reproduced). The elsewhere-tracked emit guards
+ * (whether 220e90/220eb0 actually fired inside 3846c0/382510) are marshalled + tallied here, but their
+ * binary cross-check is DEFERRED to the next increment (mirrors §8.71's deferred Class-2b emit validation).
+ * RNG-free, drives nothing. */
+static void pfire_oppk_observe(int64_t p1, int64_t p2, int64_t opp_pre, int64_t opp_post) {
+    if (!g_opp_observe) return;
+    /* the firer's OTHER target slots: 3846c0 (clear old) checks old ∈ {+0xc0,+0x40,+0x50}; 382510 (set new)
+     * checks target ∈ {+0xc0,+0x40,+0x50} (the +0xa8 term is 0 there — the clear, if any, zeroed it first). */
+    int64_t s_c0 = *(int64_t *)(p1 + 0xc0), s_40 = *(int64_t *)(p1 + 0x40), s_50 = *(int64_t *)(p1 + 0x50);
+    int old_else = (opp_pre != 0) && (opp_pre==s_c0 || opp_pre==s_40 || opp_pre==s_50);
+    int new_else = (p2==s_c0 || p2==s_40 || p2==s_50);
+    int disc=0, conn=0;
+    unsigned long long slot = g_opp_observe((unsigned long long)p1, (unsigned long long)opp_pre,
+                                            (unsigned long long)p2, old_else, new_else, &disc, &conn);
+    g_oppk_n++;
+    if ((int64_t)slot != opp_post)        g_oppk_slot_bad++;   /* sim's +0xa8 != binary's post-R3b +0xa8 */
+    if (opp_pre != p2)                    g_oppk_rebind++;     /* binary rebound (+0xa8 changed to p2) */
+    if (opp_pre != 0 && opp_pre != p2)    g_oppk_clear++;      /* 3846c0 clear-old fired */
+    if (p2 != 0 && opp_pre != p2)         g_oppk_set++;        /* 382510 set-new fired */
+    g_oppk_disc += (uint32_t)disc; g_oppk_conn += (uint32_t)conn;
+}
+
 /* §8.72 B3.9.3 — the SpawnCommand APPLIER. Create the projectile from fc_bridge_decide's cmd by feeding its
  * geometry into a local S[] and REUSING the validated r2a/r2b create path (so no re-implementation of the
  * 29f810 create / rec writes / Class-2b emit). pos = cmd.pos (29f810 param_4), dispersed dir = cmd.launch_dir
@@ -5639,8 +5669,12 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
 
     /* ---- R3 cooldown + listener rebind (403-497) ---- self-write + Class-2b rebind (inline at 1-shard).
      * Uses p2r: the binary reassigns param_2 IN PLACE at :169, so every later reference (incl. R3) sees the
-     * redirected target. */
+     * redirected target. §8.73: snapshot the opportunity-target slot (+0xa8) across R3b for the stage-K
+     * observe (the binary's rebind mutates it in place). */
+    int64_t opp_pre = *(int64_t *)(p1 + 0xa8);
     pfire_r3_cooldown(p1, (int64_t *)p2r);
+    if (pfire_apply() >= 1)                                  /* §8.73 stage-K observe (drives nothing) */
+        pfire_oppk_observe(p1, p2r, opp_pre, *(int64_t *)(p1 + 0xa8));
     return 1;
 }
 
@@ -6962,6 +6996,12 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 snprintf(db, sizeof db,
                     "DTMARSH\ttick=%u\tn=%u\toutcome_bad=%u\tid_bad=%u\tdrive_n=%u\tdrive_fb=%u\n",
                     tk, g_marsh_n, g_marsh_outcome_bad, g_marsh_id_bad, g_marsh_drive_n, g_marsh_drive_fb);
+                log_write(db);
+                /* §8.73 stage-K observe: +0xa8 opp-target rebind — slot_bad=0 invariant + decision tallies. */
+                snprintf(db, sizeof db,
+                    "DTOPPK\ttick=%u\tn=%u\tslot_bad=%u\trebind=%u\tclear=%u\tset=%u\tdisc=%u\tconn=%u\n",
+                    tk, g_oppk_n, g_oppk_slot_bad, g_oppk_rebind, g_oppk_clear, g_oppk_set,
+                    g_oppk_disc, g_oppk_conn);
                 log_write(db);
             }
         }

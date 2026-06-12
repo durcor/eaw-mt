@@ -4,6 +4,7 @@
 // self-contained PE DLL (KERNEL32/msvcrt/ntdll only). B3.8 migrates the hook onto it, observe-first.
 #include "fire_control.h"
 #include "sim_rng.h"
+#include "recording_command_sink.h"
 #include <windows.h>
 
 extern "C" __declspec(dllexport)
@@ -295,6 +296,29 @@ int fc_bridge_in_decide(unsigned int seed, int* out_gate, float* o_pos, float* o
         if (o_guided)       *o_guided = p.guided ? 1 : 0;
     }
     return static_cast<int>(d.outcome);
+}
+
+// §8.73 B3.9.4 — STAGE-K OBSERVE: run fire_update_opp_target (the +0xa8 opportunity-target listener
+// rebind, the last reimpl-owned Class-2b write) over marshalled own-state, returning the new slot value
+// + the connect/disconnect emit decisions the sim would buffer. RNG-free, no global state — the hook
+// compares the returned slot to the binary's post-R3b +0xa8 and tallies the (deferred-cross-check) emits.
+extern "C" __declspec(dllexport)
+unsigned long long fc_bridge_opp_observe(unsigned long long firer, unsigned long long current,
+                                         unsigned long long target, int old_elsewhere, int new_elsewhere,
+                                         int* out_disc, int* out_conn) {
+    sim::OppTargetInputs in;
+    in.firer   = reinterpret_cast<void*>(firer);
+    in.current = reinterpret_cast<void*>(current);
+    in.target  = reinterpret_cast<void*>(target);
+    in.old_elsewhere_tracked = old_elsewhere != 0;
+    in.new_elsewhere_tracked = new_elsewhere != 0;
+    sim::RecordingCommandSink sink;
+    void* slot = sim::fire_update_opp_target(in, sink);
+    int disc = 0, conn = 0;
+    for (const auto& e : sink.listener_edits) { if (e.connect) conn++; else disc++; }
+    if (out_disc) *out_disc = disc;
+    if (out_conn) *out_conn = conn;
+    return reinterpret_cast<unsigned long long>(slot);
 }
 
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }

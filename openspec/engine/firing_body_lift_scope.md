@@ -2363,9 +2363,31 @@ Removed the ballistic+non-charge guard so EVERY fire kind drives:
 inline `r2a`/`r2b` fallback is now reached for ZERO fires (down from `drive_fb=2050`). `outcome_bad=0` + `id_bad=0`, `spr_oob=0` + `mz_oob=0`, **zero
 crash markers**, disk stable. ⇒ **decide is the sole geometry+decision driver of ALL projectile creates (ballistic, guided, charge).** The inline
 `r2a`/`r2b` path REMAINS as the guarded safety fallback (non-Fire / non-finite geometry) + the entire non-difftrace (`apply<4`) path — so
-`pfire_fire_reimpl` is NOT retired (it still hosts gates/geometry/`pfire_r3_cooldown`). **NEXT (open):** stage J/K (`pfire_r3_cooldown` + opp-target)
-are still reimpl post-steps, not sim-driven — routing those through `decide`'s `cooldown`/`opp_target` outputs would close the last reimpl-owned
-write; otherwise the firing-takeover consolidation is functionally complete.
+`pfire_fire_reimpl` is NOT retired (it still hosts gates/geometry/`pfire_r3_cooldown`).
+
+### 8.73 B3.9.4 — STAGE-K OBSERVE: the opportunity-target (+0xa8) listener rebind, sim vs binary = PASS (2026-06-12)
+**Scope decision (user sign-off):** of the two remaining reimpl-owned post-steps, stage J (cooldown `+0x58/+0x5c`) is **own-state /
+Phase-A-safe** and driving it through `decide` would re-run the same `535cb0/395c70/33fb70` + `374890/39b950/398010` leaves just to marshal
+`CooldownModInputs` (no leaf-call reduction) while leaving `p1+0x68` + the `:418` deregister inline anyway — low parallelization payoff + rate-of-fire
+regression risk, so **deferred**. Stage K — the `+0xa8` opportunity-target **listener rebind** (`3825b0:492-497` → `3846c0` clear / `382510` set) —
+is the genuine **Class-2b cross-entity** seam, so it's the one to lift. Per the observe-first discipline (§8.71→§8.72), increment 1 is an OBSERVE.
+
+`fc_bridge_opp_observe` (fc_bridge.cpp) runs the lifted `sim::fire_update_opp_target` over the marshalled own-state (firer=`p1`, current=the
+`+0xa8` snapshot taken BEFORE `pfire_r3_cooldown`, target=`p2`, the two elsewhere-tracked guards from `p1+0xc0/0x40/0x50`) with a
+`RecordingCommandSink`, returning the new slot + the connect/disconnect edits it would buffer. `pfire_oppk_observe` (winmm_proxy.c) brackets the
+`pfire_r3_cooldown` call (`+0xa8` pre/post), runs the observe, and checks the OWN-STATE INVARIANT: the sim's returned slot == the binary's post-R3b
+`+0xa8`. The elsewhere-tracked EMIT guards (whether `220e90`/`220eb0` actually fired inside `3846c0`/`382510`) are marshalled + tallied but their
+binary cross-check is **deferred to increment 2** (mirrors §8.71 deferring the create's Class-2b emit validation).
+
+**RESULT = PASS** (ICW battles, EAW_ORACLE + pfire=3 + pfireapply=4 + difftrace=1, autonomous multi-battle): **6 DTOPPK summaries, `n=62,989`
+stage-K observations, `slot_bad=0` on EVERY summary** — the sim reproduces the binary's `+0xa8` transition exactly. The decision tallies are
+non-degenerate and self-consistent: `rebind=4422` (`+0xa8` changed to `p2`), `set=4422` (`==rebind`, every rebind sets), `clear=2059` (`<rebind` —
+only rebinds with a non-null old target clear it), `disc=988` (old targets not elsewhere-tracked). `conn=0` throughout is CONSISTENT, not a bug — the
+fired-at target `p2` is essentially always already tracked in another firer slot (`+0x40/0x50`), so `new_elsewhere_tracked` suppresses the
+opportunity-target connect. **Zero crash markers**, disk stable. ⇒ **the stage-K own-state output (the `+0xa8` rebind) is sim-validated.**
+**NEXT (increment 2, open):** cross-check the emit guards — gate `220e90`/`220eb0` entry detours to the `pfire_r3_cooldown` window + compare the
+fired (target, sig) set to the sink's `listener_edits` — then drive stage K through `decide`+sink (the last reimpl-owned Class-2b write). Stage J
+stays inline (own-state-safe).
 
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
