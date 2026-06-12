@@ -11844,7 +11844,34 @@ static double g_sigdisp_sum_ms = 0, g_sigdisp_max_ms = 0;
 static LONG   g_bsel_count     = 0;
 static double g_bsel_sum_ms    = 0, g_bsel_max_ms    = 0;
 
+/* PUMPPROF (EAW_PUMPPROF=1): Model-B decision profiler. Each AI-service pass, sample the PREVIOUS pass's
+ * accumulated pump cost (g_pumpe_frame_used_ms, about to be reset) against wall-clock, and every ~3 s log
+ * pump-ms / wall-ms = the Amdahl fraction the AI pump occupies on the main thread. Read-only. */
+static volatile LONG g_pumpprof_on = 0;
+static LARGE_INTEGER  g_pp_win_start = {0};
+static double         g_pp_pump_sum = 0.0, g_pp_pump_max = 0.0;
+static LONG           g_pp_passes = 0;
+
 static void game_service_hook(int64_t a, int32_t b) {
+    if (g_pumpprof_on) {
+        LARGE_INTEGER now; tgt_fake_qpc(&now);
+        double pump_ms = g_pumpe_frame_used_ms;   /* prev pass's accumulated pump (pre-reset) */
+        g_pp_pump_sum += pump_ms;
+        if (pump_ms > g_pp_pump_max) g_pp_pump_max = pump_ms;
+        g_pp_passes++;
+        if (g_pp_win_start.QuadPart == 0) g_pp_win_start = now;
+        double win_ms = (now.QuadPart - g_pp_win_start.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
+        if (win_ms >= 3000.0 && g_pp_passes > 0) {
+            char mode = (g_space_mode_seen > 0) ? 'S' : (g_galactic_ever_active ? 'G' : '?');
+            char s[176];
+            snprintf(s, sizeof s,
+                "[eaw-mt] PUMPPROF mode=%c win=%.0fms passes=%ld pump_per_pass=%.2fms pump_max=%.1fms pump_pct=%.1f%%\n",
+                mode, win_ms, g_pp_passes, g_pp_pump_sum / (double)g_pp_passes, g_pp_pump_max,
+                100.0 * g_pp_pump_sum / win_ms);
+            log_write(s);
+            g_pp_pump_sum = 0.0; g_pp_pump_max = 0.0; g_pp_passes = 0; g_pp_win_start = now;
+        }
+    }
     /* FUNCTIONAL: reset the per-gsvc Lua AI budget at the start of each service
      * pass — Fix B3's pumpe_hook accumulator depends on this. This hook is kept
      * in the release build (installed unconditionally) for the reset alone. */
@@ -13186,6 +13213,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         /* ---- Shipped fixes (always installed) ---- */
         install_wait_message_iat_hook();   /* WaitMessage->1ms cap (unfocused-window keep-alive) */
         install_io_iat_hooks();            /* fscache negative-dir cache (createfileA/W) */
+        { const char *e = getenv("EAW_PUMPPROF");
+          if (e && e[0] == '1') { InterlockedExchange(&g_pumpprof_on, 1);
+              log_write("[eaw-mt] PUMPPROF: AI-pump Amdahl profiler ON (EAW_PUMPPROF=1)\n"); } }
         install_game_service_hook();       /* Fix B3: resets the per-gsvc AI budget each pass */
         install_pumpe_hook();              /* Fix B3: per-gsvc AI budget (PUMPE_BUDGET_MS=33) */
         install_prewarm_hook();            /* prewarm OFF by default (EAW_PREWARM=1 to opt in) */

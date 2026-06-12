@@ -16,6 +16,9 @@ difftrace := ""
 # Phase 6 LUACAP: capture the Lua __index method-name set reached during AI pumps (oracle build, Model B
 # prereq). Read-only. Override: just luacap=1 difftrace=1 launch-foc-desktop  (LUACAP lines in eaw-mt.log)
 luacap := ""
+# Phase 6 PUMPPROF: AI-pump Amdahl profiler — logs pump-ms/wall-ms % per 3s (Model B worth-it decision).
+# Read-only. Override: just pumpprof=1 launch-foc-desktop  (PUMPPROF lines in eaw-mt.log)
+pumpprof := ""
 # Runtime transform-offset finder (profile build only). Override: just offwatch=1 launch-foc-desktop
 offwatch := ""
 # Milestone a1: arm the gated SFX takeover (oracle build, also needs difftrace=1). Override: just difftrace=1 a1=1 launch-foc-desktop
@@ -345,6 +348,7 @@ launch-foc-desktop:
       WINEDLLOVERRIDES=winmm=n,b \
       EAW_DIFFTRACE={{difftrace}} \
       EAW_LUACAP={{luacap}} \
+      EAW_PUMPPROF={{pumpprof}} \
       EAW_OFFWATCH={{offwatch}} \
       EAW_A1={{a1}} \
       EAW_A2MEASURE={{a2measure}} \
