@@ -294,3 +294,30 @@ robust procedure (manual step 2):
 > from the winmm hook after the front-end initializes) would remove the manual step entirely — a
 > separate RE increment (locate the load-save entry point + a safe call site). Until then, step 2 is
 > manual. `tools/luacap_snapshot.sh` is the capture collector.
+
+### Galactic capture RESULT — the object-method surface is bounded & shared; the galactic AI's heavy work is elsewhere (2026-06-12)
+
+Ran the procedure on a live TR galactic-conquest save (`[NR] han trollo`, user-loaded). Confirmed in
+galactic mode (save + planet-texture loads in the log) with the **galactic AI actively pumping — 4 PUMPE
+entries at 800–1400 ms each** (heavy entity Lua AI). Result (`luacap-galactic.txt`):
+
+- **The captured method set saturated at 25 — only `Suspend_Locomotor` was added vs the combat set**, and
+  it did not grow over 75 s of galactic AI activity. So the GameObject reflected-method (`__index`)
+  surface reachable from AI pumps is a **small, bounded set that is essentially the SAME for combat and
+  galactic** (`Despawn`, `Attack_Move`, `Teleport`, `Make_Invulnerable`, `Suspend_Locomotor`, the
+  `Get_*`/`Is_*` reads, …). For Model B that is the good case: one bounded object-method write set to
+  classify, not a per-mode explosion.
+- **Key refinement — there are TWO AI C-closure surfaces, and `__index` only sees one.** The heavy
+  galactic pumps (800 ms+) added ~0 new `__index` names, so they are **not** dominated by `obj:Method()`
+  calls. The galactic AI's strategic work (planning, planet/fleet/economy, story/plot) is **Lua compute +
+  GLOBAL game-API functions**, which do not funnel through the GameObject metatable dispatcher. So the
+  Model B write-set has two parts: (1) the GameObject reflected methods — captured here, bounded/shared;
+  (2) the **global game-API function surface — NOT yet captured** (a separate enumeration: the `pushcclosure`
+  globals + any global registrar, distinct from `24a8a0`). This is the next gap to close.
+- Mode tag stayed `?` (the `GalacticModeClass::Service` slot-22 hook `FUN_14045e030` never fired in this
+  session → `g_galactic_ever_active` unset; cosmetic, the captures are confirmed galactic by the pump +
+  asset-load evidence). Fixing the galactic mode signal is a minor follow-up.
+
+> **Net:** the GameObject-method write surface is enumerated & bounded (combat + galactic). The remaining
+> Model B prerequisite work is the **global game-API function surface** the galactic AI actually leans on —
+> either hook the global-call path, or revisit the `pushcclosure` globals / a global registrar statically.
