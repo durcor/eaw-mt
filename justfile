@@ -354,9 +354,13 @@ launch-foc-desktop:
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \
       steam-run {{wine}} \
       explorer /desktop=eaw,{{desktop-res}} \
-      {{game-dir}}/StarWarsG.exe MODPATH=Mods/Imperial_Civil_War \
+      {{game-dir}}/StarWarsG.exe MODPATH=Mods/Imperial_Civil_War 2>&1 | head -c 536870912 \
     ' \
   "
+# ^ SAFETY (2026-06-11): the wine/game stderr is HARD-CAPPED at 512MB via `head -c`. A crash/error loop
+# (e.g. exhausted font handles, repeated unhandled-exception logging) can otherwise spew GIGABYTES — a 2.5TB
+# `.out` once filled the disk. When the cap is hit, head exits → the writer gets SIGPIPE. Read results from
+# eaw-mt.log (capped, in the project dir), NOT from the launch redirect. ALWAYS pkill the game after a run.
 
 # Kill game, rebuild hook, then launch FoC.
 cycle: kill-game build-winmm launch-foc
