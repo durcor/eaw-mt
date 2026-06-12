@@ -3,8 +3,10 @@
 **Status:** Phase 2 orientation — mode-1 dispatch (UI shell) mapped, and the galactic *simulation*
 driver identified: it is **Lua-coroutine-driven via Pump_Threads** (slot-43 `GameModeClass::vfunc_4`
 → signal 0x23 → ScoringManager → Pump_Threads), complemented by the C++ `OutgoingEventQueueClass`
-(`b2ed18`) Add→drain. No separate galactic GOM C++ sweep exists. Producer enumeration = increment 3.
-**Last verified:** 2026-06-12 (galactic increments 1, 2a, 2b)
+(`b2ed18`) Add→drain. No separate galactic GOM C++ sweep exists. **Galactic orientation arc CLOSED (increment 3): the
+parallelism frontier converges on the already-scoped Model B (Lua-pump offload), shared with the
+tactical AI; prerequisite = the AI C-closure write-set enumeration, human-gated.**
+**Last verified:** 2026-06-12 (galactic increments 1, 2a, 2b, 3)
 
 This file opens the galactic-layer reverse-engineering arc. The tactical (space-battle) sim slice is
 closed (see `firing_body_lift_scope.md`, `threading_model.md`); the galactic layer is the next
@@ -128,11 +130,54 @@ queue (`FUN_1403b08c0`) writes it, each frame (`ai.md:68-75`). The galactic C++ 
 tick to parallelize** the way the tactical movement/fire slice was — the structural opportunity is the
 Lua-pump offload + the Class-2 drain, not a per-object C++ sweep.
 
-> **TODO (galactic increment 3):** enumerate the `OutgoingEventQueueClass::Add` virtual producers (what
-> galactic gameplay enqueues which event types), and characterize the galactic Lua-pump↔command-queue
-> ordering against the 3-class model. The Lua interpreter itself (single Main State) is the parallelism
-> bottleneck — see `script_engine.md` / `threading_model.md` Model B (Lua offload, previously ruled
-> medium-risk). Halt-and-document per blueprint rule 4 before assuming an offload is safe.
+## Increment 3 — the galactic parallelism frontier converges on the already-scoped Model B
+
+**Producer landscape (characterized, not fully enumerated).** `b2ed18` has **197 references**, clustered
+in (a) the queue's own machinery `0x3cf***` (ctor `18020`, insert/drain/sort), (b) the galactic-mode code
+region `0x3c***–0x3e***` (the densest external users: `3d0790`×8, `3dca30`×6, `3cc040`×6, `3d51f0`×5,
+`3d5640`/`3cf7d0`/`3cbbf0`×4 …), and (c) per-player event wrappers. The producer pattern is confirmed by
+`FUN_1403729f0` (the one direct `Add` caller): it resolves the **player id** (`-1`→local via
+`mode->vtable[0xe0]`), calls `375380`, and returns a **player-indexed** slot (`+0x288/0x298/0x2a0/0x2a8`).
+So `b2ed18` is a **player-keyed, network-replicated, MP-deterministic ordered command/event channel** —
+the galactic analogue of the tactical Class-2 seam (`threading_model.md`). Full per-event-type producer
+enumeration across the `0x3c***–0x3e***` subsystem is a large multi-session RE task and remains deferred;
+the **class** (Class-2 serial ordered channel) is established.
+
+**The frontier is the *already-scoped* Model B, shared with the tactical AI.** Because the galactic sim
+is Lua-pumped via the *same* `Pump_Threads` (§increment 2b), the existing Model B scoping
+(`threading_model.md:108-143`) applies directly to galactic — there is nothing galactic-specific to
+re-derive:
+
+- **Naive offload is empirically ruled out** (Step 30 crash): the AI Lua C-closures **write pervasive
+  shared sim state during `lua_resume`** (fog-of-war, entity spawns, resource counts, vtable objects),
+  *not* all funnelled through the command queue — so a worker pump races the main thread
+  (`threading_model.md:120-124`). The blueprint's snapshot/read-lock mitigation is insufficient (reads
+  only).
+- **The hitch Model B would fix is already fixed cheaper** — per-gsvc budget (`PUMPE_BUDGET_MS=33`) +
+  `fscache` (~14s→~1.1s first-encounter). So Model B's value is "multithreading headroom for the
+  mission," not a current perf fix (`threading_model.md:135`).
+- **Defined prerequisite, human-gated:** if Model B is pursued, the required prior RE is a *complete
+  enumeration of the AI C-closure write set* reachable from `lua_resume`, classified pure-compute vs
+  sim-write (`threading_model.md:138-143`). That enumeration is **shared between the tactical and
+  galactic pumps** (same `Pump_Threads`), so it is the single highest-leverage next RE task if the
+  mission pursues Lua parallelism.
+
+**Complete galactic parallelization map (this closes the galactic orientation arc):**
+
+| Galactic per-frame work | Mechanism | Parallelization verdict |
+|---|---|---|
+| Faction AI / planet economy / story | Lua coroutines via `Pump_Threads` (slot-43→0x23→ScoringManager) | **Model B** — parked; prereq = AI C-closure write-set enum (shared w/ tactical), human-gated |
+| Strategic commands/events | `OutgoingEventQueueClass` Add→`b2ed18`→`3b08c0` drain | **Class-2 serial ordered** (MP-deterministic, player-keyed) — small serial tail, not parallelizable |
+| Galactic HUD/shell | 10 mode-1 UI ticks (`30c3b0`) | **Main-thread presentation** — off-lockstep, not a target |
+| Per-object C++ behavior sweep | *(none exists for galactic)* | n/a — no tactical-style movement/fire slice to shard |
+
+> **Decision point (needs human sign-off, blueprint rule 6):** the galactic layer opens **no new**
+> parallelization lever — it converges on Model B, which is parked behind the AI C-closure write-set
+> enumeration. Next options: **(a)** declare the galactic structural survey complete and pursue the
+> shared AI C-closure write-set enumeration (the one prerequisite that unblocks Lua parallelism for
+> *both* layers); **(b)** revisit Model A / a different subsystem with a cleaner conflict surface; or
+> **(c)** profile first whether the galactic Lua pump is even a frame-time bottleneck now
+> (post budget+fscache) before investing (`threading_model.md:143`).
 
 ---
 
