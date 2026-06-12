@@ -321,3 +321,44 @@ entries at 800–1400 ms each** (heavy entity Lua AI). Result (`luacap-galactic.
 > **Net:** the GameObject-method write surface is enumerated & bounded (combat + galactic). The remaining
 > Model B prerequisite work is the **global game-API function surface** the galactic AI actually leans on —
 > either hook the global-call path, or revisit the `pushcclosure` globals / a global registrar statically.
+
+### Phase 6 increment 4 — the FULL Lua game-API surface, enumerated statically (2026-06-12)
+
+The runtime `__index` hook saturated at the *object-method* surface; the galactic AI's strategic calls
+weren't exercised in a short session (the 800 ms pumps were AI init, not active planning). Rather than a
+long live-AI capture, the **complete** surface was recovered **statically from the handlers' own error
+strings** (`Class::Method -- …` / `Function -- …` / `Function: …`) — each Lua-callable C handler prints
+its own name on a bad call. **Result: 327 distinct API names** (full list: `openspec/engine/lua_api_surface.txt`),
+= **~215 wrapper methods** (across `GameObjectWrapper` ×87, `PlayerWrapper` ×18, `LandTaskForceClass` ×11,
+`SpaceTaskForceClass` ×10, `BudgetWrapper` ×9, `TaskForceClass`/`GalacticTaskForceClass` ×7,
+`GameObjectTypeWrapper`, `StoryEventWrapper`, `GalacticFreeStoreClass`, …) **+ 112 standalone globals**.
+
+> **Architecture note:** the wrapper methods (incl. all the galactic TaskForce/Budget/Player ones) all
+> dispatch through the *same* `__index` `24a8a0` into their per-type method table — so LUACAP **would**
+> capture them given an active-AI galactic session; they were simply un-exercised in the init window. The
+> **112 standalone globals** are the separately-registered "Lua command" classes (`LuaCinematicZoom`,
+> `GlobalValue`, `GameRandom`, `Find_First_Object`, `Galactic_Spawn_Unit`, …) — registered NOT via raw
+> `pushcclosure` (hence Phase-5's "only 9") nor an auto-xref'd pointer table; Ghidra never analyzed the
+> registrar, so static xref-walking returns 0. The error-string method is what makes them enumerable.
+
+**Model B write-surface classification (the deferred-apply surface), by category → 3-class model:**
+
+| Category | Representative API | Class / treatment |
+|---|---|---|
+| Queries / reads | `Find_*`, `Get_*`, `Is_*`, `Has_*`, `Can_*`, `Are_*`, `Check_*`, `Evaluate_*`, `Contains_*`, `Get_Distance`, `Get_AI_Power_Vs_Unit`, `Find_Best_Local_Threat_Center` | **Read** — no sim write; parallel-safe (read frozen snapshot) |
+| Object/unit create + RNG | `Spawn_Unit`, `Galactic_Spawn_Unit`, `Create_Generic_Object`, `Spawn_From_Reinforcement_Pool`, `Spawn_Special_Weapon`, `Build`/`Build_All`, `Produce_Force`, `Form_Units`, `Assemble_Fleet`, `Garrison`, `GameRandom` | **Class 2** — CreateObject/append-order + shared RNG → must serialize / buffer in canonical order |
+| Cross-entity orders | `*TaskForceClass::{Invade,Raid,Move_To,Attack_Target,Attack_Move,Guard_Target,Explore_Area,Reinforce,Withdraw_Units,Bombing_Run}`, `Initiate_Space_Conflict`, `Land_Invade`, `Divert`, `Escort`, `Change_Owner`, `Move_Galactic`, `Attack_Target` | **Class 2b** — aliasable cross-entity writes → buffer + ordered apply |
+| Global / economy / AI-plan state | `BudgetWrapper::{Allocate,Release,Give,Take}_Resources`, `GlobalValue::Set`, `Add_Objective`, `Purge_Goals`, `Give_Desire_Bonus`, `Suspend_AI`/`LuaSuspendAI`, `Set_Targeting_Priorities`, `StoryEvent`/`StoryEventWrapper::Set_*` | **Class 2 (global)** — shared faction/AI-plan/budget state → serialize or per-faction shard |
+| Self-state writes | `Make_Invulnerable`, `Set_Cannot_Be_Killed`, `Suspend_Locomotor`, `Teleport*`, `Prevent_*`, `Enable_Behavior`, `Force_Ability_Recharge` | **Self** — own-object fields → shard by object for free |
+| Presentation | `Game_Message`, `Add_Radar_Blip`, `Highlight*`, `Add/Remove_Planet_Highlight`, `Play_Music`, `Play_Lightning_Effect`, `Enable_Distance_Fog`, `Hide`, the `Lua*` cinematic/camera block (`LuaPointCamera`, `LuaFadeScreen*`, `LuaZoomCamera`…), `GUI_Component_*` | **Class 3** — off-lockstep; drop/reorder/defer freely |
+
+**This completes the Model B AI C-closure write-set enumeration (the prerequisite):** the surface is
+known and bounded (327 names), and every category maps onto the existing 3-class model — the *same*
+boundary the tactical sim slice already built command infrastructure for (`sim_parallel_command_schema.md`).
+The deferred-apply surface for a galactic/AI-pump offload is the Class-2/2b/global-state rows (buffer +
+canonical-order drain); reads take a frozen snapshot; Class-3 is free. No new write *class* appears.
+
+> **Remaining (optional) refinements:** (1) a live active-AI galactic capture would confirm *which* subset
+> the AI actually hits per faction/turn (runtime frequency, not new classes); (2) the 327 list still mixes
+> in non-sim wrappers (`LuaNetworkDebuggerClass`, GUI, cinematic) — already classed Class-3/read; (3)
+> targeted-decompile the few ambiguous writers if an exact write target is needed for the apply impl.
