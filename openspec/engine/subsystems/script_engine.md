@@ -164,3 +164,45 @@ funnels through this one function into the full reflected C++ game-object API.
 entire reflected game-object method API across all types (hundreds), reached by name through one
 dispatcher, with no read/write classification exposed at the binding layer. See
 `threading_model.md` Phase 5 for the resulting Model B verdict.
+
+---
+
+## Phase 6 — C-closure write-set enumeration RE-OPENED via the dispatcher chokepoint (2026-06-12)
+
+User picked "pursue the shared AI C-closure write-set enumeration" (the Model B prerequisite, shared by
+the tactical AND galactic Lua pumps — `galactic_map.md` increment 3). The Phase-5 "not enumerable"
+verdict is true **statically** but the same reflection design makes the surface enumerable
+**dynamically**, at one chokepoint. Mechanism, fully traced this session:
+
+- **`__index` = `FUN_14024a8a0`** (the dispatcher). Two paths on the wrapped object `obj`:
+  (a) *property/navigation* when `obj[2]==0` → `obj->vtable[0x30](obj,key)` returns a sub-object;
+  (b) *method* → **FNV-1a hashes the key name** (seed `0x84222325`, mult `0x1b3`) then a Park-Miller
+  scramble (`%0x1f31d*0x41a7…`), and looks it up via `FUN_14011f570` in the per-type method table. The
+  **method-name string is live here** (marshalled into a local via `FUN_140022730`) before it is hashed.
+- **method table = `std::map<name_string, descriptor>` per type** (`FUN_14011f570` is a hash-bucket +
+  ordered-node lookup; nodes carry the name string at `node+0x10`, len `node+0x4`, value `*node`).
+- **`__call` = `FUN_14024a570`** (invocation): marshals the Lua args, then calls the descriptor's
+  **`vtable[0x50](obj, lua_state, arglist)`** = the real reflected C++ member; `vtable[0x88]` returns an
+  **arg-type hint** consumed by arg marshalling (`FUN_1402473e0`) — **not** a const/read-write flag.
+
+**Findings that decide the driver:**
+1. **No static read/write classifier exists** at the descriptor level — there is no const/side-effect
+   bit; classification requires knowing what each underlying C++ member does. Static full enumeration
+   would mean finding every per-type method-table registration (hundreds) and decompiling each invoke
+   target — intractable as a sweep.
+2. **The reachable-during-pump set is capturable at ONE runtime chokepoint.** Every `obj:Method()` from
+   any AI coroutine funnels through `__index` (`24a8a0`) with the **name string + object RTTI type**
+   both available. A hook there, active across a galactic pump and a combat pump, yields the *actual*
+   reachable method set — far smaller than the static hundreds, and exactly the Model B "closures
+   reachable from `lua_resume`." This is the project's standard capture-oracle methodology.
+
+> **Driver decision:** RUNTIME capture at `FUN_14024a8a0`, not static enumeration. Classification then
+> = name heuristics (`Get_`/`Is_`/`Can_`/`Find_` = read; `Set_`/`Spawn_`/`Activate_`/`Give_`/`Change_`/
+> `Add_`/`Remove_`/`Despawn_` = write) cross-checked by targeted decompile of the writers, mapped onto
+> the existing 3-class write model (`threading_model.md`: Class 1 sensor/fog · Class 2 CreateObject+RNG
+> · Class 2b cross-entity order · Class 3 SFX).
+
+> **TODO (Phase 6 increment 2):** build the `winmm` capture hook on `FUN_14024a8a0` — log `(object RTTI
+> type, method name)` deduped, gated to fire during Pump_Threads, capture one galactic + one combat
+> session; then classify the union. Halt-and-document per blueprint rule 4; the capture is read-only
+> instrumentation (no sim writes), safe under the launch-disk-safety recipe.
