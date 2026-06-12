@@ -265,6 +265,28 @@ shard by object for free (same logic as the tactical slice).
 > battle load/intro before `space_slot22_hook` sets `g_space_mode_seen` (cosmetic; refine the mode signal
 > or tag by `g_in_pump` source). (2) 24 is the *menu-demo* AI surface; a longer live battle (combat
 > methods `Fire`/`Take_Damage`/`Activate_Ability` not yet seen) and a **galactic-map session** (fleet/
-> planet/economy methods — the galactic AI surface, requires a GC/save load the menu harness doesn't
-> auto-reach) will broaden the set. (3) then targeted-decompile the boundary-crossing writers to confirm
-> their write target vs the 3-class model.
+> planet/economy methods — the galactic AI surface) will broaden the set. (3) then targeted-decompile the
+> boundary-crossing writers to confirm their write target vs the 3-class model.
+
+### Galactic-session capture — procedure (the one un-automated step)
+
+There is **no command-line save-load** (`StarWarsG.exe` accepts only `MODPATH`/`LANGUAGE`/`FULLSCREEN`/
+`WINDOWED`/`LOWRAM`/`MOVIE`/`ScreenWidth`), and the menu attract mode is **skirmish-only**
+(`Main_Menu_Demo_Attract_Mode`/`Demo_Attract_Maps`/`Skirmish_Demo_`). So reaching galactic mode requires
+the menu's **Load Game** path. Many TR galactic-conquest saves exist (`show-saves`), e.g.
+`easy run through galaxy from thrawn onwards`, `syn ackbar - tr nr admiral - full galaxy large`.
+
+Autonomous menu navigation via xdotool was attempted but is unreliable here (the Wine game runs under
+XWayland on a busy multi-monitor desktop; synthetic XTEST input did not reliably advance the front-end,
+and blind absolute clicks risk the user's live windows). The robust procedure:
+
+1. `just luacap=1 launch-foc-desktop` — launches with the capture hook armed (read-only).
+2. In the game: **Load Game → a galactic-conquest save → let the galaxy view sit ~30 s** (AI pumps).
+3. `tools/luacap_snapshot.sh galactic` — snapshots the distinct `mode=G` method names to
+   `luacap-galactic.txt` (does not kill the game).
+4. `just kill-game`.
+
+> **TODO (full autonomy, optional):** a hook-triggered save-load (call the engine's load-save-by-name
+> from the winmm hook after the front-end initializes) would remove the manual step entirely — a
+> separate RE increment (locate the load-save entry point + a safe call site). Until then, step 2 is
+> manual. `tools/luacap_snapshot.sh` is the capture collector.
