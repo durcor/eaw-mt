@@ -141,6 +141,24 @@ Do **not** start Model B coding now. Either (a) declare the AI-perf objective me
 - Enumerate the C closures reachable from `lua_resume` during a pump and classify each: pure-compute vs. sim-write (and which state each writes).
 - Do any AI writes already go through the command queue (`FUN_1403b08c0`), or are fog/spawn/resource writes all direct? (Determines B2 feasibility.)
 - Is the main-thread pump actually a frame-time bottleneck now (post budget+fscache)? Profile before investing.
+  → **ANSWERED 2026-06-12 (PUMPPROF, `EAW_PUMPPROF=1` in `winmm_proxy.c` `game_service_hook`):** measured
+  pump-ms / wall-ms per 3 s window, live. **Steady-state pump = 0.0–0.1 % of wall-clock in BOTH combat
+  AND galactic** (max per-pass 0.06 ms; combat ~30 fps/91 svc-passes per 3 s, galactic same; 47/48
+  galactic windows ≤0.1 %). The **only** significant cost is the **one-time first-run init stall** — a
+  single 873 ms pump at galactic-save load (32.3 % of that one 3 s window) — which is the cold-Lua-compile
+  cost already mitigated by `fscache`/prewarm and which a per-frame offload (Model B) would **not** fix.
+
+### ⛔ MODEL B — GO/NO-GO RESOLVED: NO-GO (2026-06-12)
+The Model B prerequisite (AI C-closure write-set enumeration) was COMPLETED (327-name surface, classified
+onto the 3-class model — `script_engine.md` Phase 6, `lua_api_surface.txt`), so the RE blocker is gone.
+But the profiling above **closes the question against building it**: offloading the AI pump reclaims
+**~0.1 % of frame time** in steady state (combat and galactic alike). That negligible payoff is set against
+(a) Phase-5's empirical result that naive offload **crashes** on the pervasive AI C-closure sim-writes
+during `lua_resume` (Step 30), and (b) a B2 deferred-apply build that would have to buffer the whole
+Class-2/2b/global-state surface across the single Lua Main State. **Cost: high + hazardous. Reward: ~0.1 %.
+Verdict: do not build Model B.** The AI-pump perf objective is met by the existing budget+fscache; the
+real per-frame work to parallelize (if any) is the cheap-mass sim sweep (the a2 tactical path), not the
+AI pump. The galactic layer, like the rest, offers no worthwhile AI-pump parallelization lever.
 
 ### Binding-audit result (2026-05-29) — B2 verdict: NOT tractable
 The prerequisite audit (`script_engine.md` Phase 5; scripts `Phase5LuaApiSurface` /
