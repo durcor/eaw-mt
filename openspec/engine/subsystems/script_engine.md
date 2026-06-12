@@ -202,7 +202,32 @@ verdict is true **statically** but the same reflection design makes the surface 
 > the existing 3-class write model (`threading_model.md`: Class 1 sensor/fog · Class 2 CreateObject+RNG
 > · Class 2b cross-entity order · Class 3 SFX).
 
-> **TODO (Phase 6 increment 2):** build the `winmm` capture hook on `FUN_14024a8a0` — log `(object RTTI
-> type, method name)` deduped, gated to fire during Pump_Threads, capture one galactic + one combat
-> session; then classify the union. Halt-and-document per blueprint rule 4; the capture is read-only
-> instrumentation (no sim writes), safe under the launch-disk-safety recipe.
+### Increment 2 design (build plan — validated against the existing `hooks/winmm_proxy.c` infra)
+
+Concrete, reusing what already exists in the hook:
+- **Gate "during pump":** add `volatile LONG g_in_pump` set/cleared around the existing `g_pumpe_orig(a)`
+  call inside `pumpe_hook` (winmm_proxy.c ~L2695). The capture records only when `g_in_pump != 0`.
+- **Mode tag:** the hook already tracks galactic vs combat — `g_galactic_ever_active`
+  (`galactic_slot22_hook`, `GalacticModeClass::Service` slot 22 = `FUN_14045e030`) vs
+  `g_space_mode_seen` (`space_slot22_hook`). Tag each captured name with the active mode so one run
+  separates galactic-pump vs combat-pump reachable sets.
+- **Capture point — prefer the metatable-slot patch over an inline trampoline (lower risk).** The
+  `__index` handler `FUN_14024a8a0` is stored in the "LuaWrapperMetaTable" built by `FUN_14024bfb0`;
+  patching that one function-pointer slot to our recorder (which tail-calls the real `24a8a0`) avoids
+  rewriting `24a8a0`'s prologue — same risk profile as the existing sim-tick **vtable** patch, not the
+  hotter inline-trampoline (render-flush) path. Fallback: inline trampoline if the slot is not locatable.
+- **Read the method name:** replicate the dispatcher's own arg fetch — `key_ptr = FUN_1407b9cc0(L, 2)`
+  (already the call `24a8a0` makes), read the null-terminated Lua string. (Object RTTI type is a
+  refinement: walk `obj->vtable → RTTI col`; name-prefix classification works without it for pass 1.)
+- **Dedup + dump:** open-addressing string set (cap ~4096) keyed `(mode<<bit | name)`; flush the set to
+  `eaw-mt.log` on the existing pump-summary cadence. Read-only — no sim writes.
+
+**Capture campaign (needs game launches — disk-safety gate):** `just build-winmm-oracle` then
+`just difftrace=1 launch-foc-desktop` for (1) a galactic-map session and (2) a space battle; per
+`[[feedback_launch_disk_safety]]` the recipe hard-caps output at 512 MB, read `eaw-mt.log` (not the
+`.out`), `pkill` after each. Then classify the union by name heuristic + targeted decompile of writers,
+mapped onto the 3-class model (`threading_model.md`).
+
+> Halt-and-document per blueprint rule 4. The hot-path hook build + launch campaign is a subsystem-level
+> change (blueprint rule 6) — get sign-off before the build/launch, then validate the hook is
+> behavior-neutral (a control run == baseline) before trusting any capture.
