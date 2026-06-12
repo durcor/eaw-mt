@@ -2389,6 +2389,29 @@ opportunity-target connect. **Zero crash markers**, disk stable. ⇒ **the stage
 fired (target, sig) set to the sink's `listener_edits` — then drive stage K through `decide`+sink (the last reimpl-owned Class-2b write). Stage J
 stays inline (own-state-safe).
 
+#### increment 2: emit-guard cross-check (by decode) + STAGE-K DRIVE = PASS (2026-06-12)
+**Emit-guard cross-check — settled by DECODE, not a runtime trampoline.** `decomp/3846c0.c` (clear-old) emits `220eb0`×2 (sigs `0x28`,`1`) iff
+`old != 0 && old ∉ {+0xc0, +0x40, +0x50}` — the `+0xa8` term in its guard is always-true because `3846c0` zeroes `*param_2` (=`+0xa8`) BEFORE the
+check. `decomp/382510.c` (set-new) emits `220e90`×2 iff `p2 != 0 && current != p2 && p2 ∉ {+0xc0, +0x40, +0x50}` — its `+0xa8` term is `0`
+(post-clear). **These are EXACTLY `sim::fire_update_opp_target`'s `old_elsewhere_tracked` / `new_elsewhere_tracked` guards**, and `pfire_oppk`
+marshals the identical slot values (`+0xc0/0x40/0x50`, read after `pfire_r3_cooldown` which never touches them). So the sim's emit decisions are
+decode-proven identical to the binary — stronger than a count-compare, and it avoids trampolining the hot shared `220e90`/`220eb0` leaves.
+
+**The drive** (`pfire_oppk_drive`, `EAW_PFIRE_OPPK=1`, default OFF): `sim::fire_update_opp_target` (via `fc_bridge_opp_observe`) decides the rebind;
+the hook applies it by calling the SAME leaves the binary's `3846c0`/`382510` use — `058570()`→`220eb0`(old+0x38, firer, {0x28,1}) to disconnect /
+`220e90`(p2+0x38, firer, {0x28,1}) to connect, gated on the sim's `disc`/`conn`, then `+0xa8 = slot`. `pfire_r3_cooldown`'s inline R3b is skipped
+(`do_r3b=0`) so the rebind fires exactly once; bridge-missing falls back to the binary rebind (never skip the write).
+
+**RESULT = PASS** (ICW battles, EAW_ORACLE + pfire=3 + pfireapply=4 + pfireoppk=1 + difftrace=1, autonomous multi-battle): **8 DTOPPK summaries,
+`drive_n=80,458`** sim-driven rebinds, **ZERO crash markers** across multiple battles — decisive for a live Class-2b listener edit (a wrong rebind
+dangles/loses dispatcher listeners → crash when a target dies). The decision counts are **bit-identical to the increment-1 OBSERVE run at matching
+`n`** (e.g. n=6332 → rebind=445/clear=178/disc=36 in BOTH runs; n=17033 → 784/415/88) — deterministic AI battles + a bit-identical drive reproduce the
+binary's `3846c0`/`382510` decisions exactly. `conn=0` throughout (consistent: the fired-at target is already tracked elsewhere). ⇒ **stage K — the
+last reimpl-owned Class-2b write — is now sim-driven.** **The firing-takeover consolidation is COMPLETE:** `decide` drives all projectile creates
+(ballistic/guided/charge, §8.72) and the opportunity-target rebind (§8.73); the only remaining reimpl-owned write is stage J cooldown, deliberately
+left inline (own-state / Phase-A-safe — no parallelization payoff). `pfire_fire_reimpl` stays as the gates/geometry/cooldown host + the guarded
+fallback path.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.

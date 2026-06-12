@@ -54,6 +54,10 @@ pfirepool := ""
 #      in place of ffbb0/ffdb0 (validated in-cone mz_oob=0). =3 ⇒ the sim drives the FULL projectile state.
 # Default OFF. Override: just pfire=3 pfireapply=3 difftrace=1 launch-foc-desktop
 pfireapply := ""
+# §8.73-inc2: stage-K DRIVE — the sim (fire_update_opp_target) drives the +0xa8 opportunity-target listener
+# rebind (the last reimpl-owned Class-2b write), decode-proven bit-identical. Default OFF.
+# Override: just pfire=3 pfireapply=4 pfireoppk=1 difftrace=1 launch-foc-desktop
+pfireoppk := ""
 save-dir  :=env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx/drive_c/users/steamuser/Saved Games/Petroglyph/Empire At War - Forces of Corruption/Save"
 
 export WINEPREFIX := env('HOME') + "/gam/steam/steamapps/compatdata/32470/pfx"
@@ -349,6 +353,7 @@ launch-foc-desktop:
       EAW_PFIRE_REORDER={{pfirereorder}} \
       EAW_PFIRE_POOL={{pfirepool}} \
       EAW_PFIRE_APPLY={{pfireapply}} \
+      EAW_PFIRE_OPPK={{pfireoppk}} \
       SteamAppId=32470 \
       SteamGameId=32470 \
       STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/ty/.local/share/Steam \

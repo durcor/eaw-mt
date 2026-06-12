@@ -4623,7 +4623,7 @@ static FcOppObserveFn     g_opp_observe=NULL; /* §8.73 stage-K observe */
 static uint32_t g_marsh_n=0, g_marsh_outcome_bad=0, g_marsh_id_bad=0;   /* §8.71 marshaller observe */
 static uint32_t g_marsh_drive_n=0, g_marsh_drive_fb=0;                  /* §8.72 cmd-drive: drove / fell back */
 static uint32_t g_oppk_n=0, g_oppk_slot_bad=0, g_oppk_rebind=0, g_oppk_clear=0, g_oppk_set=0,
-                g_oppk_disc=0, g_oppk_conn=0;                           /* §8.73 stage-K observe */
+                g_oppk_disc=0, g_oppk_conn=0, g_oppk_drive_n=0;         /* §8.73 stage-K observe / inc2 drive */
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
@@ -5146,7 +5146,7 @@ static float pfire_r3_dmgscale(int64_t owner, int64_t owner_type, float fVar1, i
     return fVar15;
 }
 
-static void pfire_r3_cooldown(int64_t p1, int64_t *p2) {
+static void pfire_r3_cooldown(int64_t p1, int64_t *p2, int do_r3b) {
     int64_t owner      = *(int64_t *)(p1 + 0x10);
     int64_t owner_type = *(int64_t *)(p1 + 0x20);
     float fVar1 = *(float *)(g_dt_imgbase + 0x7ffaf8);          /* DAT_1407ffaf8 */
@@ -5206,7 +5206,9 @@ static void pfire_r3_cooldown(int64_t p1, int64_t *p2) {
     }
     ((R3_535fb0Fn)(g_dt_imgbase + 0x535fb0))(cont);            /* :491 container dtor */
 
-    if (*(int64_t *)(p1 + 0xa8) != (int64_t)p2) {              /* :492-496 R3b listener rebind (Class-2b) */
+    /* :492-496 R3b opportunity-target listener rebind (Class-2b, stage K). do_r3b=0 ⇒ the §8.73-inc2
+     * drive owns this (pfire_oppk_drive runs it through the sim's decision afterward). */
+    if (do_r3b && *(int64_t *)(p1 + 0xa8) != (int64_t)p2) {
         if (*(int64_t *)(p1 + 0xa8) != 0)
             ((R3_3846c0Fn)(g_dt_imgbase + 0x3846c0))(p1, (int64_t *)(p1 + 0xa8));
         ((R3_382510Fn)(g_dt_imgbase + 0x382510))(p1, (int64_t)p2, (int64_t *)(p1 + 0xa8));
@@ -5570,6 +5572,54 @@ static void pfire_oppk_observe(int64_t p1, int64_t p2, int64_t opp_pre, int64_t 
     g_oppk_disc += (uint32_t)disc; g_oppk_conn += (uint32_t)conn;
 }
 
+/* §8.73 increment 2 — STAGE-K DRIVE (EAW_PFIRE_OPPK=1): the sim's fire_update_opp_target (via the bridge)
+ * decides the +0xa8 opportunity-target rebind; the hook APPLIES it by calling the SAME emit leaves the
+ * binary's 3846c0/382510 use (058570→220eb0 disconnect / 220e90 connect, sigs 0x28 & 1) + writing +0xa8 —
+ * the LAST reimpl-owned Class-2b write, now sim-driven. Decode-proven bit-identical (§8.73: the
+ * elsewhere-tracked predicates in 3846c0/382510 match the sim's old/new_elsewhere guards exactly), so this
+ * re-routes through the sim without changing behavior. pfire_r3_cooldown's inline R3b is skipped (do_r3b=0)
+ * so the rebind fires exactly once. Bridge-missing ⇒ fall back to the binary rebind (never skip the write). */
+static int g_oppk_gate = -1;
+static int pfire_oppk_on(void) {
+    if (g_oppk_gate < 0) { const char *e = getenv("EAW_PFIRE_OPPK"); g_oppk_gate = (e && e[0]) ? atoi(e) : 0; }
+    return g_oppk_gate;
+}
+static void pfire_oppk_drive(int64_t p1, int64_t p2) {
+    if (!g_opp_observe) {                                       /* bridge missing → binary rebind */
+        if (*(int64_t *)(p1 + 0xa8) != p2) {
+            if (*(int64_t *)(p1 + 0xa8) != 0)
+                ((R3_3846c0Fn)(g_dt_imgbase + 0x3846c0))(p1, (int64_t *)(p1 + 0xa8));
+            ((R3_382510Fn)(g_dt_imgbase + 0x382510))(p1, p2, (int64_t *)(p1 + 0xa8));
+        }
+        return;
+    }
+    int64_t current = *(int64_t *)(p1 + 0xa8);
+    int64_t s_c0 = *(int64_t *)(p1 + 0xc0), s_40 = *(int64_t *)(p1 + 0x40), s_50 = *(int64_t *)(p1 + 0x50);
+    int old_else = (current != 0) && (current==s_c0 || current==s_40 || current==s_50);
+    int new_else = (p2==s_c0 || p2==s_40 || p2==s_50);
+    int disc=0, conn=0;
+    unsigned long long slot = g_opp_observe((unsigned long long)p1, (unsigned long long)current,
+                                            (unsigned long long)p2, old_else, new_else, &disc, &conn);
+    g_oppk_n++; g_oppk_drive_n++;
+    if (current == p2) return;                                 /* sim: slot == target ⇒ no-op */
+    g_oppk_rebind++;
+    R2_058570Fn f058570 = (R2_058570Fn)(g_dt_imgbase + 0x058570);
+    R2_220e90Fn f220e90 = (R2_220e90Fn)(g_dt_imgbase + 0x220e90);  /* connect */
+    R2_220e90Fn f220eb0 = (R2_220e90Fn)(g_dt_imgbase + 0x220eb0);  /* disconnect (same ABI) */
+    if (current != 0) {                                        /* clear old (3846c0) */
+        *(int64_t *)(p1 + 0xa8) = 0;
+        g_oppk_clear++;
+        if (disc > 0) { f220eb0(f058570(), current + 0x38, p1, 0x28); f220eb0(f058570(), current + 0x38, p1, 1);
+                        g_oppk_disc += 2; }
+    }
+    if (p2 != 0) {                                            /* set new (382510) */
+        g_oppk_set++;
+        if (conn > 0) { f220e90(f058570(), p2 + 0x38, p1, 0x28); f220e90(f058570(), p2 + 0x38, p1, 1);
+                        g_oppk_conn += 2; }
+        *(int64_t *)(p1 + 0xa8) = (int64_t)slot;               /* = p2 */
+    }
+}
+
 /* §8.72 B3.9.3 — the SpawnCommand APPLIER. Create the projectile from fc_bridge_decide's cmd by feeding its
  * geometry into a local S[] and REUSING the validated r2a/r2b create path (so no re-implementation of the
  * 29f810 create / rec writes / Class-2b emit). pos = cmd.pos (29f810 param_4), dispersed dir = cmd.launch_dir
@@ -5672,8 +5722,11 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
      * redirected target. §8.73: snapshot the opportunity-target slot (+0xa8) across R3b for the stage-K
      * observe (the binary's rebind mutates it in place). */
     int64_t opp_pre = *(int64_t *)(p1 + 0xa8);
-    pfire_r3_cooldown(p1, (int64_t *)p2r);
-    if (pfire_apply() >= 1)                                  /* §8.73 stage-K observe (drives nothing) */
+    int drive_k = pfire_oppk_on();                          /* §8.73-inc2 EAW_PFIRE_OPPK=1 stage-K drive */
+    pfire_r3_cooldown(p1, (int64_t *)p2r, /*do_r3b=*/ drive_k ? 0 : 1);
+    if (drive_k)
+        pfire_oppk_drive(p1, p2r);                          /* sim drives the +0xa8 rebind */
+    else if (pfire_apply() >= 1)                            /* §8.73 stage-K observe (drives nothing) */
         pfire_oppk_observe(p1, p2r, opp_pre, *(int64_t *)(p1 + 0xa8));
     return 1;
 }
@@ -6999,9 +7052,9 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 log_write(db);
                 /* §8.73 stage-K observe: +0xa8 opp-target rebind — slot_bad=0 invariant + decision tallies. */
                 snprintf(db, sizeof db,
-                    "DTOPPK\ttick=%u\tn=%u\tslot_bad=%u\trebind=%u\tclear=%u\tset=%u\tdisc=%u\tconn=%u\n",
+                    "DTOPPK\ttick=%u\tn=%u\tslot_bad=%u\trebind=%u\tclear=%u\tset=%u\tdisc=%u\tconn=%u\tdrive_n=%u\n",
                     tk, g_oppk_n, g_oppk_slot_bad, g_oppk_rebind, g_oppk_clear, g_oppk_set,
-                    g_oppk_disc, g_oppk_conn);
+                    g_oppk_disc, g_oppk_conn, g_oppk_drive_n);
                 log_write(db);
             }
         }
