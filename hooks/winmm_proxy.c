@@ -4619,6 +4619,7 @@ static FcInStagegFn       g_in_stageg=NULL;  static FcInLeadFn    g_in_lead=NULL
 static FcInSpreadFn       g_in_spread=NULL;  static FcInSpawnCreateFn  g_in_screate=NULL;
 static FcInSpawnPayloadFn g_in_spay=NULL;    static FcInDecideFn  g_in_decide=NULL;
 static uint32_t g_marsh_n=0, g_marsh_outcome_bad=0, g_marsh_id_bad=0;   /* §8.71 marshaller observe */
+static uint32_t g_marsh_drive_n=0, g_marsh_drive_fb=0;                  /* §8.72 cmd-drive: drove / fell back */
 static int      g_brg_tried = 0;
 static uint32_t g_brg_calls = 0, g_brg_mismatch = 0, g_brg_bug = 0;          /* gate ladder (§8.58) */
 static uint32_t g_brgg_calls = 0, g_brgg_mismatch = 0, g_brgg_bug = 0;       /* range gate (§8.59) */
@@ -5443,14 +5444,11 @@ static void pfire_apply_drive(int64_t proj, int64_t p1, int64_t p2, int64_t lVar
  * drive). Drives nothing. The marshaller is RNG-free (pure reads + the 399e20 lead is inside g_fc_marshal),
  * so re-calling the leaves does not perturb the live stream. Outcome!=Fire can happen rarely when decide's
  * stage-G shooter_ref diverges enough to zero the lead (the §8.62 seam) — tallied, not asserted. */
-static void pfire_marshal_observe(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7,
-                                  int64_t local_238, int64_t proj) {
-    if (!g_in_decide || !g_fc_marshal.valid || !proj) return;
-    int64_t rec = *(int64_t *)(proj + 0xe8);
-    if (!rec) return;
+/* Fill the bridge builder (g_bin) from the live engine state via the §8.70 setters. RNG-free pure reads +
+ * the captured g_fc_marshal lead bundle. Shared by the observe (§8.71) and the drive route (§8.72). */
+static void pfire_fill_builder(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7, int64_t local_238) {
     int64_t owner = *(int64_t *)(p1 + 0x10), owner_type = *(int64_t *)(p1 + 0x20), tmpl = lVar7;
     int32_t guided_flag = *(int32_t *)(lVar7 + 0x1fe8);
-
     g_in_reset();
     g_in_gates(0x0FFFu);                                  /* reimpl reached create ⇒ all gates passed */
     g_in_aim(1, g_fc_marshal.aim[0], g_fc_marshal.aim[1], g_fc_marshal.aim[2]);
@@ -5501,7 +5499,32 @@ static void pfire_marshal_observe(int64_t p1, int64_t p2, int64_t p3, int64_t lV
     if (add_sub) subext = ((R1_397780Fn)(g_dt_imgbase + 0x397780))((int64_t *)(*(int64_t *)(p2 + 0x2b0)));
     g_in_spay(od, td, is_charge ? 1 : 0, 1.0f, (uint32_t)ol, tl, (vo > 0) ? 1 : 0, vbase, vo,
               bspd, tspd, pext, add_sub, subext);
+}
 
+/* §8.72: fill + decide. Returns the FireOutcome; on Fire, fills the create payload (pos/dir + identity). */
+static int pfire_marshal_decide(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7, int64_t local_238,
+                                uint32_t seed, float *o_pos, float *o_dir, uint32_t *o_firer,
+                                unsigned long long *o_tgt, float *o_dmg, uint32_t *o_life, int *o_vis,
+                                int *o_guided) {
+    if (!g_in_decide || !g_fc_marshal.valid) return -1;
+    pfire_fill_builder(p1, p2, p3, lVar7, local_238);
+    int gate=0, sub=0; float gl[3], ms=0.0f;
+    return g_in_decide(seed, &gate, o_pos, o_dir, gl, o_firer, o_tgt, &sub, o_dmg,
+                       o_life, &ms, o_vis, o_guided);
+}
+
+/* §8.71 marshaller observe: marshal+decide and validate vs the projectile the reimpl just created. */
+static void pfire_marshal_observe(int64_t p1, int64_t p2, int64_t p3, int64_t lVar7,
+                                  int64_t local_238, int64_t proj) {
+    if (!g_in_decide || !g_fc_marshal.valid || !proj) return;
+    int64_t rec = *(int64_t *)(proj + 0xe8);
+    if (!rec) return;
+    int64_t owner = *(int64_t *)(p1 + 0x10), owner_type = *(int64_t *)(p1 + 0x20);
+    int32_t order_pre = local_238 ? *(int32_t *)(local_238 + 0x394) : 0;
+    int is_charge = (local_238 && order_pre < 0);
+    int32_t vo = *(int32_t *)(owner_type + 0x4a4);
+
+    pfire_fill_builder(p1, p2, p3, lVar7, local_238);
     int gate=0; float pos[3],ld[3],gl[3]; uint32_t firer=0,life=0; unsigned long long tgt=0;
     int sub=0, vis=0, gd=0; float dmg=0, ms=0;
     uint32_t seed = scan_substream_seed((uint32_t)*(int32_t *)(owner + 0x50), g_marsh_n);
@@ -5515,6 +5538,26 @@ static void pfire_marshal_observe(int64_t p1, int64_t p2, int64_t p3, int64_t lV
     if (life  != *(uint32_t *)(rec + 0x68))                        bad = 1;
     if (vo > 0 && vis != *(int32_t *)(rec + 0x60))                 bad = 1;
     if (bad) g_marsh_id_bad++;
+}
+
+/* §8.72 B3.9.3 — the SpawnCommand APPLIER. Create the projectile from fc_bridge_decide's cmd by feeding its
+ * geometry into a local S[] and REUSING the validated r2a/r2b create path (so no re-implementation of the
+ * 29f810 create / rec writes / Class-2b emit). pos = cmd.pos (29f810 param_4), dispersed dir = cmd.launch_dir
+ * (r2b rec+0x3c & r2a muzzle-speed |Δz|), orient = 20acd0 Euler — mirroring pfire_r1c_geom:226-260. The
+ * created proj is captured by the 29f810 spawn hook (g_b3_last_proj) so the EXISTING dtwa_b3_check validates
+ * its identity. BALLISTIC + non-charge only (the caller falls back to r2a for guided/charge). */
+static int64_t pfire_apply_spawn_cmd(int64_t p1, int64_t *p2, int64_t p3, int64_t lVar7,
+                                     int64_t local_238, const float *cmd_pos, const float *cmd_dir) {
+    float S[48]; memset(S, 0, sizeof S);
+    S[8]=cmd_pos[0]; S[9]=cmd_pos[1]; S[10]=cmd_pos[2];   /* :229 spawn pos (29f810 param_4 = &S[8]) */
+    S[0]=cmd_dir[0]; S[1]=cmd_dir[1]; S[2]=cmd_dir[2];    /* dispersed dir (r2b rec+0x3c; r2a |Δz| uses S[2]) */
+    S[16]=cmd_dir[0]; S[17]=cmd_dir[1]; S[18]=cmd_dir[2]; /* original lead (ballistic: unused by r2b) */
+    S[6]=cmd_dir[2];                                      /* :251 r1c S[6] (orient z input, pre-20acd0) */
+    ((R1_20acd0Fn)(g_dt_imgbase + 0x20acd0))(&S[4], &S[8], &S[0]);   /* :258 dir→Euler in S[4..] */
+    S[42]=S[4]; S[43]=S[5]; S[44]=S[6];                  /* :259-260 create orient (29f810 param_5 = &S[42]) */
+    int64_t proj = pfire_r2a_create_init(p1, p2, lVar7, local_238, S);
+    pfire_r2b_emit(p1, proj, p2, p3, lVar7, S);
+    return proj;
 }
 
 /* ── A3 ASSEMBLY: the unified takeover reimplementation of FUN_1403825b0 (firing_body_lift_scope.md §8.14).
@@ -5549,10 +5592,44 @@ static int pfire_fire_reimpl(int64_t p1, int64_t *p2arg, int64_t p3) {
         g_pfdbg_buf++;                                  /* DEBUG: create DEFERRED to the canonical drain */
     } else {
         g_pfdbg_inline++;                              /* DEBUG: reached R2 inline (level<4 or buffer full) */
-        int64_t proj = pfire_r2a_create_init(p1, (int64_t *)p2r, lVar7, local_238, S);
-        pfire_r2b_emit(p1, proj, (int64_t *)p2r, p3r, lVar7, S);
+        int64_t proj = 0;
+        int used_cmd = 0;
+        /* §8.72 B3.9.3 — TERMINAL CONSOLIDATION step 5: at EAW_PFIRE_APPLY=4 DRIVE the create through the
+         * full marshaller → fc_bridge_in_decide → SpawnCommand applier (sim is the sole geometry driver),
+         * REPLACING the inline r2a/r2b. Ballistic + non-charge only (guided lead / charge scale not yet
+         * routed through the cmd); any other case, a non-Fire decide, or non-finite cmd geometry FALLS BACK
+         * to the validated inline r2a/r2b — never drop or mis-spawn a shot. The §8.65 apply-drive still runs
+         * after (bit-exact identity overwrite); the §8.71 observe is the inline path's validator, so it is
+         * SKIPPED on the driven path (the drive's own DTMARSH counters cover it). */
+        if (pfire_apply() == 4) {
+            int32_t guided = lVar7 ? *(int32_t *)(lVar7 + 0x1fe8) : 0;
+            int32_t order  = local_238 ? *(int32_t *)(local_238 + 0x394) : 0;
+            if (guided != 1 && order >= 0) {
+                int64_t owner = *(int64_t *)(p1 + 0x10);
+                float cpos[3], cdir[3], cdmg=0; uint32_t cfirer=0, clife=0; unsigned long long ctgt=0;
+                int cvis=0, cgd=0;
+                uint32_t seed = scan_substream_seed((uint32_t)*(int32_t *)(owner + 0x50), g_marsh_n);
+                int outcome = pfire_marshal_decide(p1, p2r, p3r, lVar7, local_238, seed,
+                                                   cpos, cdir, &cfirer, &ctgt, &cdmg, &clife, &cvis, &cgd);
+                g_marsh_n++;
+                int finite = isfinite(cpos[0]) && isfinite(cpos[1]) && isfinite(cpos[2]) &&
+                             isfinite(cdir[0]) && isfinite(cdir[1]) && isfinite(cdir[2]);
+                if (outcome == 5 && finite) {                /* FireOutcome::Fire */
+                    proj = pfire_apply_spawn_cmd(p1, (int64_t *)p2r, p3r, lVar7, local_238, cpos, cdir);
+                    used_cmd = 1; g_marsh_drive_n++;
+                } else {
+                    g_marsh_drive_fb++;                      /* non-Fire / non-finite → inline below */
+                }
+            } else {
+                g_marsh_drive_fb++;                          /* guided / charge → inline below */
+            }
+        }
+        if (!used_cmd) {
+            proj = pfire_r2a_create_init(p1, (int64_t *)p2r, lVar7, local_238, S);
+            pfire_r2b_emit(p1, proj, (int64_t *)p2r, p3r, lVar7, S);
+        }
         pfire_apply_drive(proj, p1, p2r, lVar7, local_238, S);   /* §8.65 gated bit-exact apply-side drive */
-        if (pfire_apply() >= 1)                                  /* §8.71 full-marshaller observe (drives nothing) */
+        if (!used_cmd && pfire_apply() >= 1)                     /* §8.71 full-marshaller observe (drives nothing) */
             pfire_marshal_observe(p1, p2r, p3r, lVar7, local_238, proj);
     }
 
@@ -6879,8 +6956,8 @@ static int64_t dtwa_b3_3825b0_hook(int64_t p1, int64_t p2, int64_t p3) {
                 log_write(db);
                 /* §8.71 full-marshaller observe: outcome!=Fire (rare §8.62 NoLead seam) + identity vs rec. */
                 snprintf(db, sizeof db,
-                    "DTMARSH\ttick=%u\tn=%u\toutcome_bad=%u\tid_bad=%u\n",
-                    tk, g_marsh_n, g_marsh_outcome_bad, g_marsh_id_bad);
+                    "DTMARSH\ttick=%u\tn=%u\toutcome_bad=%u\tid_bad=%u\tdrive_n=%u\tdrive_fb=%u\n",
+                    tk, g_marsh_n, g_marsh_outcome_bad, g_marsh_id_bad, g_marsh_drive_n, g_marsh_drive_fb);
                 log_write(db);
             }
         }

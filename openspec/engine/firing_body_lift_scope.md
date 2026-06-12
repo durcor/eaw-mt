@@ -2327,6 +2327,29 @@ battles. ⇒ **the full `FireControlInputs` marshaller is proven**: the complete
 (`firing_apply_projectile_record`) → `20acd0` orient → Class-2b emit. Then (5) the gated `EAW_PFIRE_APPLY=4` route (marshal → decide → applier
 → keep `pfire_r3_cooldown`+opp), (6) validate, (7) delete.
 
+### 8.72 B3.9.3 — TERMINAL CONSOLIDATION, increment 4+5+6: the SpawnCommand APPLIER + gated drive route = PASS (2026-06-12)
+The sim is now the SOLE driver of the live projectile create. At `EAW_PFIRE_APPLY=4`, `pfire_fire_reimpl` (winmm_proxy.c) routes the
+create through the full marshaller → `fc_bridge_in_decide` → the `SpawnCommand` applier, REPLACING the inline `pfire_r2a_create_init`/`r2b`.
+- **The applier** (`pfire_apply_spawn_cmd`): rather than re-implement the `29f810` create / rec writes / Class-2b emit, it feeds `decide`'s
+  `cmd` geometry into a local `S[]` and REUSES the already-validated `r2a`/`r2b` path — `cmd.pos`→`S[8..10]` (spawn pos = stage-G muzzle-cone
+  point = binary's `S[8..10]==shooter_ref`), dispersed `cmd.launch_dir`→`S[0..2]` (= binary's `S[0..2]`), `20acd0(&S[4],&S[8],&S[0])`→orient
+  `S[42..44]`. The created proj is captured by the `29f810` spawn hook so the existing DTWA-B3 validates its identity. The §8.65 apply-drive
+  still runs after (bit-exact identity overwrite).
+- **The route** (step 5): BALLISTIC + non-charge only (`lVar7+0x1fe8 != 1` && `local_238+0x394 >= 0`); any guided/charge fire, a non-Fire
+  `decide`, or non-finite `cmd` geometry FALLS BACK to the validated inline `r2a`/`r2b` — never drop or mis-spawn a shot. Drive and the §8.71
+  observe are mutually exclusive (the drive's own counters validate it; the observe validates the inline path). The substream seed reuses
+  `g_marsh_n` (incremented once per fire on whichever path).
+
+**RESULT = PASS** (ICW battles, EAW_ORACLE + pfire=3 + pfireapply=4 + difftrace=1, autonomous multi-battle): **7 DTMARSH summaries, the applier
+DROVE `drive_n=79,114` live projectile creates** through marshal→decide→applier, every summary `outcome_bad=0` + `id_bad=0` (the §8.71 marshaller
+decision/identity invariants hold on the drive path too), `drive_fb=2050` (guided/charge correctly fell back). DTAPPLY `apply=4`: dmg/life/ms
+all `=n` (driven), `spr_oob=0` + `mz_oob=0` (every driven create's geometry in-cone, §8.67/68). **Zero crash markers** across 3+ battles (ticks
+reset 3×), disk stable. The handoff's earlier crash-loop is RESOLVED by the clean-replace wiring (mutually-exclusive `used_cmd`, finite-guard,
+ballistic+non-charge guard, observe-skip on driven path) — the prior attempt's defect (double-create / unguarded NaN geometry) is gone.
+⇒ **decide is the sole geometry+decision driver of the BALLISTIC create.** **NEXT (step 7, deferred):** route guided-lead + charge-scale through
+the `cmd` (so the inline `r2a`/`r2b` fallback narrows to nothing) → then retire `pfire_fire_reimpl`'s inline create. `pfire_fire_reimpl` itself
+STAYS — it still hosts the gates/geometry/`pfire_r3_cooldown` and the fallback path for guided/charge + the non-difftrace build.
+
 ## 9. Cross-refs
 - The blocker this answers: `inproc_integration_milestone.md` §0 + §2 (a1 PASS).
 - The increment discipline this mirrors: `sim_tick_decomp_program.md` I1–I5 + the I2 gate.
