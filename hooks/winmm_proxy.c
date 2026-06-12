@@ -124,6 +124,10 @@ static BOOL          g_sim_tick_valid = FALSE;
 /* Forward-declared here so try_patch_sim_tick can test it; set by space_slot22_hook. */
 static volatile LONG g_space_mode_seen     = 0; /* counter: incremented by space_slot22_hook, reset by galactic_slot22_hook */
 static volatile LONG g_galactic_ever_active = 0; /* set by galactic_slot22_hook; informational only */
+/* Phase 6 LUACAP: nonzero while executing inside the AI pump (brackets g_pump_threads_orig /
+ * g_pumpe_orig).  Read by the __index method-name capture hook (install_index_dispatch_hook) so it
+ * records only method names reached from lua_resume during a pump — the Model B prerequisite set. */
+static volatile LONG g_in_pump = 0;
 
 static void WINAPI sim_tick_hook(void *a, void *b, void *c, void *d)
 {
@@ -276,7 +280,9 @@ static void __fastcall pump_threads_hook(void *param_1)
 {
     LARGE_INTEGER t0, t1;
     tgt_fake_qpc(&t0);
+    InterlockedIncrement(&g_in_pump);
     g_pump_threads_orig(param_1);
+    InterlockedDecrement(&g_in_pump);
     tgt_fake_qpc(&t1);
 
     double ms = (t1.QuadPart - t0.QuadPart) / ((double)g_qpc_freq.QuadPart / 1000.0);
@@ -1346,6 +1352,100 @@ static BOOL install_galactic_slot22_hook(void)
     FlushInstructionCache(GetCurrentProcess(), gal_fn, 14);
 
     log_write("[eaw-mt] GalacticModeClass slot22 (45e030) inline hook installed\n");
+    return TRUE;
+}
+
+/* =========================================================================
+ * Phase 6 — LUACAP: Lua __index method-name capture (Model B prerequisite)
+ *
+ * Every obj:Method()/obj.Prop from any Lua coroutine funnels through the single
+ * reflection dispatcher __index = FUN_14024a8a0 (RVA 0x24a8a0), where the key
+ * name string is live (arg 2).  We inline-trampoline it (15-byte position-
+ * independent prologue: 3x MOV [RSP+N],reg) and, while g_in_pump is set, read
+ * the key name via the binary's own lua_tolstring (FUN_1407b9cc0, non-throwing:
+ * returns TString chars at +0x18 for type-4, else coerces/0) and record each
+ * distinct (mode, name) once to eaw-mt.log.  Read-only.  Opt-in: EAW_LUACAP=1.
+ *
+ * Output line: "[eaw-mt] LUACAP mode=G|S name=<Method>".  Classify offline:
+ * Get_/Is_/Can_/Find_/Has_ = read; Set_/Spawn_/Activate_/Give_/Change_/Add_/
+ * Remove_/Despawn_/Take_ = write — then map onto the 3-class write model.
+ * ========================================================================= */
+#define INDEX_DISPATCH_RVA 0x24a8a0ULL   /* FUN_14024a8a0 — __index reflection dispatcher */
+#define LUA_TOLSTRING_RVA  0x7b9cc0ULL   /* FUN_1407b9cc0(L, idx) -> const char* (non-throwing)  */
+
+typedef int64_t     (*IndexDispatchFn)(int64_t L);
+typedef const char *(*LuaToLStringFn)(int64_t L, int idx);
+static IndexDispatchFn g_index_trampoline = NULL;
+static LuaToLStringFn  g_lua_tolstring    = NULL;
+static volatile LONG   g_luacap_on        = 0;
+static LONG            g_luacap_n         = 0;
+
+/* dedup set (open addressing); pump is synchronous on the main thread so no lock needed. */
+#define LUACAP_CAP 8192
+static struct { uint32_t h; char mode; } g_luacap_seen[LUACAP_CAP];
+
+static int luacap_seen_or_add(uint32_t h, char mode) {
+    if (h == 0) h = 1;
+    uint32_t i = h & (LUACAP_CAP - 1);
+    for (uint32_t probe = 0; probe < LUACAP_CAP; probe++) {
+        uint32_t j = (i + probe) & (LUACAP_CAP - 1);
+        if (g_luacap_seen[j].h == 0) { g_luacap_seen[j].h = h; g_luacap_seen[j].mode = mode; return 1; }
+        if (g_luacap_seen[j].h == h && g_luacap_seen[j].mode == mode) return 0;
+    }
+    return 0;  /* full — stop recording */
+}
+
+static int64_t index_dispatch_hook(int64_t L) {
+    if (g_luacap_on && g_in_pump && g_lua_tolstring) {
+        const char *name = g_lua_tolstring(L, 2);
+        if (name && (uint8_t)name[0] >= 0x20) {
+            uint32_t h = 2166136261u;   /* FNV-1a over up to 64 chars */
+            int len = 0;
+            for (const char *p = name; *p && len < 64; p++, len++)
+                h = (h ^ (uint8_t)*p) * 16777619u;
+            char mode = (g_space_mode_seen > 0) ? 'S' : (g_galactic_ever_active ? 'G' : '?');
+            if (luacap_seen_or_add(h, mode)) {
+                char s[128];
+                snprintf(s, sizeof s, "[eaw-mt] LUACAP mode=%c name=%.64s\n", mode, name);
+                log_write(s);
+                InterlockedIncrement(&g_luacap_n);
+            }
+        }
+    }
+    return g_index_trampoline(L);
+}
+
+static const BYTE index_dispatch_prologue[15] = {
+    0x48, 0x89, 0x5c, 0x24, 0x08,  /* MOV [RSP+0x08], RBX */
+    0x48, 0x89, 0x6c, 0x24, 0x10,  /* MOV [RSP+0x10], RBP */
+    0x48, 0x89, 0x74, 0x24, 0x18,  /* MOV [RSP+0x18], RSI */
+};
+
+static BOOL install_index_dispatch_hook(void) {
+    const char *e = getenv("EAW_LUACAP");
+    if (!(e && e[0] == '1')) return FALSE;   /* opt-in only; zero impact otherwise */
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    BYTE *fn = (BYTE *)exe + INDEX_DISPATCH_RVA;
+    if (memcmp(fn, index_dispatch_prologue, 15) != 0) {
+        log_write("[eaw-mt] WARN: FUN_14024a8a0 prologue mismatch — LUACAP not installed\n");
+        return FALSE;
+    }
+    g_lua_tolstring = (LuaToLStringFn)((BYTE *)exe + LUA_TOLSTRING_RVA);
+    BYTE *tramp = (BYTE *)VirtualAlloc(NULL, 64, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) { log_write("[eaw-mt] WARN: VirtualAlloc for LUACAP trampoline failed\n"); return FALSE; }
+    memcpy(tramp, index_dispatch_prologue, 15);
+    write_abs_jmp(tramp + 15, (uint64_t)(fn + 15));
+    g_index_trampoline = (IndexDispatchFn)tramp;
+
+    DWORD old;
+    VirtualProtect(fn, 14, PAGE_EXECUTE_READWRITE, &old);
+    write_abs_jmp(fn, (uint64_t)index_dispatch_hook);
+    VirtualProtect(fn, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 14);
+
+    InterlockedExchange(&g_luacap_on, 1);
+    log_write("[eaw-mt] LUACAP: __index dispatcher (24a8a0) inline hook installed (EAW_LUACAP=1)\n");
     return TRUE;
 }
 
@@ -2692,7 +2792,9 @@ static void pumpe_hook(int64_t a)
     g_open_profile_active = 1;
 #endif
 
+    InterlockedIncrement(&g_in_pump);
     g_pumpe_orig(a);
+    InterlockedDecrement(&g_in_pump);
 
 #ifdef EAW_PROFILE
     g_open_profile_active = 0;
@@ -13135,6 +13237,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             install_a2_measure_hooks();   /* a2.0: ONLY the 2 Amdahl timers — DT hooks skipped to avoid confound */
             log_write("[eaw-mt] A2MEASURE mode: 2 timers only (all DT oracle hooks skipped)\n");
         } else {
+        install_index_dispatch_hook(); /* LUACAP: Lua __index method-name capture (EAW_LUACAP=1, Model B prereq) */
         install_b5caaf0_hook();   /* DTSTEER: Fighter steering controller I/O (EAW_DIFFTRACE=1) */
         install_b5c95a0_hook();   /* DTYAW: Fighter yaw/roll bank-to-turn integrator I/O (EAW_DIFFTRACE=1) */
         install_b3a76b0_hook();   /* DTFIRE: hardpoint fire-budget distribution I/O (EAW_DIFFTRACE=1) */

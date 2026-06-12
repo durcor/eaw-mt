@@ -13,6 +13,9 @@ log-file  := env('HOME') + "/gam/steam/steamapps/common/sweaw/corruption/eaw-mt.
 desktop-res := "1920x1080"
 # Differential-test golden-trace capture (profile build only). Override: just difftrace=1 launch-foc-desktop
 difftrace := ""
+# Phase 6 LUACAP: capture the Lua __index method-name set reached during AI pumps (oracle build, Model B
+# prereq). Read-only. Override: just luacap=1 difftrace=1 launch-foc-desktop  (LUACAP lines in eaw-mt.log)
+luacap := ""
 # Runtime transform-offset finder (profile build only). Override: just offwatch=1 launch-foc-desktop
 offwatch := ""
 # Milestone a1: arm the gated SFX takeover (oracle build, also needs difftrace=1). Override: just difftrace=1 a1=1 launch-foc-desktop
@@ -341,6 +344,7 @@ launch-foc-desktop:
       WINEPREFIX={{compat-data}}/pfx \
       WINEDLLOVERRIDES=winmm=n,b \
       EAW_DIFFTRACE={{difftrace}} \
+      EAW_LUACAP={{luacap}} \
       EAW_OFFWATCH={{offwatch}} \
       EAW_A1={{a1}} \
       EAW_A2MEASURE={{a2measure}} \
