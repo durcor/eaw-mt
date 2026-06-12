@@ -276,9 +276,13 @@ There is **no command-line save-load** (`StarWarsG.exe` accepts only `MODPATH`/`
 the menu's **Load Game** path. Many TR galactic-conquest saves exist (`show-saves`), e.g.
 `easy run through galaxy from thrawn onwards`, `syn ackbar - tr nr admiral - full galaxy large`.
 
-Autonomous menu navigation via xdotool was attempted but is unreliable here (the Wine game runs under
-XWayland on a busy multi-monitor desktop; synthetic XTEST input did not reliably advance the front-end,
-and blind absolute clicks risk the user's live windows). The robust procedure:
+Autonomous menu navigation via xdotool was attempted. **Root cause of the first failure (user-flagged):
+the game rendered at a larger resolution than the actual Wine window (`explorer /desktop=eaw,1920x1080`
+came up as a 1252×679 window), so window-relative click coordinates landed at the wrong on-screen spot.**
+Fix = make render-res match the window (in-game Video options). Even with that fixed, confine all input
+to the game window id (`xdotool ... --window <id>`; capture via `import -window <id>`) — never blind
+absolute clicks, as this is the user's live multi-monitor desktop. See [[feedback-ui-automation]]. The
+robust procedure (manual step 2):
 
 1. `just luacap=1 launch-foc-desktop` — launches with the capture hook armed (read-only).
 2. In the game: **Load Game → a galactic-conquest save → let the galaxy view sit ~30 s** (AI pumps).
