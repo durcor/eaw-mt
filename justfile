@@ -250,7 +250,7 @@ sim-test:
   /tmp/eaw_spline_mover_test
 
 ghidra-script script:
-  nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
+  nix develop --command analyzeHeadless \
     ghidra_projects EawProject \
     -process StarWarsG.exe \
     -noanalysis \
@@ -260,7 +260,7 @@ ghidra-script script:
 
 # Run a Ghidra script with trailing args (read-only). e.g. just gs Phase2VtableXrefs 8661b8 869ea0
 gs script +args:
-  nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
+  nix develop --command analyzeHeadless \
     ghidra_projects EawProject \
     -process StarWarsG.exe \
     -noanalysis -readOnly \
@@ -271,7 +271,7 @@ gs script +args:
 # Decompile one or more RVAs (hex) to decomp/<rva>.c using current RTTI-applied names.
 # e.g. just decomp 387400 3a76b0 28d400
 decomp +rvas:
-  nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
+  nix develop --command analyzeHeadless \
     ghidra_projects EawProject \
     -process StarWarsG.exe \
     -noanalysis -readOnly \
@@ -281,7 +281,7 @@ decomp +rvas:
 
 # Decompile every RVA listed (one hex RVA per line) in the given file.
 decomp-list file:
-  nix develop --command /nix/store/qq2mn7zc8f3q04nb4s538ykffqk3qbq4-ghidra-12.0.4/lib/ghidra/support/analyzeHeadless \
+  nix develop --command analyzeHeadless \
     ghidra_projects EawProject \
     -process StarWarsG.exe \
     -noanalysis -readOnly \

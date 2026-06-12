@@ -29,6 +29,11 @@ on the current game mode enum at `param_1 + 0x211c`.
 
 ### Mode 1 — Galactic Map
 
+> **Refined 2026-06-12 (`galactic_map.md`):** these ten ticks are all the galactic **UI/HUD shell**
+> (widget refresh), *not* galactic simulation. None calls Lua, the strategic event queue
+> (`DAT_140b2ed18`), the sim RNG, or `CreateObject`. The galactic sim ticks on a different path
+> (`GalacticModeClass::vtable[43]` + `FUN_14021caf0`) — see `galactic_map.md`.
+
 ```c
 FUN_1403e8a80(param_1);   // galactic map subsystem tick A
 FUN_1403e83a0(param_1);   // galactic map subsystem tick B
