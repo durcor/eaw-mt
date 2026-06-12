@@ -170,6 +170,47 @@ The `FrozenSnapshot` payload is the §2.1 / `firing_body_lift_scope.md` §4 cros
 
 ---
 
+### ✅ a2.1 RESULT — `3a6b80` per-object sub-call enumeration & classification (2026-06-12)
+
+Decoded `FUN_1403a6b80` (2862 B, `decomp/3a6b80.c`) — the monolithic per-object body. Every per-object
+sub-call classified:
+
+| Sub-call (3a6b80 line) | What it is | Class | a2 routing |
+|---|---|---|---|
+| locomotor field-copy +0x164.. + `557ba0` (40-67) | locomotor pose double-buffer + advance | cheap-mass ✅lifted (`sim/locomotor`) | **Phase-A** |
+| `220ed0(disp, listener_list, 0x17)` (76) | listener emit (locomotor-arrived) | Class-2b cross-entity | **buffer** (drain_parallel) |
+| `5369e0` (80) | field_0xf0 update; no RNG/create/emit | self-state | **Phase-A** (read-discipline check) |
+| `3a9e30` timer-expiry loop (82-131) | scheduled-event/ability fire — **6165 B, emits a signal**, un-lifted | un-lifted Class-2b | **GAP → serial pass** (low-freq: timer-gated) |
+| behavior loop `vtable[0x30]` (132-138) | self-behaviors (Damage/Energy/Ability/Nebula/Asteroid/UnitAI/Reveal) | cheap-mass ✅lifted (`sim/*`) | **Phase-A** (the core) |
+| `DynamicTransformBehaviorClass::3ac530` (140) | Pass-C transform | cheap-mass ✅lifted (`sim/dynamic_transform`) | **Phase-A** |
+| `SelectBehaviorClass::3c2710` (144) | select marker pulse | Class-3 ✅lifted (`sim/select_marker`) | buffer/presentation |
+| `266340` + the +0x2a0/2e0/298/2b8 render block incl. pose-eval `12d2c0` (147-261) | scene/anim/alHModel pose-eval | Class-3 presentation | **serial or scratch-lock** (the known Fork-B pose-eval race) |
+| `37da80` (265) | field_0x100 update; no RNG/create/emit | self-state | **Phase-A** (read-discipline check) |
+| **`247a90` = Pump_Threads (267-346)** | **per-object Lua AI pump** (ServiceRate-gated; writes the Model B C-closure surface; draws global RNG line 326) | un-lifted, writes shared sim state | **GAP → serial pass** |
+| hardpoint pre-calc `396070`/`396df0`/`3a8ad0` (361-369) + **`3a76b0` (372)** | fire-energy + the **fire-control subtree** | fire-control | **serial pass** (the planned one) |
+| `3727a0`+`3ab890`+RNG (374-386) | DoT/effect roll; **draws global RNG `a13e24` line 382** | Class-2 (RNG) + self-effect | **per-entity substream** (`sim_rng`) + serial-apply |
+
+**Verdict: the Phase-A body is buildable — the dominant cheap-mass (locomotor + self-behavior loop +
+DynamicTransform) is fully lifted.** The gaps surfaced are NOT blockers, but they REFINE the architecture:
+
+1. **The serial pass is bigger than just fire-control.** It must also absorb (a) the per-object **Lua AI
+   pump** `247a90` — it writes the whole reflected C-closure surface (Phase 6 / Model B), so it cannot run
+   in a Phase-A worker; cheap (PUMPPROF: ~0.1 % steady-state) so serializing it is free; and (b) the
+   **scheduled-event handler** `3a9e30` (un-lifted, emits a cross-entity signal, timer-gated/low-freq).
+   ⇒ **serial pass = {3a9e30 events, AI pump, fire-control, DoT-apply}** — all low-frequency. (The a2.0
+   Amdahl split measured `3a6b80` minus `3a76b0` as "cheap-mass"; the AI-pump+events were in that bucket,
+   but PUMPPROF shows they're ~0.1 %, so the p≈0.65 ceiling is unaffected — they just move to the serial
+   side at negligible cost.)
+2. **Two direct global-RNG draws inside `3a6b80`** (line 326 AI-pump LastService seed; line 382 DoT roll),
+   both on `&DAT_140a13e24` → the I2 draw-order hazard → **per-entity substreams** (`sim_rng.h`, the retrofit
+   already built). Not a blocker; route both through the substream.
+3. **The pose-eval presentation race** (`12d2c0`→alHModel, Fork-B) stays — Class-3, handled by serial or a
+   scratch-lock, not a Phase-A parallel write.
+
+No sub-call forces an un-liftable binary callback that reads live cross-object state mid-Phase-A: every
+non-cheap-mass body is either serial-pass (fire/AI/events/DoT) or buffered (Class-2b/3). **a2.1 clears its
+gate — proceed to a2.2 (the 1-shard takeover) after the a2.0b retrofit-delta sign-off.**
+
 ## 6. Increment plan
 
 | # | Increment | Validates | Kill-switch / gate |
