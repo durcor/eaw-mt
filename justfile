@@ -29,6 +29,8 @@ a2 := ""
 a2body := ""
 # a2.4.3: shard count N for the DT shadow worker pool (a2body=4 only; shard=(obj+0x50)%N, clamp [1,8], default 4). Gate: bad=0 for any N (N=1 ≡ a2body=3). Override: just a2body=4 a2shards=2 difftrace=1 launch-foc-desktop
 a2shards := ""
+# a2.4.5: with a2body=5, rdtsc-time the parallelizable numeric vs the serial render tail per 3ac530 apply (the per-slice Amdahl). Behavior-neutral. Override: just a2body=5 a2bodyprof=1 difftrace=1 launch-foc-desktop
+a2bodyprof := ""
 # a2.0 Amdahl measurement (oracle build): time 3a6b80 body vs 3a76b0 fire-control, DT hooks skipped. Override: just a2measure=1 launch-foc-desktop
 a2measure := ""
 # B3.1 (§8.25): arm the 385190 opp-scan selection-bit-exact reimpl diff (oracle build, also needs difftrace=1; ~2x scan cost). Override: just difftrace=1 dtscanobs=1 launch-foc-desktop
@@ -360,6 +362,7 @@ launch-foc-desktop:
       EAW_A2={{a2}} \
       EAW_A2_BODY={{a2body}} \
       EAW_A2_SHARDS={{a2shards}} \
+      EAW_A2_BODY_PROF={{a2bodyprof}} \
       EAW_A2MEASURE={{a2measure}} \
       EAW_DTSCAN_OBS={{dtscanobs}} \
       EAW_PFIRE_SCAN={{pfirescan}} \

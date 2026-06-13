@@ -575,11 +575,38 @@ orchestration* (calling binary leaves), reading each leaf's real ABI from the ob
 float-in-xmm args). DTWORLD-vs-known-baseline is a stronger gate than self-reproduction (it pins to the stock
 world, not just determinism).
 
-**Next: a2.4.5** — move the now-ours numeric OFF the main thread for real speedup. The per-call render tail
-needs `obj+0x248` immediately, so the win needs a **batch precompute** (workers fill all matrices in a Phase-A
-sweep, the walk's tail then only renders) or a one-object **pipeline** (dispatch numeric(i) to a worker while
-main renders i−1). Then shadow-validate/apply `557ba0`/`3c2710` the same way; the behavior-loop `vtable[0x30]`
-(indirect, not E8) is handled when the lifted self-behaviors drive the worker directly.
+### ✅ a2.4.5 RESULT — MEASURED the per-slice Amdahl: `3ac530` is ~35% numeric / ~65% render tail (2026-06-13)
+
+Before building an off-thread numeric (which from the per-call hook forces a render-tail-reordering pipeline —
+the tail is serial Class-3 and `numeric(i)` needs obj_i's *post-locomotor* pose so it can't be hoisted to a
+tick-start batch), MEASURE the split (§8 "measure first", the highest-risk-Amdahl mitigation). `EAW_A2_BODY=5
+EAW_A2_BODY_PROF=1` (`winmm_proxy.c`): `rdtsc` brackets the apply — `t0`→`a2_dt_core`+matrix-write→`t1`
+→`a2_dt_render_tail`→`t2` — accumulating cycle sums + count, subtracting a once-measured back-to-back rdtsc
+overhead floor. Timing-only ⇒ behavior-neutral.
+
+**Validation (`just a2body=5 a2bodyprof=1 difftrace=1` ×2, demo battle-1, n≈1.57M each):**
+
+| run | numeric | render tail | numeric frac | per-slice off-thread ceiling | DTWORLD |
+|---|---|---|---|---|---|
+| A | 627 cyc | 1167 cyc | **35.0%** | **1.538×** | `ea5f…`/`7f7f…` ✓ |
+| B | 636 cyc | 1214 cyc | **34.4%** | **1.524×** | `ea5f…`/`7f7f…` ✓ |
+
+Rock-stable in-run (35.3→35.0% / 34.2→34.4% across 786k→1.57M calls) and cross-run (~34–35%). DTWORLD
+bit-identical to baseline both runs; **zero crashes**. Evidence: `eaw-mt.log.a245-prof{A,B}`.
+
+**⇒ FINDING: the `3ac530` transform slice is ~35% parallelizable-numeric, ~65% serial-render-tail.** The
+per-slice pipeline ceiling (overlap `numeric(i)` with `tail(i−1)`, per-object wall = `max(num,tail)` = tail) is
+only **~1.53×**, and getting it would cost the render-tail-by-one reorder (DTWORLD risk) + a last-object
+cross-frame flush (UAF guard). 35% is **more than feared** (not marginal) but still tail-bound. This also
+refines the a2.0 Amdahl model for the transform slice: of `3ac530`'s cost, only ~35% ever parallelizes; the
+render tail is serial-on-main under EVERY a2 architecture (per-call pipeline OR object-level shard).
+
+**Next: a2.4.6 (user decision)** — the data favors **object-level sharding** (shard whole cheap-mass object
+bodies across N workers via the `3a6b80` hook; numeric of `3ac530`/`557ba0`/loco/behavior all parallelize
+together, render/fire stay serial) over optimizing this one slice's 1.53× pipeline. That is the real
+Phase-A/B split + the true a2 end-goal, but the bigger build (the interleaved cheap-mass/serial cut a2.4-START
+flagged). Alternatively build the 1.53× pipeline as a self-contained win first. `557ba0`/`3c2710` get the same
+apply treatment; behavior-loop `vtable[0x30]` (indirect, not E8) is handled when self-behaviors drive workers.
 
 ---
 

@@ -2989,6 +2989,11 @@ static int64_t   g_a2body_dt_ok = 0, g_a2body_dt_bad = 0;   /* shadow: per-call 
 static int       g_a2body_dt_firstbad_logged = 0;
 #define A2BODY_MAX_SHARDS 8
 static int       g_a2body_nshards = 1;   /* a2.4.3: N — 1 at level 3, EAW_A2_SHARDS (clamp [1,8]) at level>=4 */
+/* a2.4.5 (EAW_A2_BODY_PROF=1, level-5 apply): rdtsc-time the parallelizable numeric vs the serial render
+ * tail per 3ac530 apply to ground the per-slice Amdahl. Behavior-neutral (timing only ⇒ DTWORLD unaffected). */
+static int       g_a2body_prof = -1;     /* -1 unread / 0 off / 1 timing on */
+static uint64_t  g_a2body_prof_num = 0, g_a2body_prof_tail = 0, g_a2body_prof_n = 0;  /* cycle sums + count */
+static uint64_t  g_a2body_prof_ovh = 0;  /* back-to-back rdtsc overhead floor (cycles), measured once at arm */
 
 static int a2_body_on(void) {
     if (g_a2body_level < 0) {
@@ -2998,6 +3003,17 @@ static int a2_body_on(void) {
         if (g_a2body_level >= 5) {
             /* a2.4.4: APPLY — no worker pool; the binary 3ac530 is skipped, our core+tail drive on main. */
             log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=5) — 3ac530 SHADOW→APPLY: binary numeric prologue SKIPPED; a2_dt_core's matrix is WRITTEN to obj+0x248 (the live one) and the Class-3 render tail runs in C (a2_dt_render_tail, binary leaves). Full self-drive of 3ac530 on the main thread; the injected matrix == the prologue's ⇒ DTWORLD must match baseline ea5f.../7f7f... (proves the apply bit-faithful). 0 crashes required.\n");
+            /* a2.4.5: profile the parallelizable numeric vs the serial render tail (the per-slice Amdahl). */
+            { const char *p = getenv("EAW_A2_BODY_PROF"); g_a2body_prof = (p && p[0] && p[0] != '0') ? 1 : 0; }
+            if (g_a2body_prof == 1) {
+                uint64_t best = ~0ull;                 /* rdtsc-pair overhead floor = min over samples */
+                for (int i = 0; i < 4096; ++i) { uint64_t a = __builtin_ia32_rdtsc(), b = __builtin_ia32_rdtsc(); if (b - a < best) best = b - a; }
+                g_a2body_prof_ovh = best;
+                char pm[256];
+                sprintf(pm, "[eaw-mt] A2BODY: a2.4.5 PROF ON — rdtsc-timing numeric vs render tail per 3ac530 apply (overhead floor=%llu cyc subtracted). Behavior-neutral; reports the numeric fraction + per-slice off-thread ceiling.\n",
+                        (unsigned long long)g_a2body_prof_ovh);
+                log_write(pm);
+            }
         } else if (g_a2body_level >= 3) {
             /* a2.4.3: N from EAW_A2_SHARDS at level>=4; level 3 stays the proven N=1 rung. */
             if (g_a2body_level >= 4) {
@@ -3204,15 +3220,37 @@ static void a2_body_3ac530_intercept(int64_t obj, int32_t mode) {
     LONG c = InterlockedIncrement(&g_a2body_3ac530_calls);
     if (g_a2body_level >= 5 && obj) {                 /* a2.4.4 APPLY: our numeric is live, binary prologue gone */
         float sm[12];
-        a2_dt_core(sm, *(float *)(obj + 0x90), *(float *)(obj + 0x94), *(float *)(obj + 0x98),
-                       *(float *)(obj + 0x78), *(float *)(obj + 0x7c), *(float *)(obj + 0x80));
-        memcpy((void *)(obj + 0x248), sm, 12 * sizeof(float));   /* the worker/core matrix BECOMES the live one */
-        a2_dt_render_tail(obj, mode);                            /* Class-3 tail consumes it (serial) */
+        if (g_a2body_prof == 1) {                     /* a2.4.5: rdtsc-time numeric vs render tail */
+            uint64_t t0 = __builtin_ia32_rdtsc();
+            a2_dt_core(sm, *(float *)(obj + 0x90), *(float *)(obj + 0x94), *(float *)(obj + 0x98),
+                           *(float *)(obj + 0x78), *(float *)(obj + 0x7c), *(float *)(obj + 0x80));
+            memcpy((void *)(obj + 0x248), sm, 12 * sizeof(float));
+            uint64_t t1 = __builtin_ia32_rdtsc();
+            a2_dt_render_tail(obj, mode);
+            uint64_t t2 = __builtin_ia32_rdtsc();
+            g_a2body_prof_num += (t1 - t0); g_a2body_prof_tail += (t2 - t1); g_a2body_prof_n++;
+        } else {
+            a2_dt_core(sm, *(float *)(obj + 0x90), *(float *)(obj + 0x94), *(float *)(obj + 0x98),
+                           *(float *)(obj + 0x78), *(float *)(obj + 0x7c), *(float *)(obj + 0x80));
+            memcpy((void *)(obj + 0x248), sm, 12 * sizeof(float));   /* the matrix BECOMES the live one */
+            a2_dt_render_tail(obj, mode);                            /* Class-3 tail consumes it (serial) */
+        }
         g_a2body_apply_n++;
         if ((c & 0x3ffff) == 1) {
-            char m[224];
-            sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 SELF-APPLY calls=%ld | C numeric WRITTEN to obj+0x248 + C render tail (binary 3ac530 SKIPPED) applied=%lld | DTWORLD must match baseline\n",
-                    (long)c, (long long)g_a2body_apply_n);
+            char m[384];
+            if (g_a2body_prof == 1 && g_a2body_prof_n) {
+                uint64_t n = g_a2body_prof_n;
+                double mean_num = (double)g_a2body_prof_num / n, mean_tail = (double)g_a2body_prof_tail / n;
+                double ovh = (double)g_a2body_prof_ovh;                  /* rdtsc-pair floor to subtract */
+                double num = mean_num - ovh, tail = mean_tail - ovh; if (num < 0) num = 0; if (tail < 0) tail = 0;
+                double frac = (num + tail) > 0 ? num / (num + tail) : 0;
+                double ceil = tail > 0 ? (num + tail) / tail : 1.0;      /* per-slice pipeline ceiling = (n+t)/max(n,t), tail dominates */
+                sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 SELF-APPLY+PROF calls=%ld n=%llu | numeric=%.0f cyc tail=%.0f cyc (rdtsc-ovh=%.0f subtracted) | numeric frac=%.1f%% ⇒ per-slice off-thread ceiling=%.3fx\n",
+                        (long)c, (unsigned long long)n, num, tail, ovh, frac * 100.0, ceil);
+            } else {
+                sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 SELF-APPLY calls=%ld | C numeric WRITTEN to obj+0x248 + C render tail (binary 3ac530 SKIPPED) applied=%lld | DTWORLD must match baseline\n",
+                        (long)c, (long long)g_a2body_apply_n);
+            }
             log_write(m);
         }
         return;
