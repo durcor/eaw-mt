@@ -2735,6 +2735,12 @@ static void a2_fire_freeze_out(int64_t gom) {
     g_a2_flip_out++;
 }
 
+/* a2.4.6: forward decls — the walk-driver (block 2) routes the per-object body through OUR faithful 3a6b80
+ * transcription when EAW_A2_BODY=6 (defined in the a2body section below). g_a2body_level moved up so block-2
+ * can read it. */
+static int g_a2body_level;                                 /* tentative def; = -1 set in the a2body section */
+static void a2_a6b80_body(int64_t obj, uint32_t p2, uint32_t sil);
+
 /* Faithful transcription of FUN_1402be640. gom = the GameObjectManager (rcx), p2 = the tick arg (edx). */
 static void a2_tick_2be640(int64_t gom, uint32_t p2) {
     LONG tc = InterlockedIncrement(&g_a2_tick_calls);
@@ -2790,7 +2796,8 @@ static void a2_tick_2be640(int64_t gom, uint32_t p2) {
             int64_t op = *(int64_t *)(node + 0x18);
             int64_t obj = op ? op - 0x18 : 0;
             if (g_a2_level == 3) a2_snap_check_precall(r, obj);  /* a2.2.2: live==snap[r] before the body runs */
-            g_a2.f3a6b80(obj, p2, sil);                          /* IDENTITY: binary per-object body */
+            if (g_a2body_level == 6) a2_a6b80_body(obj, p2, sil);/* a2.4.6: OUR faithful per-object body transcription */
+            else                     g_a2.f3a6b80(obj, p2, sil); /* IDENTITY: binary per-object body */
             InterlockedIncrement(&g_a2_walk_calls);
         }
         if (g_a2_level == 3) a2_snap_check_freeze(gom);   /* a2.2.2: now-live pos diverged from frozen snap[r] */
@@ -2976,6 +2983,7 @@ static void a2_t2be640_dispatch(int64_t gom, int64_t p2) {
 typedef void (*A2Body3ac530Fn)(int64_t, int32_t);
 typedef float (*A2BodyScFn)(float);
 static A2Body3ac530Fn g_a2body_3ac530_real = NULL;
+/* g_a2body_level: tentative def is up near the walk-driver (a2.4.6 fwd-decl); init here. */
 static int       g_a2body_level = -1;
 static uintptr_t g_a2body_imgbase = 0;
 static LONG      g_a2body_3ac530_calls = 0;
@@ -3000,7 +3008,11 @@ static int a2_body_on(void) {
         const char *e = getenv("EAW_A2_BODY");
         g_a2body_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
         if (g_a2body_level < 0) g_a2body_level = 0;
-        if (g_a2body_level >= 5) {
+        if (g_a2body_level >= 6) {
+            /* a2.4.6: faithful 3a6b80 BODY TRANSCRIPTION driven by the EAW_A2 walk-driver (needs EAW_A2>=1).
+             * No 3ac530 repoint, no worker — block-2 routes the per-object body to a2_a6b80_body. */
+            log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=6) — faithful C transcription of the per-object body 3a6b80, driven by the EAW_A2 walk-driver (REQUIRES EAW_A2>=1). Incrementally validatable via PER-OBJECT DELEGATION: our transcription runs for objects hitting only transcribed spans; anything with events/scene-obj/lua/hardpoints/DoT delegates WHOLE to binary 3a6b80. Increment 1 = {loco, preamble, behaviors, transform/select, 37da80, scale}. DTWORLD must match baseline ea5f.../7f7f...; 0 crashes.\n");
+        } else if (g_a2body_level >= 5) {
             /* a2.4.4: APPLY — no worker pool; the binary 3ac530 is skipped, our core+tail drive on main. */
             log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=5) — 3ac530 SHADOW→APPLY: binary numeric prologue SKIPPED; a2_dt_core's matrix is WRITTEN to obj+0x248 (the live one) and the Class-3 render tail runs in C (a2_dt_render_tail, binary leaves). Full self-drive of 3ac530 on the main thread; the injected matrix == the prologue's ⇒ DTWORLD must match baseline ea5f.../7f7f... (proves the apply bit-faithful). 0 crashes required.\n");
             /* a2.4.5: profile the parallelizable numeric vs the serial render tail (the per-slice Amdahl). */
@@ -3298,10 +3310,128 @@ static void a2_body_3ac530_intercept(int64_t obj, int32_t mode) {
     }
 }
 
+/* =========================================================================
+ * a2.4.6 (EAW_A2_BODY=6) — faithful C transcription of the per-object body FUN_1403a6b80, driven by the
+ * EAW_A2 walk-driver's block-2 (so it needs EAW_A2>=1 co-armed). The pivot to object-level sharding requires
+ * OWNING this body's control flow (the cheap-mass loco/behavior are inline, not E8 sites — can't be repointed).
+ *
+ * INCREMENTALLY VALIDATABLE via PER-OBJECT DELEGATION: a2_a6b80_body runs OUR transcription only for objects
+ * whose path hits exclusively the spans we've transcribed; any object that would hit a not-yet-transcribed
+ * span is delegated WHOLE to the binary 3a6b80 (always correct). DTWORLD must stay ea5f.../7f7f... at every
+ * increment. Increment 1 transcribes the MECHANICAL spans {loco 40-78, preamble 79-81, behaviors 132-138,
+ * transform/select 139-146, 37da80 264-266, scale 374} and delegates anything with events / a scene object
+ * (block-B + head-266340) / lua_ctx / hardpoints (fire) / the DoT flag. All offsets verified vs the
+ * 0x1403a6b80 objdump. ========================================================================= */
+static struct {
+    char    (*f557ba0)(int64_t);
+    int64_t (*f41aeb0)(void);
+    int64_t (*f58570)(void);
+    void    (*f220ed0)(int64_t, int64_t, int32_t);
+    void    (*f5369e0)(int64_t, uint32_t);
+    char    (*f4c3700)(int64_t);
+    void    (*f3c2710)(int64_t);
+    void    (*f37da80)(int64_t);
+    float     dat_b26fa4;
+    int       inited;
+} g_a6;
+static LONG g_a6_accept = 0, g_a6_deleg = 0, g_a6_calls = 0;
+
+static void a2_a6b80_init(void) {            /* lazy: g_a2.imgbase is set by the walk-driver install before any tick */
+    if (g_a6.inited) return;
+    uintptr_t b = g_a2.imgbase ? g_a2.imgbase : (uintptr_t)GetModuleHandleA(NULL);
+    g_a6.f557ba0 = (char    (*)(int64_t))(b + 0x557ba0);
+    g_a6.f41aeb0 = (int64_t (*)(void))(b + 0x41aeb0);
+    g_a6.f58570  = (int64_t (*)(void))(b + 0x58570);
+    g_a6.f220ed0 = (void    (*)(int64_t, int64_t, int32_t))(b + 0x220ed0);
+    g_a6.f5369e0 = (void    (*)(int64_t, uint32_t))(b + 0x5369e0);
+    g_a6.f4c3700 = (char    (*)(int64_t))(b + 0x4c3700);
+    g_a6.f3c2710 = (void    (*)(int64_t))(b + 0x3c2710);
+    g_a6.f37da80 = (void    (*)(int64_t))(b + 0x37da80);
+    g_a6.dat_b26fa4 = *(float *)(b + 0xb26fa4);
+    g_a6.inited = 1;
+}
+
+/* delegate the WHOLE object to binary 3a6b80 if its path would hit a span increment-1 hasn't transcribed. */
+static int a2_a6b80_delegate(int64_t obj, uint32_t sil) {
+    if (sil != 0)                            return 1;   /* silent path (head skipped, only DoT) */
+    if (A2_I64(obj, 0x68) != A2_I64(obj, 0x60)) return 1;/* event vector non-empty → event loop 82-130 */
+    if (A2_I64(obj, 0x2a0) != 0)             return 1;   /* scene object → head-266340 147-157 + block B 159-261 */
+    if (A2_I64(obj, 0x2d8) != 0)             return 1;   /* lua_ctx → AI-pump 267-346 */
+    if (A2_I64(obj, 0x2d0) != 0)             return 1;   /* hardpoints → fire 347-373 */
+    if ((A2_I32(obj, 0x3a0) & 0x40000) != 0) return 1;   /* DoT flag → 376-386 */
+    return 0;
+}
+
+static void a2_a6b80_body(int64_t obj, uint32_t p2, uint32_t sil) {
+    a2_a6b80_init();
+    LONG c = InterlockedIncrement(&g_a6_calls);
+    if (a2_a6b80_delegate(obj, sil)) { InterlockedIncrement(&g_a6_deleg); g_a2.f3a6b80(obj, p2, sil); goto rep; }
+    InterlockedIncrement(&g_a6_accept);
+    {
+        int32_t flags = A2_I32(obj, 0x3a0);
+        /* head guard (37-39): sil==0 here && ((flags&8)==0 || *(*(obj+0x298)+0x69)==0) */
+        int head = ((flags & 8) == 0) || (A2_U8(A2_I64(obj, 0x298), 0x69) == 0);
+        if (head) {
+            int64_t loco = A2_I64(obj, 0xa8);
+            if (loco != 0) {                                       /* loco copy 40-66 */
+                for (int i = 0; i < 12; i++) A2_I32(loco, 0x194 + i*4) = A2_I32(loco, 0x164 + i*4);
+                loco = A2_I64(obj, 0xa8);
+                for (int i = 0; i < 12; i++) A2_I32(loco, 0x164 + i*4) = A2_I32(obj, 0x248 + i*4);
+                if (g_a6.f557ba0(A2_I64(obj, 0xa8)) == 1) {        /* 67-77 loco completion */
+                    int64_t lc = A2_I64(obj, 0xa8);
+                    if (lc != 0 && A2_I64(lc, 0x1f0) != 0) {
+                        int64_t p = g_a6.f41aeb0();
+                        if (p != 0) {
+                            (*(void (**)(int64_t, int64_t))(A2_I64(p, 0) + 0x20))(p, obj);
+                            (*(void (**)(int64_t, int64_t, int32_t))(A2_I64(p, 0) + 0x18))(p, obj, 0);
+                        }
+                    }
+                    g_a6.f220ed0(g_a6.f58570(), obj + 0x38, 0x17);
+                }
+            }
+            if (A2_I64(obj, 0xf0) != 0)                            /* preamble 79-81 */
+                g_a6.f5369e0(A2_I64(A2_I64(obj, 0xf0), 0x138), p2);
+            /* event loop 82-130: delegated (empty vector for accepted objs) */
+            int32_t bc = A2_I32(obj, 0x290);                       /* behaviors 132-138 */
+            int64_t behaviors = A2_I64(obj, 0x278);
+            for (int iv = bc - 1; iv >= 0; iv--) {
+                int64_t b = A2_I64(behaviors, (int64_t)(char)iv * 8);
+                if (A2_U32(b, 0x30) <= p2 && g_a6.f4c3700(b) == 1)
+                    (*(void (**)(int64_t, int64_t, uint32_t))(A2_I64(b, 0) + 0x30))(b, obj, p2);
+            }
+            if ((flags & 0x100) != 0) {                            /* transform/select 139-146 */
+                g_a2.f3ac530(obj, 0);                              /* binary transform (numeric only; obj+0x2a0==0) */
+                int64_t b0 = A2_I64(obj, 0xb0);
+                if (b0 != 0 && A2_U8(b0, 0x38) != 0) {
+                    int64_t sel = (*(int64_t (**)(int64_t))(A2_I64(obj, 0) + 0x10))(obj);
+                    if (sel != 0) g_a6.f3c2710(sel);
+                }
+            }
+            /* head-266340 147-157: delegated (obj+0x2a0==0) */
+        }
+        /* block B 159-261: delegated (obj+0x2a0==0) */
+        if (A2_I64(obj, 0x100) != 0) g_a6.f37da80(A2_I64(obj, 0x100) + 8);   /* 264-266 */
+        /* Lua 267-346: delegated (no lua_ctx). fire 347-373: delegated (no hardpoints). */
+        A2_F32(obj, 0x320) = g_a6.dat_b26fa4 * A2_F32(obj, 0x320);            /* scale 374 */
+        /* DoT 376-386: delegated (flag absent) */
+    }
+rep:
+    if ((c & 0x3ffff) == 1) {
+        char m[224];
+        sprintf(m, "[eaw-mt] A2BODY: live — a2.4.6 BODY-TRANSCRIPTION calls=%ld accepted=%ld delegated=%ld | DTWORLD must match baseline ea5f.../7f7f...\n",
+                (long)c, (long)g_a6_accept, (long)g_a6_deleg);
+        log_write(m);
+    }
+}
+
 static BOOL install_a2body_hooks(void) {
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
     g_a2body_imgbase = (uintptr_t)exe;
+    if (g_a2body_level == 6) {       /* a2.4.6: no 3ac530 repoint — the walk-driver routes the whole body to us. */
+        log_write("[eaw-mt] A2BODY: a2.4.6 body-transcription armed; NO 3ac530 repoint (driven by EAW_A2 walk-driver block-2). a2_a6b80_body lazy-binds its leaves.\n");
+        return TRUE;
+    }
     /* a2.4.1 numeric-core constants, read live from the binary (Rule 2 — no assumed 1.0/2.0/360.0). */
     g_a2body_sin = (A2BodyScFn)((uintptr_t)exe + 0x776650);
     g_a2body_cos = (A2BodyScFn)((uintptr_t)exe + 0x776150);

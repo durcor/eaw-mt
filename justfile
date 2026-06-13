@@ -25,7 +25,7 @@ offwatch := ""
 a1 := ""
 # Milestone a2.2.0: arm the gated sim-tick walk-driver takeover at 2be640 (oracle build + difftrace=1 for the DTWORLD gate; default OFF, mutually exclusive with pfire). Override: just a2=1 difftrace=1 launch-foc-desktop
 a2 := ""
-# a2.4.0: arm the gated cheap-mass call-site repoint inside 3a6b80 (oracle build + difftrace=1 for the DTWORLD gate; default OFF, orthogonal to a2/pfire). =1 3ac530 pass-through identity foothold; =2 in-situ C DynamicTransform shadow oracle; =3 offload the shadow to a WORKER thread (N=1); =4 N-SHARD worker pool (N=a2shards); =5 SHADOW→APPLY (skip binary 3ac530, our matrix→obj+0x248 + C render tail, main thread). Override: just a2body=5 difftrace=1 launch-foc-desktop
+# a2.4.0: arm the gated cheap-mass call-site repoint inside 3a6b80 (oracle build + difftrace=1 for the DTWORLD gate; default OFF, orthogonal to a2/pfire). =1 3ac530 pass-through identity foothold; =2 in-situ C DynamicTransform shadow oracle; =3 offload the shadow to a WORKER thread (N=1); =4 N-SHARD worker pool (N=a2shards); =5 SHADOW→APPLY (skip binary 3ac530, our matrix→obj+0x248 + C render tail, main thread); =6 faithful 3a6b80 BODY TRANSCRIPTION via the EAW_A2 walk-driver (REQUIRES a2=1; per-object delegation, incrementally validatable). Override: just a2=1 a2body=6 difftrace=1 launch-foc-desktop
 a2body := ""
 # a2.4.3: shard count N for the DT shadow worker pool (a2body=4 only; shard=(obj+0x50)%N, clamp [1,8], default 4). Gate: bad=0 for any N (N=1 ≡ a2body=3). Override: just a2body=4 a2shards=2 difftrace=1 launch-foc-desktop
 a2shards := ""

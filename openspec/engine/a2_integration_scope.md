@@ -656,6 +656,36 @@ a2.4.8 shards Phase-A across N workers by `shard_of(obj+0x50)` with the serial P
 order. Multi-turn; this is the riskiest control-flow change since a2.2.0 (but gated + identity-validated,
 same playbook).
 
+### ✅ a2.4.6.1 RESULT — body-transcription seam + PER-OBJECT-DELEGATION harness LIVE; 6 mechanical spans proven (2026-06-13)
+
+The "all-or-nothing" transcription is dissolved by a **per-object delegation** harness: `a2_a6b80_body`
+(`winmm_proxy.c`, `EAW_A2_BODY=6`, driven by the walk-driver's block-2) runs OUR transcription for objects
+whose path hits only transcribed spans, and **delegates the WHOLE object to binary `3a6b80`** for anything
+that would hit a not-yet-done span (`a2_a6b80_delegate`: events present `+0x68!=+0x60` / scene obj `+0x2a0` /
+`lua_ctx +0x2d8` / hardpoints `+0x2d0` / DoT flag `+0x3a0&0x40000` / sil). Delegated objects are always
+correct ⇒ **DTWORLD stays the gate at every increment** while we move spans from delegate→transcribed. No
+`3ac530` repoint at level 6 (the walk-driver routes the whole body to us); leaves lazy-bound from
+`g_a2.imgbase`.
+
+Increment 1 transcribes the mechanical spans — loco copy 40–66 (24 dword copies, offsets vs objdump) +
+`557ba0`+completion-tail 67–77, preamble `5369e0` 79–81, behaviors 132–138, transform/select 139–146 (binary
+`3ac530(obj,0)` numeric-only since accepted objs have no scene obj, + `vt[0x10]`/`3c2710`), `37da80` 264–266,
+scale `obj+0x320 *= DAT_b26fa4` 374.
+
+**Validation (`just a2=1 a2body=6 difftrace=1` ×2, demo battle-1):** **accepted=2110/2111**,
+**delegated≈1.83M**; DTWORLD **bit-identical to baseline** (`ea5f…`/`7f7f…`) **both runs**; **zero crashes**.
+⇒ the body-takeover seam under the walk-driver, the delegation harness, and the 6 mechanical spans are proven
+bit-correct on the accepted objects. Evidence: `eaw-mt.log.a246-body1run{A,B}`. (Accept count is small because
+nearly every object has a scene object `+0x2a0` ⇒ delegates; accepting more requires the render spans 6/7,
+the next increments.)
+
+**Next: a2.4.6.2+** — move spans delegate→transcribed, each DTWORLD-gated: head-`266340` (6) + block-B render
+(7) [the big one — unlocks the ~all objects with a scene obj], then event-loop vector-erase (3), Lua pump (8),
+fire (9), DoT (11). When all spans are transcribed (delegation predicate → never), a2.4.7 reorders into
+Phase-A/Phase-B, a2.4.8 shards Phase-A across workers. LESSON: a per-object delegate-to-binary fallback turns
+an "all-or-nothing" body transcription into an INCREMENTALLY DTWORLD-validatable ladder — each span proven on
+the objects that hit it before the next is added.
+
 ---
 
 ## 7. Acceptance gate (contract §5, adapted for the fallback)
