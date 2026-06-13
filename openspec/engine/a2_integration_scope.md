@@ -402,6 +402,60 @@ Evidence: `eaw-mt.log.a223-{a4,pf2base,a5runA,a5runB}`. (Hook `winmm_proxy.c`: `
 gate = N≡1 replay-determinism + lockstep + the measured speedup. (Optional refinement: confirm the
 ship→target offset to narrow the flip from whole-world to target-cross-read-only.)
 
+### 🔧 a2.4 START — `3a6b80` per-object body, RE WORKSHEET + buildability findings (2026-06-13, IN PROGRESS)
+
+a2.4 (N-shard real threads) requires self-driving the per-object body so cheap-mass can move to workers.
+The walk still calls the monolithic binary `FUN_1403a6b80`. Fully decoding it (`decomp/3a6b80.c` +
+objdump of `0x1403a6b80`) surfaced **three structural findings that reshape the approach** — banked here so
+the transcription is mechanical next session:
+
+**FINDING 1 — risk and sharding-payoff are in DISJOINT spans.** The hard-to-transcribe spans are all
+*serial-pass gaps that never parallelize*: block B render/scene vtable-getter chain (decode 159–261, ~26
+lost-arg vtable calls), the Lua AI-pump scheduling + RNG seed (267–346, needs `r14` control-flow tracing),
+the DoT roll (376–386). The only spans that ever move to a worker are the cheap-mass: locomotor copy
+(40–66) + `557ba0`, behavior loop `vtable[0x30]` (132–138), `3ac530` (140), `3c2710` (144). ⇒ a verbatim
+transcription spends most of its risk on code that stays serial forever.
+
+**FINDING 2 — cheap-mass and serial are INTERLEAVED**, no clean prefix/suffix cut: order is loco-copy
+(cheap) → event-loop `3a9e30` (serial) → behavior loop (cheap) → `3ac530`/`3c2710` (cheap) → `266340`+block
+B (serial) → tail (serial). So "self-drive cheap-mass, binary-call the serial tail" can't be a single split;
+the serial spans are inline (no callable mid-function entry). User chose the **hybrid** (self-drive
+cheap-mass, leave serial as binary) — realizable as transcribe-outer-flow + per-span binary helpers, OR as
+call-site repointing of the cheap-mass sub-calls inside binary `3a6b80` (the proven `pfire_repoint_calls`
+pattern — leaves ALL serial code untouched binary).
+
+**FINDING 3 — `sim/` is NOT linked into the hook** (`winmm_proxy.c:4263`: "the hook is a single C TU; sim/
+is C++"). The in-game path **re-transcribes each lifted body in C** inside the hook (as DTSPL2's mover is).
+So a2.4.1's "swap in `sim::dynamic_transform`" means a fresh C re-transcription in the hook, not a call into
+`sim/`. The DTDYN/etc. oracles validated the C++ `sim/` offline; the in-game C body is a separate (small)
+transcription, gated + DTWORLD-identity-validated.
+
+**VERIFIED RE (objdump of `0x1403a6b80`, params `(GameObjectClass* obj, uint p2/tick, char p3/sil)`):**
+- *Field offsets:* `vtable`@+0x0, `pos`@+0x78/7c/80, `field_0x98`, `locomotor_state`@+0xa8, `+0xb0`,
+  `+0xf0`, `+0x100`, event-vec @+0x60/+0x68, `listener_list`@+0x38, `behaviors`@+0x278,
+  `behavior_count`@+0x290, `+0x298`/`+0x2a0`/`+0x2b8`/`+0x2e0`, `hardpoints`@+0x2d0, `lua_ctx`@+0x2d8,
+  `+0x2f0`/`+0x2f8`/`+0x320`/`+0x3a7`, **`flags` = dword @+0x3a0** (flags&8→[0x3a0]&8, &0x100→[0x3a1]&1).
+- *Cheap-mass call targets/args:* `557ba0(loco)`→char; behavior `vtable[0x30](behavior,obj,p2)` after
+  `4c3700(behavior)==1` && `behavior[0x30]<=p2`; `3ac530(obj,0)` (existing `A2_f3ac530`, 2-arg — decode
+  drops edx=0); `vtable[0x10](obj,2)`→sel ptr then `3c2710(sel)`.
+- *Serial helpers (stay binary):* `5369e0(*(obj+0xf0)+0x138, p2)`; `3a9e30(obj, …14 args…)`;
+  `266340(*(obj+0x2a0), obj+0x78, (DAT_8007dc*DAT_8007d4/DAT_8007f4)*field_0x98, DAT_b0a320, 0)`;
+  `37da80(*(obj+0x100)+8, p2)`; `247a90(lua_ctx)`; `246fb0(lua_ctx, "ServiceRate"@RVA0x7ff960, 0)`;
+  fire `396070`/`396df0(obj)`→float, `3a8ad0(obj,clamp)`, `3a76b0(obj,p2)`; DoT `3727a0(*(obj+0x298),obj)`,
+  `3ab890(obj,0x11)`.
+- *The two determinism-critical RNG draws* — `1ffbb0 = float(uint32_t* lcg, float lo, float hi)` (lo/hi in
+  XMM1/XMM2, Ghidra shows them as ints): constants `xmm8=0.0`, `xmm7=DAT_140800860`(=uVar3); LCG =
+  `&DAT_140a13e24`. DoT site (382): `ffbb0(&LCG, lo=ratio^uVar3bits, hi=ratio)`, `ratio=xmm6/DAT_805898`.
+  AI-pump LastService site (326): `ffbb0(&LCG, lo=0.0, hi=(float)*(double*)(r14+0x10))`, r14=LastService
+  node, result bit-XOR `xmm7`(uVar3). 26 indirect/vtable calls total; `2647a0`→float (xmm0).
+
+**RECOMMENDED NEXT (de-risked):** implement the hybrid via **call-site repointing** — `pfire_repoint_calls`
+the cheap-mass E8 sites inside binary `3a6b80` to gated intercepts (`EAW_A2_BODY`): =1 pass-through identity
+foothold (DTWORLD == `ea5f…`/`7f7f…`), =2 redirect `3ac530`→a C re-transcription of DynamicTransform. Leaves
+ALL serial spans untouched binary (honors the hybrid + Findings 1–3), zero transcription of block B/lua.
+The fully self-driven outer-flow transcription (for worker extraction) can follow once each cheap-mass body
+is repoint-validated in-situ.
+
 ---
 
 ## 7. Acceptance gate (contract §5, adapted for the fallback)
