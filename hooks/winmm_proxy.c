@@ -2176,10 +2176,12 @@ static int g_pfire_geom_ss     = -1;   /* -1 unread / 0 off / 1 = fire-body draw
 static DWORD g_tls_ss_active = TLS_OUT_OF_INDEXES;
 static DWORD g_tls_ss_seed   = TLS_OUT_OF_INDEXES;
 static DWORD g_tls_ss_global = TLS_OUT_OF_INDEXES;
+static DWORD g_tls_sq_buf    = TLS_OUT_OF_INDEXES;   /* §8.6: per-thread spatial-query copy-out buffer (heap ptr in slot) */
 static void pfire_tls_init(void) {   /* idempotent; from install_pfire_hooks */
     if (g_tls_ss_active == TLS_OUT_OF_INDEXES) g_tls_ss_active = TlsAlloc();
     if (g_tls_ss_seed   == TLS_OUT_OF_INDEXES) g_tls_ss_seed   = TlsAlloc();
     if (g_tls_ss_global == TLS_OUT_OF_INDEXES) g_tls_ss_global = TlsAlloc();
+    if (g_tls_sq_buf    == TLS_OUT_OF_INDEXES) g_tls_sq_buf    = TlsAlloc();
 }
 static inline int      ss_active(void)        { return (int)(uintptr_t)TlsGetValue(g_tls_ss_active); }
 static inline void     ss_active_set(int v)   { TlsSetValue(g_tls_ss_active, (LPVOID)(uintptr_t)(unsigned)v); }
@@ -2232,10 +2234,12 @@ static int g_pfire_replay_cs_init = 0;
  * idempotent guard lets both paths init it. (Forward tentative decl of g_fog_cs — real one is further down.) */
 static CRITICAL_SECTION g_fog_cs;
 static CRITICAL_SECTION g_pfire_scratch_cs;
-static int g_fog_cs_init = 0, g_pfire_scratch_cs_init = 0;
+static CRITICAL_SECTION g_spatial_query_cs;   /* §8.6: short-lock around { 20e780 query + copy-out } */
+static int g_fog_cs_init = 0, g_pfire_scratch_cs_init = 0, g_spatial_query_cs_init = 0;
 static void pfire_scratch_locks_init(void) {       /* idempotent; from install_pfire_hooks + install_dtscan_hook */
     if (!g_fog_cs_init)          { InitializeCriticalSection(&g_fog_cs);          g_fog_cs_init = 1; }
     if (!g_pfire_scratch_cs_init){ InitializeCriticalSection(&g_pfire_scratch_cs); g_pfire_scratch_cs_init = 1; }
+    if (!g_spatial_query_cs_init){ InitializeCriticalSection(&g_spatial_query_cs); g_spatial_query_cs_init = 1; }
 }
 static uint32_t g_pfire_pool_threads = 0;    /* DEBUG: worker threads spawned (cumulative) */
 static int pfire_pool_on(void) {
@@ -6178,14 +6182,50 @@ static void pfire_model_warm(int64_t model) {
     ModelVf15Fn f = *(ModelVf15Fn *)(*(int64_t *)model + 0x78);    /* 12d2c0's `(**(*model+0x78))(model)` */
     f(model);
 }
-static void pfire_skeleton_prewarm(int64_t p1, int64_t grid) {
+/* §8.6 SPATIAL-QUERY SHORT-LOCK + COPY-OUT — the parallel-fire prerequisite (host mechanism = sim/spatial_query.h
+ * SpatialQueryGuard; this is its engine binding). The query's OUTPUT (FUN_14020e780) is an INTRUSIVE list threaded
+ * through each candidate's +0x18, head at the shared index+8 — two concurrent queries sharing a candidate clobber
+ * its +0x18 → torn traversal. Mitigation: under g_spatial_query_cs run { 20e780 + copy candidate POINTERS into a
+ * per-thread buffer }, then run the EXPENSIVE per-candidate eval from the local copy OUTSIDE the lock (parallel).
+ * The team grid itself is frozen by the tick-start rebuild (2be640/20ed70) ⇒ concurrent geometry reads are safe and
+ * every query returns the same candidate SET regardless of lock order (determinism holds). INERT today (the scan
+ * runs serial/1-shard, lock never contended) — the §8.44 "build the primitive, validate behavior-neutral, defer
+ * the flip" discipline; correctness is for the a2 N-shard parallel fire pass. */
+#define PFIRE_SQ_CAP 1024
+static int g_sq_overflow_warned = 0;
+static int64_t *pfire_sq_buffer(void) {              /* per-thread copy-out buffer (Win32 heap ptr in a TLS slot) */
+    if (g_tls_sq_buf == TLS_OUT_OF_INDEXES) return NULL;
+    int64_t *b = (int64_t *)TlsGetValue(g_tls_sq_buf);
+    if (!b) {
+        b = (int64_t *)HeapAlloc(GetProcessHeap(), 0, sizeof(int64_t) * PFIRE_SQ_CAP);
+        TlsSetValue(g_tls_sq_buf, b);
+    }
+    return b;
+}
+static int pfire_spatial_query_copy(int64_t grid, float *box, int64_t *out, int cap) {
+    int n = 0;
+    EnterCriticalSection(&g_spatial_query_cs);
+    ((R1_20e780Fn)(g_dt_imgbase + 0x20e780))(grid, box);             /* build the intrusive list into index+8/+0x18 */
+    for (int64_t node = *(int64_t *)(grid + 8); node != 0 && n < cap; node = *(int64_t *)(node + 0x18)) {
+        int64_t rec = *(int64_t *)(node + 8);
+        if (rec != 0) out[n++] = rec - 0x28;                         /* copy candidate pointer (stable frozen object) */
+    }
+    LeaveCriticalSection(&g_spatial_query_cs);
+    if (n >= cap && !g_sq_overflow_warned) {                         /* defensive: a firer's box should never hit 1024 */
+        g_sq_overflow_warned = 1;
+        log_write("[eaw-mt] WARN: spatial-query copy hit PFIRE_SQ_CAP — raise PFIRE_SQ_CAP (truncation risk)\n");
+    }
+    return n;
+}
+/* candidate-pose pre-warm over the COPIED buffer (§8.30 Fork-B skeleton prewarm) — settles vfunc_15/3858b0 lazy
+ * pose mutations before the candidate eval so concurrent bone reads are pure; reads only candidate fields (stable),
+ * not the clobbered +0x18 links. */
+static void pfire_skeleton_prewarm_buf(int64_t p1, int64_t *cand, int n) {
     if (!g_dt_imgbase) return;
     pfire_model_warm(((R1_3858b0Fn)(g_dt_imgbase + 0x3858b0))(p1));   /* shooter: warm pose + resolve p1+0x90 */
     R1_2648b0Fn f2648 = (R1_2648b0Fn)(g_dt_imgbase + 0x2648b0);
-    for (int64_t node = *(int64_t *)(grid + 8); node != 0; node = *(int64_t *)(node + 0x18)) {
-        int64_t rec = *(int64_t *)(node + 8);
-        if (rec == 0) continue;
-        int64_t rend = *(int64_t *)((rec - 0x28) + 0x2a0);           /* candidate render_anim_obj */
+    for (int i = 0; i < n; i++) {
+        int64_t rend = *(int64_t *)(cand[i] + 0x2a0);                /* candidate render_anim_obj */
         if (rend) pfire_model_warm(f2648(rend));                     /* candidate: warm its alHModel pose */
     }
 }
@@ -6236,19 +6276,22 @@ static int64_t pfire_opp_scan_reimpl(int64_t p1, int64_t team, float *score) {
     box[3] = fabsf(xhi - xlo) * H;
     box[4] = fabsf(yhi - ylo) * H;
     box[5] = fabsf(zhi - zlo) * H;
-    ((R1_20e780Fn)(g_dt_imgbase + 0x20e780))(grid, box);     /* :50 query → intrusive list */
+    /* §8.6: short-lock + copy-out — run the query and copy the candidate pointers off the intrusive list into a
+     * per-thread buffer under g_spatial_query_cs; the expensive gate/score/reach eval below runs lock-free from the
+     * copy. Replaces the live `20e780 + walk grid+8/+0x18` so concurrent fire-pass workers never tear the list. */
+    int64_t *cand = pfire_sq_buffer();
+    if (cand == 0) return 0;                                  /* TLS not initialized (shouldn't happen post-init) */
+    int ncand = pfire_spatial_query_copy(grid, box, cand, PFIRE_SQ_CAP);
 
-    /* Fork B step 2 (§8.30): serial skeleton pre-warm over shooter + candidates so the (future) parallel
-     * candidate walk's vfunc_15/3858b0 lazy mutations are already settled → concurrent bone reads are pure.
-     * Idempotent ⇒ behavior-preserving in this serial reimpl (validated by DTSCANOBS no-regression). */
-    pfire_skeleton_prewarm(p1, grid);
+    /* Fork B step 2 (§8.30): skeleton pre-warm over shooter + candidates so the (future) parallel candidate walk's
+     * vfunc_15/3858b0 lazy mutations are already settled → concurrent bone reads are pure. Idempotent ⇒
+     * behavior-preserving in this serial reimpl (validated by DTSCANOBS no-regression). Now reads the copied buffer. */
+    pfire_skeleton_prewarm_buf(p1, cand, ncand);
 
     int64_t b15418 = *(int64_t *)(g_dt_imgbase + 0xb15418);
     int64_t winner = 0;
-    for (int64_t node = *(int64_t *)(grid + 8); node != 0; node = *(int64_t *)(node + 0x18)) {  /* :51-99 walk */
-        int64_t rec = *(int64_t *)(node + 8);
-        if (rec == 0) continue;                              /* :59-62 skip null entries */
-        int64_t *c = (int64_t *)(rec - 0x28);                /* :58 candidate */
+    for (int ci = 0; ci < ncand; ci++) {                     /* :51-99 walk — over the copied candidate buffer */
+        int64_t *c = (int64_t *)cand[ci];                    /* :58 candidate */
         /* gate predicate (:63-78) — same read leaves pfire gate1 validated */
         if (c[0x54] == 0) continue;                                                   /* A alive */
         if (*(char *)(c[0x53] + 0x6b) == 0) continue;                                 /* B type flag */
@@ -6417,6 +6460,7 @@ static BOOL install_dtscan_hook(void) {
     if (!exe) return FALSE;
     if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
     pfire_scratch_locks_init();    /* Fork B §8.31 + §8.44: g_fog_cs (35f470 scratch) + g_pfire_scratch_cs, idempotent */
+    pfire_tls_init();              /* §8.6: g_tls_sq_buf (spatial-query copy-out buffer) — scan reimpl runs here w/o EAW_PFIRE */
     BYTE *fn = (BYTE *)exe + DTSCAN_385190_RVA;
     size_t n = sizeof dtscan_385190_prologue;        /* 15 */
     if (memcmp(fn, dtscan_385190_prologue, n) != 0) {
