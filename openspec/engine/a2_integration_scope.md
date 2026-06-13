@@ -544,11 +544,42 @@ core shards correctly across N concurrent workers, result-independent of the par
 sprintf buffer → stack smash → `c0000005` av_read @-1 on `a2_body_on()` return (caught the first launch).
 Fix = `snprintf` into `char[768]`. Re-check every new long log line's buffer.
 
-**Next: a2.4.4** — turn the shadow into an **APPLY** (the worker's matrix becomes the live one at `obj+0x248`
-— needs the binary's numeric prologue skipped so it doesn't re-write, while the Class-3 render tail stays
-serial since the matrix is idempotent own-state). Then shadow-validate `557ba0`/`3c2710` the same way; the
-behavior-loop `vtable[0x30]` (indirect, not E8) is handled when the lifted self-behaviors drive the worker
-directly. The N-shard partition + concurrent-reentrancy are now both proven; apply is the remaining gate.
+### ✅ a2.4.4 RESULT — the SHADOW→APPLY: our matrix is live, binary `3ac530` SKIPPED, world bit-identical (2026-06-13)
+
+The first time a2 cheap-mass actually DRIVES (not shadows). `EAW_A2_BODY=5` (`winmm_proxy.c`): the intercept
+stops calling binary `3ac530` entirely and instead (1) runs `a2_dt_core` and `memcpy`s its 12-float matrix
+straight into `obj+0x248` — the live one — then (2) runs the `3ac530` **render tail itself**
+(`a2_dt_render_tail`), the Class-3 scene/anim/listener block (`vtable[0x28]`→`265d80`→`266340`→`vtable[0x10]`
+→`3982b0`→listener loop, then clear `obj+0x3a1 & 0xfe`), transcribed from `decomp/3ac530.c` + the
+`0x1403ac746` objdump. The seam: the numeric prologue's ONLY object writes are the 12-float matrix at
+`obj+0x248..0x277` (incl. the translation column M[3]/M[7]/M[11]=pos), which `a2_dt_core` already reproduces
+bit-exact (a2.4.1–3); everything the tail reads (`+0x98` euler_z, `+0x78` pos, `+0x2a0/2e0/298/240/335/30/
+3a1`) is untouched by the prologue ⇒ injecting our matrix and running the tail is behavior-identical.
+
+⚠️ABI nailed from the objdump (the decompile under-typed these): `265d80`'s 2nd arg is a **float in xmm1**
+(not int); `266340` = `(renderobj /*rcx*/, &pos=obj+0x78 /*rdx*/, d2r·euler_z /*xmm2*/, DAT_140b0a320 as
+u32 /*r9d*/, mode byte /*[rsp+0x20]*/)`; the listener loop calls `vtable[0x20](o=*node, node, 3982b0(obj))`.
+The CFG `_guard_check_icall` (`01fa90`) is intentionally omitted (validates the indirect target only, no
+behavior). Main-thread first (no worker) to isolate the apply mechanism from threading.
+
+**Validation (`just a2body=5 difftrace=1` ×2, demo battle-1):** **SELF-APPLY** path took **every** call
+(applied = calls = 1,572,865 / 1,310,721; binary `3ac530` never entered); DTWORLD **bit-identical to baseline**
+(`1024=ea5f27913390cce2`, `2048=7f7fdaf6ca0fcbaa`) on **both** runs; **zero crashes**. **⇒ the full self-drive
+of `3ac530` — our C numeric written live + the C-transcribed render tail calling the binary leaves — is
+bit-faithful.** The matrix rebuild is now genuinely OURS (the binary no longer computes it), and the render
+tail is proven faithfully callable from C. Evidence: `eaw-mt.log.a244-apply{A,B}`.
+
+LESSON: an "apply" past a monolithic binary fn doesn't need a fragile mid-function entry — find the seam by
+what the prologue WRITES (here: only `obj+0x248`), inject the proven value, and transcribe the *tail's
+orchestration* (calling binary leaves), reading each leaf's real ABI from the objdump (Ghidra under-types
+float-in-xmm args). DTWORLD-vs-known-baseline is a stronger gate than self-reproduction (it pins to the stock
+world, not just determinism).
+
+**Next: a2.4.5** — move the now-ours numeric OFF the main thread for real speedup. The per-call render tail
+needs `obj+0x248` immediately, so the win needs a **batch precompute** (workers fill all matrices in a Phase-A
+sweep, the walk's tail then only renders) or a one-object **pipeline** (dispatch numeric(i) to a worker while
+main renders i−1). Then shadow-validate/apply `557ba0`/`3c2710` the same way; the behavior-loop `vtable[0x30]`
+(indirect, not E8) is handled when the lifted self-behaviors drive the worker directly.
 
 ---
 

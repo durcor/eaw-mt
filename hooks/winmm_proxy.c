@@ -2995,7 +2995,10 @@ static int a2_body_on(void) {
         const char *e = getenv("EAW_A2_BODY");
         g_a2body_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
         if (g_a2body_level < 0) g_a2body_level = 0;
-        if (g_a2body_level >= 3) {
+        if (g_a2body_level >= 5) {
+            /* a2.4.4: APPLY — no worker pool; the binary 3ac530 is skipped, our core+tail drive on main. */
+            log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=5) — 3ac530 SHADOW→APPLY: binary numeric prologue SKIPPED; a2_dt_core's matrix is WRITTEN to obj+0x248 (the live one) and the Class-3 render tail runs in C (a2_dt_render_tail, binary leaves). Full self-drive of 3ac530 on the main thread; the injected matrix == the prologue's ⇒ DTWORLD must match baseline ea5f.../7f7f... (proves the apply bit-faithful). 0 crashes required.\n");
+        } else if (g_a2body_level >= 3) {
             /* a2.4.3: N from EAW_A2_SHARDS at level>=4; level 3 stays the proven N=1 rung. */
             if (g_a2body_level >= 4) {
                 const char *sh = getenv("EAW_A2_SHARDS");
@@ -3056,6 +3059,49 @@ static void a2_dt_core(float m[12], float ex, float ey, float ez, float px, floa
     a2_dt_rot20(m, g_a2body_d2r * ey);   /* inline by euler_y (+0x94) */
     a2_dt_rot12(m, g_a2body_d2r * ex);   /* cf8d0  by euler_x (+0x90) */
     a2_dt_rot01(m, g_a2body_ang90);      /* 480f0 by const 90° (DAT_1408007ec) */
+}
+
+/* ---- a2.4.4 (EAW_A2_BODY=5): the SHADOW→APPLY — our matrix becomes live, binary numeric prologue SKIPPED ----
+ * a2.4.1-3 proved a2_dt_core bit-exact vs the binary's obj+0x248. a2.4.4 stops calling binary 3ac530: the
+ * intercept (1) runs a2_dt_core and WRITES the 12-float matrix straight into obj+0x248 (the live one), then
+ * (2) runs the 3ac530 RENDER TAIL itself (a2_dt_render_tail) — the Class-3 scene/anim/listener block that
+ * never parallelizes, transcribed from decomp/3ac530.c + the 0x1403ac746 objdump (ABI-exact: 265d80's 2nd
+ * arg is a FLOAT in xmm1; 266340 = (renderobj, &pos, d2r·euler_z in xmm2, DAT_140b0a320 as u32 in r9d, mode
+ * byte on stack); listener loop calls vtable[0x20](o=*node, node, 3982b0(obj))). Since the injected matrix is
+ * bit-identical to the prologue's, the world is UNCHANGED ⇒ DTWORLD must match baseline ea5f.../7f7f...,
+ * proving the full self-drive of 3ac530 (our numeric + this tail) is bit-faithful. Main-thread first (no
+ * worker yet) to isolate the apply mechanism; the worker-pipeline is a later rung. The CFG _guard_check_icall
+ * (140 01fa90) is intentionally omitted — it only validates the indirect target, no behavior. */
+typedef void    (*A2Leaf265d80)(int64_t, float);
+typedef void    (*A2Leaf266340)(int64_t, int64_t, float, uint32_t, int8_t);
+typedef int64_t (*A2Leaf3982b0)(int64_t);
+static A2Leaf265d80 g_a2_f265d80 = NULL;
+static A2Leaf266340 g_a2_f266340 = NULL;
+static A2Leaf3982b0 g_a2_f3982b0 = NULL;
+static uint32_t     g_a2_dat_b0a320 = 0;       /* DAT_140b0a320, read live (32-bit, → r9d in the 266340 call) */
+static int64_t      g_a2body_apply_n = 0;      /* a2.4.4: objects driven by the full self-apply path */
+
+static void a2_dt_render_tail(int64_t obj, int32_t mode) {
+    float *mat = (float *)(obj + 0x248);              /* the matrix we just wrote (rbx in the binary) */
+    int64_t ro = *(int64_t *)(obj + 0x2a0);           /* param_1[0x54] — render/scene object */
+    if (ro != 0) {
+        if (*(int64_t *)(obj + 0x2e0) == 0)            /* param_1[0x5c] */
+            { (*(void (**)(int64_t, float *))(*(int64_t *)ro + 0x28))(ro, mat); ro = *(int64_t *)(obj + 0x2a0); }
+        float lod = *(float *)(*(int64_t *)(obj + 0x298) + 0x658);   /* param_1[0x53]+0x658 (xmm1) */
+        int64_t p240 = *(int64_t *)(obj + 0x240);                    /* param_1[0x48] */
+        if (p240 != 0) lod = *(float *)(p240 + 0x40);
+        g_a2_f265d80(ro, lod);
+        float ez = *(float *)(obj + 0x98);
+        g_a2_f266340(*(int64_t *)(obj + 0x2a0), obj + 0x78, g_a2body_d2r * ez, g_a2_dat_b0a320, (int8_t)mode);
+        if (*(int8_t *)(obj + 0x335) != (int8_t)0xff)
+            (void)(*(int64_t (**)(int64_t, int32_t))(*(int64_t *)obj + 0x10))(obj, 3);   /* vtable[0x10](obj,3) */
+        int64_t uVar9 = g_a2_f3982b0(obj);
+        for (int64_t node = *(int64_t *)(obj + 0x30); node != 0; node = *(int64_t *)(node + 0x10)) {
+            int64_t o = *(int64_t *)node;
+            (*(void (**)(int64_t, int64_t, int64_t))(*(int64_t *)o + 0x20))(o, node, uVar9);
+        }
+    }
+    *(uint8_t *)(obj + 0x3a1) &= 0xfe;                 /* clear bit 0 (always, even with no render obj) */
 }
 
 /* ---- a2.4.2/a2.4.3 (EAW_A2_BODY>=3): OFFLOAD the proven DT shadow onto an N-SHARD WORKER POOL ----
@@ -3151,10 +3197,26 @@ static void a2body_dt_offload(uint32_t object_id, const float in[6], const float
 }
 
 /* call-site replacement for FUN_1403ac530 inside 3a6b80 (the Pass-C DynamicTransform). level 1: pass-through
- * (a2.4.0); level 2: inline shadow on the main thread (a2.4.1); level>=3: OFFLOAD the shadow to a worker
- * (a2.4.2). Binary always drives ⇒ behavior-neutral; the worker only sees recorded copies ⇒ no sim race. */
+ * (a2.4.0); level 2: inline shadow on the main thread (a2.4.1); level 3/4: OFFLOAD the shadow to a worker /
+ * N-shard pool (a2.4.2/3). For levels 1-4 the binary always drives ⇒ behavior-neutral. level>=5 (a2.4.4):
+ * APPLY — skip the binary entirely, write our proven matrix to obj+0x248, run the render tail ourselves. */
 static void a2_body_3ac530_intercept(int64_t obj, int32_t mode) {
     LONG c = InterlockedIncrement(&g_a2body_3ac530_calls);
+    if (g_a2body_level >= 5 && obj) {                 /* a2.4.4 APPLY: our numeric is live, binary prologue gone */
+        float sm[12];
+        a2_dt_core(sm, *(float *)(obj + 0x90), *(float *)(obj + 0x94), *(float *)(obj + 0x98),
+                       *(float *)(obj + 0x78), *(float *)(obj + 0x7c), *(float *)(obj + 0x80));
+        memcpy((void *)(obj + 0x248), sm, 12 * sizeof(float));   /* the worker/core matrix BECOMES the live one */
+        a2_dt_render_tail(obj, mode);                            /* Class-3 tail consumes it (serial) */
+        g_a2body_apply_n++;
+        if ((c & 0x3ffff) == 1) {
+            char m[224];
+            sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 SELF-APPLY calls=%ld | C numeric WRITTEN to obj+0x248 + C render tail (binary 3ac530 SKIPPED) applied=%lld | DTWORLD must match baseline\n",
+                    (long)c, (long long)g_a2body_apply_n);
+            log_write(m);
+        }
+        return;
+    }
     float in[6]; int shadow = (g_a2body_level >= 2 && obj);
     if (shadow) {
         in[0] = *(float *)(obj + 0x90); in[1] = *(float *)(obj + 0x94); in[2] = *(float *)(obj + 0x98);
@@ -3213,6 +3275,11 @@ static BOOL install_a2body_hooks(void) {
         g_a2body_ang90    = g_a2body_d2r * *(float *)((uintptr_t)exe + 0x8007ec);  /* the final 90° angle */
         g_a2body_smallcos = *(float *)((uintptr_t)exe + 0x7ffaf8);                 /* small-angle cos default */
     }
+    /* a2.4.4 render-tail leaves (bound from decomp/3ac530.c + the 0x1403ac746 objdump). */
+    g_a2_f265d80   = (A2Leaf265d80)((uintptr_t)exe + 0x265d80);
+    g_a2_f266340   = (A2Leaf266340)((uintptr_t)exe + 0x266340);
+    g_a2_f3982b0   = (A2Leaf3982b0)((uintptr_t)exe + 0x3982b0);
+    g_a2_dat_b0a320 = *(uint32_t *)((uintptr_t)exe + 0xb0a320);
     BYTE *fn3a6b80 = (BYTE *)exe + TA6B80_RVA;
     BYTE *fn3ac530 = (BYTE *)exe + 0x3ac530ULL;
     g_a2body_3ac530_real = (A2Body3ac530Fn)fn3ac530;
@@ -3223,7 +3290,7 @@ static BOOL install_a2body_hooks(void) {
     char m[160];
     sprintf(m, "[eaw-mt] A2BODY: 3a6b80 cheap-mass repoint — 3ac530(DynamicTransform) site(s)=%d\n", n);
     log_write(m);
-    if (g_a2body_level >= 3) a2body_dt_worker_init();   /* a2.4.2: start the DT shadow worker thread */
+    if (g_a2body_level == 3 || g_a2body_level == 4) a2body_dt_worker_init();   /* a2.4.2/3: shadow pool (not a2.4.4 apply) */
     return (n > 0);
 }
 
