@@ -2993,7 +2993,9 @@ static int a2_body_on(void) {
         const char *e = getenv("EAW_A2_BODY");
         g_a2body_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
         if (g_a2body_level < 0) g_a2body_level = 0;
-        if (g_a2body_level >= 2)
+        if (g_a2body_level >= 3)
+            log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=3) — 3ac530 DynamicTransform shadow OFFLOADED to a WORKER thread (N=1, overlapped double-buffer). Tests a2_dt_core (incl. binary sin/cos) reentrancy off the main thread; binary still drives ⇒ behavior-neutral, DTWORLD must match baseline ea5f.../7f7f..., expect bad=0.\n");
+        else if (g_a2body_level >= 2)
             log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=2) — 3ac530 DynamicTransform SHADOW ORACLE: the C numeric-core re-transcription runs alongside the binary and its matrix is compared bit-exact (binary still drives ⇒ behavior-neutral, DTWORLD must match baseline ea5f.../7f7f...). Expect bad=0.\n");
         else if (g_a2body_level >= 1)
             log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=1) — 3ac530 call-site inside 3a6b80 repointed to a PASS-THROUGH intercept (a2.4.0 identity foothold). DTWORLD must match the EAW_A2_BODY=0 baseline (ea5f.../7f7f...).\n");
@@ -3039,38 +3041,113 @@ static void a2_dt_core(float m[12], float ex, float ey, float ez, float px, floa
     a2_dt_rot01(m, g_a2body_ang90);      /* 480f0 by const 90° (DAT_1408007ec) */
 }
 
-/* call-site replacement for FUN_1403ac530 inside 3a6b80 (the Pass-C DynamicTransform). a2.4.0 (level 1):
- * pure pass-through. a2.4.1 (level>=2): SHADOW ORACLE — capture the inputs, let the binary drive (numeric +
- * render tail), then run the C core into a scratch matrix and compare against the binary's written matrix at
- * obj+0x248 bit-exact. Behavior-NEUTRAL (binary still drives ⇒ DTWORLD unchanged); proves the C core matches
- * the binary in-situ on real game data — the prerequisite for putting it on a worker (a2.4.2). */
+/* ---- a2.4.2 (EAW_A2_BODY=3): OFFLOAD the proven DT shadow onto a WORKER thread (N=1, "1-shard first") ----
+ * The threading foothold: can a2_dt_core (incl. its binary sin/cos leaves 776650/776150) run on a worker
+ * CONCURRENTLY with the main-thread walk, correctly? The intercept (after the binary drives) snapshots the
+ * inputs + the binary's output matrix into a per-item record and appends to a double-buffer; a single
+ * persistent worker recomputes the C core for each item and compares it bit-exact to the snapshot. The
+ * worker processes batch A while the main thread fills batch B (genuine overlap) → tests reentrancy + the
+ * hand-off. The worker NEVER touches a live game object (only the recorded {inputs, binmat} copy) ⇒ no race
+ * on sim state; binary still drives ⇒ behavior-neutral (DTWORLD unchanged). Default OFF, standalone. */
+typedef struct { float in[6]; float binmat[12]; } A2DtItem;
+static A2DtItem *g_a2body_buf[2] = { NULL, NULL };
+static uint32_t  g_a2body_cap[2] = { 0, 0 }, g_a2body_cnt[2] = { 0, 0 };
+static int       g_a2body_fill = 0;             /* buffer the intercept appends to (main thread only) */
+static volatile LONG g_a2body_proc = -1;        /* buffer index the worker should process; -1 idle */
+static int       g_a2body_inflight = 0;         /* a batch has been handed to the worker (main thread only) */
+static HANDLE    g_a2body_wthread = NULL, g_a2body_ev_work = NULL, g_a2body_ev_done = NULL;
+static volatile LONG g_a2body_stop = 0;
+static uint32_t  g_a2body_dispatches = 0;
+#define A2BODY_FLUSH_K 2048u
+
+static void a2body_process_buf(int b) {         /* worker thread only */
+    A2DtItem *it = g_a2body_buf[b]; uint32_t n = g_a2body_cnt[b];
+    for (uint32_t i = 0; i < n; ++i) {
+        float sm[12];
+        a2_dt_core(sm, it[i].in[0], it[i].in[1], it[i].in[2], it[i].in[3], it[i].in[4], it[i].in[5]);
+        int bad = 0;
+        for (int k = 0; k < 12; ++k) if (memcmp(&sm[k], &it[i].binmat[k], 4) != 0) { bad = 1; break; }
+        if (bad) g_a2body_dt_bad++; else g_a2body_dt_ok++;   /* worker is the sole writer at level 3 */
+    }
+    g_a2body_cnt[b] = 0;
+}
+static DWORD WINAPI a2body_worker(LPVOID p) {
+    (void)p;
+    for (;;) {
+        WaitForSingleObject(g_a2body_ev_work, INFINITE);
+        if (InterlockedCompareExchange(&g_a2body_stop, 0, 0)) break;
+        LONG b = InterlockedExchange(&g_a2body_proc, -1);
+        if (b >= 0) a2body_process_buf((int)b);
+        SetEvent(g_a2body_ev_done);
+    }
+    return 0;
+}
+static void a2body_dt_worker_init(void) {
+    if (g_a2body_wthread) return;
+    g_a2body_ev_work = CreateEventA(NULL, FALSE, FALSE, NULL);   /* auto-reset */
+    g_a2body_ev_done = CreateEventA(NULL, FALSE, FALSE, NULL);
+    g_a2body_wthread = CreateThread(NULL, 0, a2body_worker, NULL, 0, NULL);
+    log_write(g_a2body_wthread ? "[eaw-mt] A2BODY: DT shadow worker thread started (N=1 overlapped offload)\n"
+                               : "[eaw-mt] A2BODY: WARN — DT worker thread creation FAILED\n");
+}
+/* main thread only: append an item, flush to the worker at the threshold (double-buffered overlap). */
+static void a2body_dt_offload(const float in[6], const float *binmat) {
+    int f = g_a2body_fill;
+    if (g_a2body_cnt[f] >= g_a2body_cap[f]) {
+        uint32_t nc = g_a2body_cap[f] ? g_a2body_cap[f] * 2 : A2BODY_FLUSH_K;
+        A2DtItem *nb = (A2DtItem *)realloc(g_a2body_buf[f], (size_t)nc * sizeof(A2DtItem));
+        if (!nb) return;                        /* OOM: drop the item (shadow only ⇒ harmless) */
+        g_a2body_buf[f] = nb; g_a2body_cap[f] = nc;
+    }
+    A2DtItem *it = &g_a2body_buf[f][g_a2body_cnt[f]++];
+    memcpy(it->in, in, sizeof it->in);
+    memcpy(it->binmat, binmat, 12 * sizeof(float));
+    if (g_a2body_cnt[f] >= A2BODY_FLUSH_K && g_a2body_wthread) {
+        if (g_a2body_inflight) WaitForSingleObject(g_a2body_ev_done, INFINITE);  /* join prior ⇒ other buf free (cnt=0) */
+        g_a2body_fill ^= 1;                     /* main switches to the now-free buffer; worker takes buffer f */
+        InterlockedExchange(&g_a2body_proc, f);
+        g_a2body_inflight = 1; g_a2body_dispatches++;
+        SetEvent(g_a2body_ev_work);
+    }
+}
+
+/* call-site replacement for FUN_1403ac530 inside 3a6b80 (the Pass-C DynamicTransform). level 1: pass-through
+ * (a2.4.0); level 2: inline shadow on the main thread (a2.4.1); level>=3: OFFLOAD the shadow to a worker
+ * (a2.4.2). Binary always drives ⇒ behavior-neutral; the worker only sees recorded copies ⇒ no sim race. */
 static void a2_body_3ac530_intercept(int64_t obj, int32_t mode) {
     LONG c = InterlockedIncrement(&g_a2body_3ac530_calls);
-    float ex=0,ey=0,ez=0,px=0,py=0,pz=0; int shadow = (g_a2body_level >= 2 && obj);
+    float in[6]; int shadow = (g_a2body_level >= 2 && obj);
     if (shadow) {
-        ex = *(float *)(obj + 0x90); ey = *(float *)(obj + 0x94); ez = *(float *)(obj + 0x98);
-        px = *(float *)(obj + 0x78); py = *(float *)(obj + 0x7c); pz = *(float *)(obj + 0x80);
+        in[0] = *(float *)(obj + 0x90); in[1] = *(float *)(obj + 0x94); in[2] = *(float *)(obj + 0x98);
+        in[3] = *(float *)(obj + 0x78); in[4] = *(float *)(obj + 0x7c); in[5] = *(float *)(obj + 0x80);
     }
     if (g_a2body_3ac530_real) g_a2body_3ac530_real(obj, mode);   /* binary drives (numeric + Class-3 tail) */
     if (shadow) {
-        float sm[12]; a2_dt_core(sm, ex, ey, ez, px, py, pz);
         const float *bm = (const float *)(obj + 0x248);   /* binary's rebuilt 3x4 matrix */
-        int bad = 0;
-        for (int i = 0; i < 12; ++i) if (memcmp(&sm[i], &bm[i], 4) != 0) { bad = 1; break; }
-        if (bad) {
-            g_a2body_dt_bad++;
-            if (!g_a2body_dt_firstbad_logged) {
-                g_a2body_dt_firstbad_logged = 1;
-                char m[320];
-                sprintf(m, "[eaw-mt] A2BODY-DT FIRST MISMATCH @call=%ld eul=(%.9g,%.9g,%.9g) | C m3/7/11=%.9g/%.9g/%.9g bin=%.9g/%.9g/%.9g | C m0=%.9g bin=%.9g\n",
-                        (long)c, ex, ey, ez, sm[3], sm[7], sm[11], bm[3], bm[7], bm[11], sm[0], bm[0]);
-                log_write(m);
-            }
-        } else g_a2body_dt_ok++;
+        if (g_a2body_level >= 3) {
+            a2body_dt_offload(in, bm);                    /* worker recomputes + compares off-thread */
+        } else {
+            float sm[12]; a2_dt_core(sm, in[0], in[1], in[2], in[3], in[4], in[5]);
+            int bad = 0;
+            for (int i = 0; i < 12; ++i) if (memcmp(&sm[i], &bm[i], 4) != 0) { bad = 1; break; }
+            if (bad) {
+                g_a2body_dt_bad++;
+                if (!g_a2body_dt_firstbad_logged) {
+                    g_a2body_dt_firstbad_logged = 1;
+                    char m[320];
+                    sprintf(m, "[eaw-mt] A2BODY-DT FIRST MISMATCH @call=%ld eul=(%.9g,%.9g,%.9g) | C m3/7/11=%.9g/%.9g/%.9g bin=%.9g/%.9g/%.9g | C m0=%.9g bin=%.9g\n",
+                            (long)c, in[0], in[1], in[2], sm[3], sm[7], sm[11], bm[3], bm[7], bm[11], sm[0], bm[0]);
+                    log_write(m);
+                }
+            } else g_a2body_dt_ok++;
+        }
     }
     if ((c & 0x3ffff) == 1) {
-        char m[200];
-        if (g_a2body_level >= 2)
+        char m[224];
+        if (g_a2body_level >= 3)
+            sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 WORKER-OFFLOAD calls=%ld | C-core(worker) vs binary ok=%lld bad=%lld | dispatches=%u (overlapped, behavior-neutral)\n",
+                    (long)c, (long long)g_a2body_dt_ok, (long long)g_a2body_dt_bad, g_a2body_dispatches);
+        else if (g_a2body_level >= 2)
             sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 SHADOW calls=%ld | C-core vs binary ok=%lld bad=%lld (behavior-neutral)\n",
                     (long)c, (long long)g_a2body_dt_ok, (long long)g_a2body_dt_bad);
         else
@@ -3104,6 +3181,7 @@ static BOOL install_a2body_hooks(void) {
     char m[160];
     sprintf(m, "[eaw-mt] A2BODY: 3a6b80 cheap-mass repoint — 3ac530(DynamicTransform) site(s)=%d\n", n);
     log_write(m);
+    if (g_a2body_level >= 3) a2body_dt_worker_init();   /* a2.4.2: start the DT shadow worker thread */
     return (n > 0);
 }
 

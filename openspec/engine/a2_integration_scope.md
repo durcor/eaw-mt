@@ -492,12 +492,32 @@ MISMATCH ever fired); DTWORLD **bit-identical to baseline** (`ea5f…`/`7f7f…`
 drives); zero crashes. **⇒ the lifted DynamicTransform numeric core is proven correct in-situ on real game
 data** — the prerequisite for running it on a worker. Evidence: `eaw-mt.log.a241-body2`.
 
-**Next: a2.4.2** — extract the proven C core onto a worker. Options to confirm first: the matrix rebuild is
-idempotent (resets to identity from euler/pos each call, no read-after-write on its own output), so a worker
-can pre-compute it while the main thread's binary `3ac530` re-does it harmlessly — but real speedup needs the
-binary's numeric part skipped (patch/transcribe its prologue). Also: shadow-validate `557ba0` & `3c2710` the
-same way (repoint already generalizes), and handle the behavior-loop `vtable[0x30]` (indirect, not E8) at
-the worker step. Then the `ShardScheduler` engine binding (`sim/shard_scheduler.h`) partitions the work-list.
+### ✅ a2.4.2 RESULT — the proven DT core runs on a WORKER thread concurrently (2026-06-13)
+
+The threading foothold — the first time a2's cheap-mass actually runs off the main thread. `EAW_A2_BODY=3`
+(`winmm_proxy.c`, `a2body_worker` + `a2body_dt_offload`): the `3ac530` intercept snapshots `{inputs,
+binary-matrix}` per call and appends to a **double-buffer**; a single persistent worker (`CreateThread`,
+auto-reset events) recomputes `a2_dt_core` for each item and compares bit-exact — processing batch A while
+the main thread fills batch B (genuine **overlap**, threshold `K=2048`). The worker only ever reads recorded
+copies (no live game object) ⇒ no race on sim state; the binary still drives ⇒ behavior-neutral. N=1
+("1-shard first", per §7 gate).
+
+**The key unknown this resolves:** can `a2_dt_core` — including its binary `sin`/`cos` leaves (`776650`/
+`776150`) — run on a worker **concurrently** with the main walk (which also calls those leaves) without a
+race? **Yes.**
+
+**Validation (`just a2body=3 difftrace=1` ×2, demo battle-1):** worker thread started; **WORKER-OFFLOAD
+ok=1,308,672 bad=0, dispatches=640** (640 overlapped batch hand-offs); no `FIRST MISMATCH`; DTWORLD
+**bit-identical to baseline** (`ea5f…`/`7f7f…`) — behavior-neutral; **zero crashes**, reproduced across both
+runs. **⇒ the binary trig leaves are reentrant and the proven cheap-mass core runs correctly off-thread,
+concurrently** — the core threading premise of a2.4 is validated. Evidence:
+`eaw-mt.log.a242-body3run{A,B}`.
+
+**Next: a2.4.3** — go N-shard: partition the work-items by `shard_of(obj+0x50)` across N workers (bind
+`sim/shard_scheduler.h`), gate N≡1 determinism. Then turn the shadow into an **apply** (the worker's matrix
+becomes the live one — needs the binary's numeric prologue skipped; the render tail stays serial since the
+matrix is idempotent own-state). Also shadow-validate `557ba0`/`3c2710` the same way; the behavior-loop
+`vtable[0x30]` (indirect, not E8) is handled when the lifted self-behaviors drive the worker directly.
 
 ---
 
