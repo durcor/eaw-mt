@@ -2987,15 +2987,32 @@ static A2BodyScFn g_a2body_sin = NULL, g_a2body_cos = NULL;
 static float     g_a2body_d2r = 0.0f, g_a2body_ang90 = 0.0f, g_a2body_smallcos = 1.0f;
 static int64_t   g_a2body_dt_ok = 0, g_a2body_dt_bad = 0;   /* shadow: per-call matrix ok / mismatch */
 static int       g_a2body_dt_firstbad_logged = 0;
+#define A2BODY_MAX_SHARDS 8
+static int       g_a2body_nshards = 1;   /* a2.4.3: N — 1 at level 3, EAW_A2_SHARDS (clamp [1,8]) at level>=4 */
 
 static int a2_body_on(void) {
     if (g_a2body_level < 0) {
         const char *e = getenv("EAW_A2_BODY");
         g_a2body_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
         if (g_a2body_level < 0) g_a2body_level = 0;
-        if (g_a2body_level >= 3)
-            log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=3) — 3ac530 DynamicTransform shadow OFFLOADED to a WORKER thread (N=1, overlapped double-buffer). Tests a2_dt_core (incl. binary sin/cos) reentrancy off the main thread; binary still drives ⇒ behavior-neutral, DTWORLD must match baseline ea5f.../7f7f..., expect bad=0.\n");
-        else if (g_a2body_level >= 2)
+        if (g_a2body_level >= 3) {
+            /* a2.4.3: N from EAW_A2_SHARDS at level>=4; level 3 stays the proven N=1 rung. */
+            if (g_a2body_level >= 4) {
+                const char *sh = getenv("EAW_A2_SHARDS");
+                int n = (sh && sh[0]) ? atoi(sh) : 4;
+                if (n < 1) n = 1; if (n > A2BODY_MAX_SHARDS) n = A2BODY_MAX_SHARDS;
+                g_a2body_nshards = n;
+            } else {
+                g_a2body_nshards = 1;
+            }
+            char m[768];
+            if (g_a2body_level >= 4)
+                snprintf(m, sizeof m, "[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=4) — 3ac530 DynamicTransform shadow on an N=%d-SHARD WORKER POOL (shard=(obj+0x50)%%N, sim/shard_scheduler.h contract). Each shard recomputes a2_dt_core + compares bit-exact on recorded copies; %d workers + main all call binary sin/cos concurrently. Binary still drives ⇒ behavior-neutral (DTWORLD must match baseline ea5f.../7f7f...). Gate: bad=0 for ANY N (per-item compare is a pure fn of recorded inputs ⇒ shard-independent), ok≈calls.\n",
+                         g_a2body_nshards, g_a2body_nshards);
+            else
+                snprintf(m, sizeof m, "[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=3) — 3ac530 DynamicTransform shadow OFFLOADED to a WORKER thread (N=1, overlapped double-buffer). Tests a2_dt_core (incl. binary sin/cos) reentrancy off the main thread; binary still drives ⇒ behavior-neutral, DTWORLD must match baseline ea5f.../7f7f..., expect bad=0.\n");
+            log_write(m);
+        } else if (g_a2body_level >= 2)
             log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=2) — 3ac530 DynamicTransform SHADOW ORACLE: the C numeric-core re-transcription runs alongside the binary and its matrix is compared bit-exact (binary still drives ⇒ behavior-neutral, DTWORLD must match baseline ea5f.../7f7f...). Expect bad=0.\n");
         else if (g_a2body_level >= 1)
             log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=1) — 3ac530 call-site inside 3a6b80 repointed to a PASS-THROUGH intercept (a2.4.0 identity foothold). DTWORLD must match the EAW_A2_BODY=0 baseline (ea5f.../7f7f...).\n");
@@ -3041,73 +3058,95 @@ static void a2_dt_core(float m[12], float ex, float ey, float ez, float px, floa
     a2_dt_rot01(m, g_a2body_ang90);      /* 480f0 by const 90° (DAT_1408007ec) */
 }
 
-/* ---- a2.4.2 (EAW_A2_BODY=3): OFFLOAD the proven DT shadow onto a WORKER thread (N=1, "1-shard first") ----
- * The threading foothold: can a2_dt_core (incl. its binary sin/cos leaves 776650/776150) run on a worker
- * CONCURRENTLY with the main-thread walk, correctly? The intercept (after the binary drives) snapshots the
- * inputs + the binary's output matrix into a per-item record and appends to a double-buffer; a single
- * persistent worker recomputes the C core for each item and compares it bit-exact to the snapshot. The
- * worker processes batch A while the main thread fills batch B (genuine overlap) → tests reentrancy + the
- * hand-off. The worker NEVER touches a live game object (only the recorded {inputs, binmat} copy) ⇒ no race
- * on sim state; binary still drives ⇒ behavior-neutral (DTWORLD unchanged). Default OFF, standalone. */
+/* ---- a2.4.2/a2.4.3 (EAW_A2_BODY>=3): OFFLOAD the proven DT shadow onto an N-SHARD WORKER POOL ----
+ * a2.4.2 (EAW_A2_BODY=3, N=1, "1-shard first"): the threading foothold — can a2_dt_core (incl. its binary
+ * sin/cos leaves 776650/776150) run on a worker CONCURRENTLY with the main-thread walk, correctly? The
+ * intercept (after the binary drives) snapshots {inputs, binary-matrix} per call and appends to a double-
+ * buffer; a persistent worker recomputes the C core + compares bit-exact, processing batch A while the main
+ * fills batch B (genuine overlap). The worker NEVER touches a live game object (only the recorded copy) ⇒ no
+ * race on sim state; binary still drives ⇒ behavior-neutral (DTWORLD unchanged).
+ *
+ * a2.4.3 (EAW_A2_BODY=4, N=EAW_A2_SHARDS): N-shard the pool. Each work-item routes to shard =
+ * shard_of(obj+0x50) = object_id %% N — the sim/shard_scheduler.h partition contract transcribed into the C
+ * hook (sim/ is not linked; the contract: a STABLE pure fn of the object's stable id, whole object → exactly
+ * one shard). Each shard owns its own double-buffer + worker + ok/bad counters (sole writer per shard ⇒ no
+ * per-shard atomics), so N workers + the main thread all call the binary trig leaves concurrently. The per-
+ * item compare is a pure fn of the recorded inputs, so its result is INDEPENDENT of which shard ran it ⇒
+ * bad=0 for ANY N is the determinism gate (and N=1 ≡ a2.4.2); ok≈calls (minus the per-shard sub-K tails).
+ * Default OFF, standalone. */
 typedef struct { float in[6]; float binmat[12]; } A2DtItem;
-static A2DtItem *g_a2body_buf[2] = { NULL, NULL };
-static uint32_t  g_a2body_cap[2] = { 0, 0 }, g_a2body_cnt[2] = { 0, 0 };
-static int       g_a2body_fill = 0;             /* buffer the intercept appends to (main thread only) */
-static volatile LONG g_a2body_proc = -1;        /* buffer index the worker should process; -1 idle */
-static int       g_a2body_inflight = 0;         /* a batch has been handed to the worker (main thread only) */
-static HANDLE    g_a2body_wthread = NULL, g_a2body_ev_work = NULL, g_a2body_ev_done = NULL;
-static volatile LONG g_a2body_stop = 0;
-static uint32_t  g_a2body_dispatches = 0;
 #define A2BODY_FLUSH_K 2048u
+typedef struct {
+    A2DtItem *buf[2];                  /* double-buffer (main fills one, worker processes the other) */
+    uint32_t  cap[2], cnt[2];
+    int       fill;                    /* buffer the intercept appends to (main thread only) */
+    volatile LONG proc;                /* buffer index the worker should process; -1 idle */
+    int       inflight;                /* a batch is outstanding on the worker (main thread only) */
+    HANDLE    thread, ev_work, ev_done;
+    int64_t   ok, bad;                 /* per-shard tallies; sole writer = this shard's worker */
+    uint32_t  dispatches;
+} A2Shard;
+static A2Shard g_a2shard[A2BODY_MAX_SHARDS];
+static volatile LONG g_a2body_stop = 0;
 
-static void a2body_process_buf(int b) {         /* worker thread only */
-    A2DtItem *it = g_a2body_buf[b]; uint32_t n = g_a2body_cnt[b];
+static void a2body_process_buf(A2Shard *s, int b) {   /* worker thread only (this shard's worker) */
+    A2DtItem *it = s->buf[b]; uint32_t n = s->cnt[b];
     for (uint32_t i = 0; i < n; ++i) {
         float sm[12];
         a2_dt_core(sm, it[i].in[0], it[i].in[1], it[i].in[2], it[i].in[3], it[i].in[4], it[i].in[5]);
         int bad = 0;
         for (int k = 0; k < 12; ++k) if (memcmp(&sm[k], &it[i].binmat[k], 4) != 0) { bad = 1; break; }
-        if (bad) g_a2body_dt_bad++; else g_a2body_dt_ok++;   /* worker is the sole writer at level 3 */
+        if (bad) s->bad++; else s->ok++;
     }
-    g_a2body_cnt[b] = 0;
+    s->cnt[b] = 0;
 }
 static DWORD WINAPI a2body_worker(LPVOID p) {
-    (void)p;
+    A2Shard *s = (A2Shard *)p;
     for (;;) {
-        WaitForSingleObject(g_a2body_ev_work, INFINITE);
+        WaitForSingleObject(s->ev_work, INFINITE);
         if (InterlockedCompareExchange(&g_a2body_stop, 0, 0)) break;
-        LONG b = InterlockedExchange(&g_a2body_proc, -1);
-        if (b >= 0) a2body_process_buf((int)b);
-        SetEvent(g_a2body_ev_done);
+        LONG b = InterlockedExchange(&s->proc, -1);
+        if (b >= 0) a2body_process_buf(s, (int)b);
+        SetEvent(s->ev_done);
     }
     return 0;
 }
 static void a2body_dt_worker_init(void) {
-    if (g_a2body_wthread) return;
-    g_a2body_ev_work = CreateEventA(NULL, FALSE, FALSE, NULL);   /* auto-reset */
-    g_a2body_ev_done = CreateEventA(NULL, FALSE, FALSE, NULL);
-    g_a2body_wthread = CreateThread(NULL, 0, a2body_worker, NULL, 0, NULL);
-    log_write(g_a2body_wthread ? "[eaw-mt] A2BODY: DT shadow worker thread started (N=1 overlapped offload)\n"
-                               : "[eaw-mt] A2BODY: WARN — DT worker thread creation FAILED\n");
-}
-/* main thread only: append an item, flush to the worker at the threshold (double-buffered overlap). */
-static void a2body_dt_offload(const float in[6], const float *binmat) {
-    int f = g_a2body_fill;
-    if (g_a2body_cnt[f] >= g_a2body_cap[f]) {
-        uint32_t nc = g_a2body_cap[f] ? g_a2body_cap[f] * 2 : A2BODY_FLUSH_K;
-        A2DtItem *nb = (A2DtItem *)realloc(g_a2body_buf[f], (size_t)nc * sizeof(A2DtItem));
-        if (!nb) return;                        /* OOM: drop the item (shadow only ⇒ harmless) */
-        g_a2body_buf[f] = nb; g_a2body_cap[f] = nc;
+    if (g_a2shard[0].thread) return;
+    int started = 0;
+    for (int i = 0; i < g_a2body_nshards; ++i) {
+        A2Shard *s = &g_a2shard[i];
+        s->proc    = -1;
+        s->ev_work = CreateEventA(NULL, FALSE, FALSE, NULL);   /* auto-reset */
+        s->ev_done = CreateEventA(NULL, FALSE, FALSE, NULL);
+        s->thread  = CreateThread(NULL, 0, a2body_worker, s, 0, NULL);
+        if (s->thread) started++;
     }
-    A2DtItem *it = &g_a2body_buf[f][g_a2body_cnt[f]++];
+    char m[176];
+    sprintf(m, "[eaw-mt] A2BODY: DT shadow worker POOL started — N=%d shard(s) of %d requested, shard=(obj+0x50)%%N, overlapped double-buffer\n",
+            started, g_a2body_nshards);
+    log_write(m);
+}
+/* main thread only: route an item to its shard (by object_id), append, flush at the threshold (overlap). */
+static void a2body_dt_offload(uint32_t object_id, const float in[6], const float *binmat) {
+    int sidx = (g_a2body_nshards > 1) ? (int)(object_id % (uint32_t)g_a2body_nshards) : 0;
+    A2Shard *s = &g_a2shard[sidx];
+    int f = s->fill;
+    if (s->cnt[f] >= s->cap[f]) {
+        uint32_t nc = s->cap[f] ? s->cap[f] * 2 : A2BODY_FLUSH_K;
+        A2DtItem *nb = (A2DtItem *)realloc(s->buf[f], (size_t)nc * sizeof(A2DtItem));
+        if (!nb) return;                        /* OOM: drop the item (shadow only ⇒ harmless) */
+        s->buf[f] = nb; s->cap[f] = nc;
+    }
+    A2DtItem *it = &s->buf[f][s->cnt[f]++];
     memcpy(it->in, in, sizeof it->in);
     memcpy(it->binmat, binmat, 12 * sizeof(float));
-    if (g_a2body_cnt[f] >= A2BODY_FLUSH_K && g_a2body_wthread) {
-        if (g_a2body_inflight) WaitForSingleObject(g_a2body_ev_done, INFINITE);  /* join prior ⇒ other buf free (cnt=0) */
-        g_a2body_fill ^= 1;                     /* main switches to the now-free buffer; worker takes buffer f */
-        InterlockedExchange(&g_a2body_proc, f);
-        g_a2body_inflight = 1; g_a2body_dispatches++;
-        SetEvent(g_a2body_ev_work);
+    if (s->cnt[f] >= A2BODY_FLUSH_K && s->thread) {
+        if (s->inflight) WaitForSingleObject(s->ev_done, INFINITE);  /* join prior ⇒ other buf free (cnt=0) */
+        s->fill ^= 1;                           /* main switches to the now-free buffer; worker takes buffer f */
+        InterlockedExchange(&s->proc, f);
+        s->inflight = 1; s->dispatches++;
+        SetEvent(s->ev_work);
     }
 }
 
@@ -3125,7 +3164,8 @@ static void a2_body_3ac530_intercept(int64_t obj, int32_t mode) {
     if (shadow) {
         const float *bm = (const float *)(obj + 0x248);   /* binary's rebuilt 3x4 matrix */
         if (g_a2body_level >= 3) {
-            a2body_dt_offload(in, bm);                    /* worker recomputes + compares off-thread */
+            uint32_t oid = (uint32_t)*(int32_t *)(obj + 0x50);   /* stable id → shard_of (a2.4.3) */
+            a2body_dt_offload(oid, in, bm);               /* worker pool recomputes + compares off-thread */
         } else {
             float sm[12]; a2_dt_core(sm, in[0], in[1], in[2], in[3], in[4], in[5]);
             int bad = 0;
@@ -3144,10 +3184,12 @@ static void a2_body_3ac530_intercept(int64_t obj, int32_t mode) {
     }
     if ((c & 0x3ffff) == 1) {
         char m[224];
-        if (g_a2body_level >= 3)
-            sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 WORKER-OFFLOAD calls=%ld | C-core(worker) vs binary ok=%lld bad=%lld | dispatches=%u (overlapped, behavior-neutral)\n",
-                    (long)c, (long long)g_a2body_dt_ok, (long long)g_a2body_dt_bad, g_a2body_dispatches);
-        else if (g_a2body_level >= 2)
+        if (g_a2body_level >= 3) {
+            int64_t ok = 0, bad = 0; uint32_t disp = 0;        /* sum the per-shard tallies (benign read race vs workers — progress log only) */
+            for (int i = 0; i < g_a2body_nshards; ++i) { ok += g_a2shard[i].ok; bad += g_a2shard[i].bad; disp += g_a2shard[i].dispatches; }
+            sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 N=%d-SHARD WORKER-OFFLOAD calls=%ld | C-core(workers) vs binary ok=%lld bad=%lld | dispatches=%u (overlapped, behavior-neutral)\n",
+                    g_a2body_nshards, (long)c, (long long)ok, (long long)bad, disp);
+        } else if (g_a2body_level >= 2)
             sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 SHADOW calls=%ld | C-core vs binary ok=%lld bad=%lld (behavior-neutral)\n",
                     (long)c, (long long)g_a2body_dt_ok, (long long)g_a2body_dt_bad);
         else

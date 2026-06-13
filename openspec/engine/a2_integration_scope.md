@@ -513,11 +513,42 @@ runs. **⇒ the binary trig leaves are reentrant and the proven cheap-mass core 
 concurrently** — the core threading premise of a2.4 is validated. Evidence:
 `eaw-mt.log.a242-body3run{A,B}`.
 
-**Next: a2.4.3** — go N-shard: partition the work-items by `shard_of(obj+0x50)` across N workers (bind
-`sim/shard_scheduler.h`), gate N≡1 determinism. Then turn the shadow into an **apply** (the worker's matrix
-becomes the live one — needs the binary's numeric prologue skipped; the render tail stays serial since the
-matrix is idempotent own-state). Also shadow-validate `557ba0`/`3c2710` the same way; the behavior-loop
-`vtable[0x30]` (indirect, not E8) is handled when the lifted self-behaviors drive the worker directly.
+### ✅ a2.4.3 RESULT — the DT shadow runs on an N-SHARD WORKER POOL, bit-exact for every N (2026-06-13)
+
+N-shard the a2.4.2 offload. `EAW_A2_BODY=4` (`winmm_proxy.c`): each `3ac530` work-item routes to
+`shard = shard_of(obj+0x50) = object_id %% N` — the `sim/shard_scheduler.h` partition contract transcribed
+into the C hook (sim/ is not linked; the contract honoured = a STABLE pure fn of the object's stable id,
+whole object → exactly one shard, so its hardpoints never split). N from `EAW_A2_SHARDS` (default 4,
+clamp [1,8]); `EAW_A2_BODY=3` stays the proven N=1 rung. Each shard owns its own double-buffer + worker +
+`ok`/`bad` counters (sole writer per shard ⇒ no per-shard atomics), so **N workers + the main thread all
+call the binary `sin`/`cos` leaves concurrently**. Determinism argument: the per-item compare is a pure fn of
+the recorded inputs, so its result is INDEPENDENT of which shard ran it ⇒ **`bad=0` for any N** is the gate
+(and `ok≈calls` minus the per-shard sub-K tails).
+
+**Validation (`just a2body=4 a2shards=N difftrace=1`, demo battle-1, N∈{1,4,8}):**
+
+| N | pool started | `ok` | `bad` | dispatches | DTWORLD 1024/2048 | mismatch |
+|---|---|---|---|---|---|---|
+| 1 | N=1 of 1 | 1,570,816 | 0 | 768 | `ea5f…`/`7f7f…` ✓ | 0 |
+| 4 | N=4 of 4 | 1,568,768 | 0 | 766 | `ea5f…`/`7f7f…` ✓ | 0 |
+| 8 | N=8 of 8 | 1,564,672 | 0 | 764 | `ea5f…`/`7f7f…` ✓ | 0 |
+
+**`bad=0` across all N** (≈1.57M comparisons each); DTWORLD **bit-identical to baseline** (behavior-neutral —
+binary still drives); **zero crashes**. `ok` shrinks slightly as N rises (more sub-K tails — `calls−ok` =
+2049/4097/8193 ≈ N·K), exactly as predicted. **N=1 reproduces the a2.4.2 single-worker artifact byte-for-byte
+(`ok=1,570,816 dispatches=768`)** ⇒ the pool refactor is behavior-identical at N=1. **⇒ the proven cheap-mass
+core shards correctly across N concurrent workers, result-independent of the partition.** Evidence:
+`eaw-mt.log.a243-n{1,4,8}`.
+
+⚠️Build lesson banked: the level-4 ARMED log string (~520 B with multibyte `—`/`⇒`) overflowed a `char[400]`
+sprintf buffer → stack smash → `c0000005` av_read @-1 on `a2_body_on()` return (caught the first launch).
+Fix = `snprintf` into `char[768]`. Re-check every new long log line's buffer.
+
+**Next: a2.4.4** — turn the shadow into an **APPLY** (the worker's matrix becomes the live one at `obj+0x248`
+— needs the binary's numeric prologue skipped so it doesn't re-write, while the Class-3 render tail stays
+serial since the matrix is idempotent own-state). Then shadow-validate `557ba0`/`3c2710` the same way; the
+behavior-loop `vtable[0x30]` (indirect, not E8) is handled when the lifted self-behaviors drive the worker
+directly. The N-shard partition + concurrent-reentrancy are now both proven; apply is the remaining gate.
 
 ---
 
