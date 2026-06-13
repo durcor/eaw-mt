@@ -260,7 +260,7 @@ gate — proceed to a2.2 (the 1-shard takeover) after the a2.0b retrofit-delta s
 | **a2.0b** | **Sign off the retrofit delta** (§3) — confirm stock-divergence is acceptable (lockstep-only goal). | the approach is allowed | user sign-off (Rule 6) |
 | **a2.1** | **Enumerate `3a6b80`'s per-object sub-calls** (§5) — classify cheap-mass / fire-control / Class-1-3; find any un-lifted non-firing gap. | the Phase-A body is buildable with no binary callback | static; gaps → residual lifts |
 | **a2.2** | **1-shard two-phase driver** — take over the walk (`t2be640`), drive lifted cheap-mass serially (N=1) + binary serial fire pass + drain. `FrozenSnapshot` populated but reads still live (1-shard ⇒ no race) to isolate control-flow from snapshot. | tick takeover + iteration-order + drain hold in-game | `EAW_A2=1` OFF default; stability + replay-determinism (NOT stock) |
-| **a2.3** | **Route cheap-mass cross-reads through `FrozenSnapshot`** + assert read-discipline (§5.3). | snapshot consistency | debug assert: no live cross-read |
+| **a2.3** | **Route cross-reads through `FrozenSnapshot`** + assert read-discipline (§5.3). ✅ **a2.2.3 DONE** — the fire-control aim read is flipped onto the snapshot (whole-world freeze-swap) via the a2↔pfire co-arm; `EAW_A2=4` neutral checkpoint + `EAW_A2=5` drive-flip, replay-deterministic. | snapshot consistency | debug assert: no live cross-read |
 | **a2.4** | **N-shard** — partition by `shard_of(obj+0x50)`, real worker threads, canonical drain. | N≡1 replay-determinism + lockstep + the measured speedup | per-N kill-switch; contract §5 gate |
 
 a2.2 is the a1-successor (first sim-state control-flow takeover). a2.0 must clear its gate first.
@@ -355,9 +355,52 @@ EVERY object), **freeze `moved=1,526,177 still=206,856`** (moved≫0 ⇒ snapsho
 world advanced), **find_by_id `ok=9,107 bad=0`**, **zero crashes** over 4097+ ticks. **⇒ the FrozenSnapshot
 is a correct, stably rank/id-indexed, genuinely-frozen tick-start read source — a2.2.2 clears its gate.**
 
-**Next: a2.2.3** — the first real read-flip: feed `fire_control_decide`'s `target_pos/vel` from the snapshot
-instead of the live `tgt+0x78` read. Requires resolving the a2↔pfire mutual exclusion (compose the two
-takeovers). DTWORLD diverges by design where the read flips (the a2.0b-accepted determinism retrofit).
+### ✅ a2.2.3 RESULT — the first read-flip is LIVE: fire aims at the FrozenSnapshot (2026-06-13)
+
+**The first increment that CONSUMES the snapshot and the first that diverges DTWORLD by design** (the
+a2.0b retrofit, signed off). User chose the **spec-literal drive-flip** (make the *actual* fire consume
+frozen positions, not just an observe-measure).
+
+**The composition (a2↔pfire), code-grounded.** The two takeovers compose cleanly with **one new wire**.
+`EAW_A2` replaces `2be640` and drives the walk, calling binary `3a6b80(obj)` per object; pfire patches the
+`a76b0` call-site *inside* `3a6b80`, so under co-arm **the fire defer happens for free** (a2's `3a6b80`
+call hits pfire's intercept). The only gap was the flush: pfire's drain lives at the `a62d0` call-site
+*inside* `2be640` (which a2 bypasses), so **a2's block 8b now calls `pfire_a62d0_intercept(gom)` instead of
+the direct `2a62d0`** — it replays the deferred fires then calls the real `2a62d0` (no double-flush). pfire's
+`2be640`-internal repoints are inert under a2. The mutual-exclusion guard is relaxed for `EAW_A2∈{4,5}`,
+which **require `EAW_PFIRE>=2`**.
+
+**The drive mechanism — whole-world freeze-swap.** Per-target spoofing is blocked (the ship→target offset
+is unconfirmed; Rule 2). Instead, at the block-8b flush `a2_fire_freeze_in` walks the current master list and
+for each object still in the tick-start view (resolved by `find_by_id`, robust to mid-tick spawns) **saves
+its live pos and overwrites `+0x78/7c/80` with the frozen `snap` value**; the binary fire replays aiming at
+the tick-start world; `a2_fire_freeze_out` restores every saved pos by object-pointer **before** the real
+`2a62d0`. Uses only the a2.2.2-validated `+0x50`/`+0x78` offsets + rank/id alignment. **Known bounded delta:**
+this also shifts the shooter's OWN muzzle-origin read to tick-start (slightly beyond the spec's "cross-object
+reads" wording) — same ≤1-sub-tick class, deterministic; a finer target-only flip is offset-gated for later.
+
+**Gate ladder:** `EAW_A2=4` = co-arm, **flip OFF** (behavior-neutral checkpoint); `EAW_A2=5` = co-arm +
+**drive-flip ON**.
+
+**Validation (oracle build, `just a2=N pfire=2 difftrace=1`, demo battle-1):**
+- **Co-arm neutrality (a2=4):** DTWORLD **bit-identical to the `pfire=2`-alone baseline** —
+  `1024 h=4a4885ea924b35e4/seed=68cf9c25`, `2048 h=8011fcf6ca8bf38d/seed=19a45820` (both runs equal). ⇒ the
+  co-arm + drain-wire composition is **behavior-neutral**. (Both diverge from the *a2=0* baseline by exactly
+  pfire=2's inherent two-phase RNG reorder — not the wire.) Flip OFF: `fires=0 swapped=0 in==out=0`.
+- **Drive-flip (a2=5):** DTWORLD **diverges by design** — `1024 h=9d1ceaecadbd274c`, `2048 h=e571805005a2d429`.
+  Flip active: `fires=2047 swapped=1,537,658 in=2047 out=2047` (**in==out ⇒ no leaked frozen state**); zero
+  crashes over 4097+ ticks, walk≈1.8M.
+- **Replay-determinism (THE gate, not baseline-match):** two independent `a2=5` runs are **bit-identical** —
+  same hashes AND same `swapped=1,537,658`/`in==out=2047`. **⇒ the flip is fully deterministic.**
+
+**⇒ a2.2.3 clears its gate.** The FrozenSnapshot is now a live read source feeding fire-control aim, the
+a2↔pfire composition is proven neutral, and the first by-design DTWORLD divergence is deterministic.
+Evidence: `eaw-mt.log.a223-{a4,pf2base,a5runA,a5runB}`. (Hook `winmm_proxy.c`: `a2_on()` levels 4/5,
+`a2_fire_freeze_in/out`, the block-8b wire, the freeze-swap in `pfire_a62d0_intercept`.)
+
+**Next: a2.4** (N-shard) — partition the walk by `shard_of(obj+0x50)` on real workers with canonical drain;
+gate = N≡1 replay-determinism + lockstep + the measured speedup. (Optional refinement: confirm the
+ship→target offset to narrow the flip from whole-world to target-cross-read-only.)
 
 ---
 

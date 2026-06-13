@@ -2115,6 +2115,22 @@ static void pfire_sharded_flush(void);     /* B3.6.1 fan-out increment 2 — def
 #endif
 static uint32_t g_pfire_spawn_drained = 0, g_pfire_spawn_overflow = 0, g_pfire_spawn_maxfill = 0;
 
+/* a2.2.3 CO-ARM DRIVE-FLIP state (EAW_A2>=4 composed with EAW_PFIRE>=2). Declared here because
+ * pfire_a62d0_intercept (the flush, defined just below) drives the freeze-swap, but the snapshot it reads
+ * (g_a2_snap) and the function bodies live further down with the rest of the a2 code. At EAW_A2==5 the
+ * deferred-fire replay aims at the TICK-START FrozenSnapshot via a rank/id-aligned whole-world swap:
+ * a2_fire_freeze_in saves each live pos and overwrites it with snap[find_by_id], the binary fire replays,
+ * a2_fire_freeze_out restores — so ONLY the fire sees frozen positions (the a2.0b retrofit). Flag set in
+ * a2_on(); EAW_A2==4 is the flip-OFF co-arm checkpoint (drain wired, DTWORLD still == pfire=2 baseline). */
+typedef struct { int64_t obj; float pos[3]; } A2FlipSave;
+static int        g_a2_fire_flip = 0;       /* 1 only at EAW_A2==5 (drive-flip); =4 = co-arm checkpoint */
+static A2FlipSave *g_a2_flip_saved = NULL;   /* grow-only: the live pos saved across each flush's swap */
+static uint32_t   g_a2_flip_saved_cap = 0, g_a2_flip_m = 0;
+static int64_t    g_a2_flip_swapped = 0, g_a2_flip_fires = 0;   /* DEBUG: objects swapped / flushes flipped */
+static uint32_t   g_a2_flip_in = 0, g_a2_flip_out = 0;          /* swap-in/out balance (must stay equal) */
+static void a2_fire_freeze_in(int64_t gom);
+static void a2_fire_freeze_out(int64_t gom);
+
 /* B3.6.1 (§8.41) fan-out increment 2 — SERIAL-SHARD SCAFFOLD. EAW_PFIRE_SHARDS=N (>=2) partitions the
  * deferred-fire replay's buffered SPAWN commands into N per-shard buffers (shard = object_id % N), then merges
  * them back in canonical (rank,seq) order before the drain. The a76b0 REPLAY itself still runs in WALK ORDER
@@ -2339,6 +2355,10 @@ static void pfire_a62d0_intercept(int64_t mgr) {
     if (g_pfire_level >= 2 && g_pfire_fire_count > 0) {
         int n = g_pfire_fire_count;
         if ((uint32_t)n > g_pfire_maxfill) g_pfire_maxfill = (uint32_t)n;
+        /* a2.2.3 (EAW_A2==5): freeze the world to its tick-start FrozenSnapshot positions so the deferred
+         * fire replay below aims at the frozen world (cross-object aim reads become tick-start). Restored
+         * right after the replay, BEFORE the real 2a62d0 — so only the fire sees frozen pos. */
+        if (g_a2_fire_flip) { a2_fire_freeze_in((int64_t)mgr); g_a2_flip_fires++; }
 #if defined(EAW_PROFILE) || defined(EAW_ORACLE)
         if (g_pfire_level >= 4 && pfire_shards() >= 2) {
             /* B3.6.1 (§8.41): serial-shard scaffold — per-shard buffer split + canonical (rank,seq) merge-drain.
@@ -2366,6 +2386,7 @@ static void pfire_a62d0_intercept(int64_t mgr) {
             if (g_pfire_level >= 4) pfire_drain_spawns();
 #endif
         }
+        if (g_a2_fire_flip) a2_fire_freeze_out((int64_t)mgr);   /* a2.2.3: unfreeze before the real 2a62d0 */
         g_pfire_flushes++;
     }
     if ((c & 0xfff) == 1) {                  /* periodic live-evidence */
@@ -2532,8 +2553,20 @@ static int a2_on(void) {     /* pfire_on() (defined above) lets a2 refuse to co-
         const char *e = getenv("EAW_A2");
         g_a2_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
         if (g_a2_level < 0) g_a2_level = 0;
-        if (g_a2_level >= 1 && pfire_on() >= 1) {
-            log_write("[eaw-mt] A2: REFUSING to arm — EAW_A2 and EAW_PFIRE both own the 2be640 seam (mutually exclusive). Unset one.\n");
+        if (g_a2_level >= 4) {
+            /* a2.2.3 CO-ARM (levels 4/5): deliberately compose with EAW_PFIRE>=2 — a2 owns the walk, pfire
+             * owns the fire defer, a2's block 8b drives pfire's drain. The co-arm REQUIRES the defer/drain. */
+            if (pfire_on() < 2) {
+                log_write("[eaw-mt] A2: REFUSING to arm — EAW_A2>=4 (co-arm) needs EAW_PFIRE>=2 (the fire defer/drain). Set EAW_PFIRE=2.\n");
+                g_a2_level = 0;
+            } else if (g_a2_level >= 5) {
+                g_a2_fire_flip = 1;
+                log_write("[eaw-mt] A2: walk-driver + PFIRE CO-ARM + DRIVE-FLIP ARMED (EAW_A2=5, EAW_PFIRE>=2) — a2.2.3: the deferred-fire replay aims at the TICK-START FrozenSnapshot (whole-world freeze-swap). DTWORLD DIVERGES from baseline BY DESIGN (the a2.0b retrofit, one-sub-tick aim latency); gate = replay-determinism + swap balance, NOT baseline-match.\n");
+            } else {
+                log_write("[eaw-mt] A2: walk-driver + PFIRE CO-ARM ARMED (EAW_A2=4, EAW_PFIRE>=2) — a2.2.3 checkpoint: pfire drain wired into block 8b, NO read flipped. DTWORLD must still match the EAW_PFIRE=2-alone baseline (proves the composition is behavior-neutral).\n");
+            }
+        } else if (g_a2_level >= 1 && pfire_on() >= 1) {
+            log_write("[eaw-mt] A2: REFUSING to arm — EAW_A2 (1-3) and EAW_PFIRE both own the 2be640 seam (mutually exclusive). Unset one, or use EAW_A2>=4 to co-arm with EAW_PFIRE>=2.\n");
             g_a2_level = 0;
         } else if (g_a2_level >= 3) {
             log_write("[eaw-mt] A2: sim-tick walk-driver ARMED (EAW_A2=3) — a2.2.2 snapshot READ-BACK validation (live==snap[r] pre-call + freeze + find_by_id; reads still LIVE, read-only). DTWORLD must still match the EAW_A2=0 baseline; expect idbad=0 posbad=0 moved>0 findid_bad=0.\n");
@@ -2651,12 +2684,68 @@ static void a2_snap_check_freeze(int64_t gom) {
     }
 }
 
+/* ---- a2.2.3 (EAW_A2==5): whole-world freeze-swap around the deferred-fire replay (the DRIVE-FLIP) ----
+ * Called from pfire_a62d0_intercept at the block-8b flush, immediately around the deferred-fire replay.
+ * freeze_in walks the CURRENT master list, and for each object still present in the tick-start view
+ * (resolved by id, robust to objects spawned/removed since block-2's acquire — block 5 drains spawns),
+ * SAVES its live world pos and overwrites it with the frozen snap value; the binary fire body then aims at
+ * the tick-start world. freeze_out restores every saved pos by object pointer (decoupled from the list, so
+ * mid-replay spawns don't disturb the restore) before the real 2a62d0 runs. This is the a2.0b retrofit:
+ * cross-object aim reads become tick-start (≤1-sub-tick latency). It also shifts the shooter's OWN
+ * muzzle-origin read to tick-start — same bounded class; a finer target-only flip is offset-gated for later. */
+static void a2_fire_freeze_in(int64_t gom) {
+    g_a2_flip_m = 0;
+    if (!g_a2_fire_flip || g_a2_snap_n == 0) return;
+    uint8_t *sent = (uint8_t *)(uintptr_t)gom + 0xf0;
+    for (uint8_t *node = *(uint8_t **)((uint8_t *)(uintptr_t)gom + 0xf8);
+         node != sent; node = *(uint8_t **)(node + 0x8)) {
+        int64_t op = *(int64_t *)(node + 0x18);
+        int64_t obj = op ? op - 0x18 : 0;
+        if (!obj) continue;
+        int32_t rank = a2_snap_find_by_id(*(uint32_t *)(obj + 0x50));
+        if (rank < 0) continue;                          /* spawned since tick-start ⇒ not frozen, keep live */
+        if (g_a2_flip_m >= g_a2_flip_saved_cap) {        /* grow-only ⇒ steady-state alloc-free */
+            uint32_t nc = g_a2_flip_saved_cap ? g_a2_flip_saved_cap * 2 : 1024;
+            A2FlipSave *nb = (A2FlipSave *)realloc(g_a2_flip_saved, (size_t)nc * sizeof(A2FlipSave));
+            if (!nb) break;                              /* OOM: stop here — already-swapped still get restored */
+            g_a2_flip_saved = nb; g_a2_flip_saved_cap = nc;
+        }
+        A2FlipSave *sv = &g_a2_flip_saved[g_a2_flip_m++];
+        sv->obj = obj;
+        sv->pos[0] = *(float *)(obj + 0x78);
+        sv->pos[1] = *(float *)(obj + 0x7c);
+        sv->pos[2] = *(float *)(obj + 0x80);
+        *(float *)(obj + 0x78) = g_a2_snap[rank].pos[0];
+        *(float *)(obj + 0x7c) = g_a2_snap[rank].pos[1];
+        *(float *)(obj + 0x80) = g_a2_snap[rank].pos[2];
+    }
+    g_a2_flip_swapped += g_a2_flip_m;
+    g_a2_flip_in++;
+}
+static void a2_fire_freeze_out(int64_t gom) {
+    (void)gom;
+    if (!g_a2_fire_flip) return;
+    for (uint32_t i = 0; i < g_a2_flip_m; i++) {
+        int64_t obj = g_a2_flip_saved[i].obj;
+        *(float *)(obj + 0x78) = g_a2_flip_saved[i].pos[0];
+        *(float *)(obj + 0x7c) = g_a2_flip_saved[i].pos[1];
+        *(float *)(obj + 0x80) = g_a2_flip_saved[i].pos[2];
+    }
+    g_a2_flip_m = 0;
+    g_a2_flip_out++;
+}
+
 /* Faithful transcription of FUN_1402be640. gom = the GameObjectManager (rcx), p2 = the tick arg (edx). */
 static void a2_tick_2be640(int64_t gom, uint32_t p2) {
     LONG tc = InterlockedIncrement(&g_a2_tick_calls);
     if ((tc & 0x3ff) == 1) {
-        char m[360];
-        if (g_a2_level >= 3)
+        char m[440];
+        if (g_a2_level >= 4)
+            sprintf(m, "[eaw-mt] A2: live — CO-ARM%s ticks=%ld walk=%ld | snapshot max_n=%u overflow=%u | FLIP fires=%lld swapped=%lld in=%u out=%u (in==out ⇒ no leaked frozen state)\n",
+                    g_a2_fire_flip ? "+DRIVE-FLIP" : "(checkpoint, no flip)",
+                    (long)tc, (long)g_a2_walk_calls, g_a2_snap_max_n, g_a2_snap_overflow,
+                    (long long)g_a2_flip_fires, (long long)g_a2_flip_swapped, g_a2_flip_in, g_a2_flip_out);
+        else if (g_a2_level == 3)
             sprintf(m, "[eaw-mt] A2: live — ticks=%ld | snapshot max_n=%u overflow=%u | CHECK ok=%lld idbad=%lld posbad=%lld | freeze moved=%lld still=%lld | findid ok=%lld bad=%lld (read-back validation, reads live)\n",
                     (long)tc, g_a2_snap_max_n, g_a2_snap_overflow,
                     (long long)g_a2_chk_ok, (long long)g_a2_chk_idbad, (long long)g_a2_chk_posbad,
@@ -2700,11 +2789,11 @@ static void a2_tick_2be640(int64_t gom, uint32_t p2) {
              node != sent; node = *(uint8_t **)(node + 0x8), r++) {
             int64_t op = *(int64_t *)(node + 0x18);
             int64_t obj = op ? op - 0x18 : 0;
-            if (g_a2_level >= 3) a2_snap_check_precall(r, obj);  /* a2.2.2: live==snap[r] before the body runs */
+            if (g_a2_level == 3) a2_snap_check_precall(r, obj);  /* a2.2.2: live==snap[r] before the body runs */
             g_a2.f3a6b80(obj, p2, sil);                          /* IDENTITY: binary per-object body */
             InterlockedIncrement(&g_a2_walk_calls);
         }
-        if (g_a2_level >= 3) a2_snap_check_freeze(gom);   /* a2.2.2: now-live pos diverged from frozen snap[r] */
+        if (g_a2_level == 3) a2_snap_check_freeze(gom);   /* a2.2.2: now-live pos diverged from frozen snap[r] */
     }
 
     /* ---- block 3: 2nd master sweep → vfunc_10(obj,3) → 3fc750 ---- */
@@ -2855,7 +2944,11 @@ static void a2_tick_2be640(int64_t gom, uint32_t p2) {
             g_a2.f2b76a0(gom);
         }
     }
-    g_a2.f2a62d0(gom);
+    /* a2.2.3 (EAW_A2>=4, co-arm): drive pfire's deferred-fire drain at the flush point — the intercept
+     * replays the deferred fires (freeze-swapping to the snapshot at level 5) THEN calls the real 2a62d0,
+     * so this REPLACES the direct call (no double-flush). Levels 1-3 are standalone ⇒ direct binary call. */
+    if (g_a2_level >= 4) pfire_a62d0_intercept(gom);
+    else                 g_a2.f2a62d0(gom);
     if (g_a2_level >= 2) a2_snapshot_release();           /* a2.2.1: drop the frozen view at tick end */
 }
 
