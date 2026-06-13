@@ -2535,6 +2535,8 @@ static int a2_on(void) {     /* pfire_on() (defined above) lets a2 refuse to co-
         if (g_a2_level >= 1 && pfire_on() >= 1) {
             log_write("[eaw-mt] A2: REFUSING to arm — EAW_A2 and EAW_PFIRE both own the 2be640 seam (mutually exclusive). Unset one.\n");
             g_a2_level = 0;
+        } else if (g_a2_level >= 3) {
+            log_write("[eaw-mt] A2: sim-tick walk-driver ARMED (EAW_A2=3) — a2.2.2 snapshot READ-BACK validation (live==snap[r] pre-call + freeze + find_by_id; reads still LIVE, read-only). DTWORLD must still match the EAW_A2=0 baseline; expect idbad=0 posbad=0 moved>0 findid_bad=0.\n");
         } else if (g_a2_level >= 2) {
             log_write("[eaw-mt] A2: sim-tick walk-driver ARMED (EAW_A2=2) — a2.2.1 + tick-start FrozenSnapshot POPULATE (rank-order pre-pass; reads still LIVE, snapshot unread). DTWORLD must still match the EAW_A2=0 baseline.\n");
         } else if (g_a2_level >= 1) {
@@ -2597,12 +2599,70 @@ static void a2_snapshot_acquire(int64_t gom) {
 }
 static void a2_snapshot_release(void) { g_a2_snap_n = 0; }
 
+/* ---- a2.2.2 (EAW_A2>=3): snapshot READ-BACK correctness validation (read-only ⇒ behavior-neutral) ----
+ * Proves the populated snapshot is a usable read source BEFORE any consumer reads it (a2.2.3+). Exploits
+ * the object-granular invariant: object r is untouched until its OWN body runs, so at the instant before
+ * f3a6b80(r) the live {id,pos} still == the tick-start capture snap[r] (check 1); after the walk, moved
+ * objects' live pos has diverged from the still-frozen snap[r] (check 2 — proves it's a real copy, not a
+ * live alias); and find_by_id resolves the id→state path a future consumer (fire-control feed) will use. */
+static int64_t g_a2_chk_ok = 0, g_a2_chk_idbad = 0, g_a2_chk_posbad = 0;
+static int64_t g_a2_chk_moved = 0, g_a2_chk_still = 0;
+static int64_t g_a2_chk_findid_ok = 0, g_a2_chk_findid_bad = 0;
+
+/* C equivalent of sim::FrozenSnapshot::find_by_id (linear; the host helper a consumer uses to resolve a
+ * target it knows only by id). Returns the rank of the first matching entry, or -1. */
+static int32_t a2_snap_find_by_id(uint32_t id) {
+    for (uint32_t i = 0; i < g_a2_snap_n; i++)
+        if (g_a2_snap[i].object_id == id) return (int32_t)i;
+    return -1;
+}
+
+/* check 1 — at rank r, just before f3a6b80(obj): live == snap[r] EXACTLY (rank-alignment + capture). */
+static void a2_snap_check_precall(uint32_t r, int64_t obj) {
+    if (r >= g_a2_snap_n || !obj) return;
+    const A2ObjState *s = &g_a2_snap[r];
+    uint32_t id = *(uint32_t *)(obj + 0x50);
+    int idok  = (id == s->object_id);
+    int posok = (*(float *)(obj + 0x78) == s->pos[0] &&
+                 *(float *)(obj + 0x7c) == s->pos[1] &&
+                 *(float *)(obj + 0x80) == s->pos[2]);
+    if (!idok)  g_a2_chk_idbad++;
+    if (!posok) g_a2_chk_posbad++;
+    if (idok && posok) g_a2_chk_ok++;
+    /* check 3 — the id→rank resolution path (sampled: one per 256 objects to bound cost). */
+    if ((r & 0xff) == 0) { if (a2_snap_find_by_id(id) == (int32_t)r) g_a2_chk_findid_ok++; else g_a2_chk_findid_bad++; }
+}
+
+/* check 2 — after the walk: re-walk in rank order; moved objects' live pos != the still-frozen snap[r].
+ * moved>0 proves the buffer held frozen tick-start values while the world advanced (no live aliasing). */
+static void a2_snap_check_freeze(int64_t gom) {
+    uint8_t *sent = (uint8_t *)(uintptr_t)gom + 0xf0;
+    uint32_t r = 0;
+    for (uint8_t *node = *(uint8_t **)((uint8_t *)(uintptr_t)gom + 0xf8);
+         node != sent && r < g_a2_snap_n; node = *(uint8_t **)(node + 0x8), r++) {
+        int64_t op = *(int64_t *)(node + 0x18);
+        int64_t obj = op ? op - 0x18 : 0;
+        if (!obj) continue;
+        const A2ObjState *s = &g_a2_snap[r];
+        if (*(float *)(obj + 0x78) != s->pos[0] ||
+            *(float *)(obj + 0x7c) != s->pos[1] ||
+            *(float *)(obj + 0x80) != s->pos[2]) g_a2_chk_moved++;
+        else                                     g_a2_chk_still++;
+    }
+}
+
 /* Faithful transcription of FUN_1402be640. gom = the GameObjectManager (rcx), p2 = the tick arg (edx). */
 static void a2_tick_2be640(int64_t gom, uint32_t p2) {
     LONG tc = InterlockedIncrement(&g_a2_tick_calls);
     if ((tc & 0x3ff) == 1) {
-        char m[224];
-        if (g_a2_level >= 2)
+        char m[360];
+        if (g_a2_level >= 3)
+            sprintf(m, "[eaw-mt] A2: live — ticks=%ld | snapshot max_n=%u overflow=%u | CHECK ok=%lld idbad=%lld posbad=%lld | freeze moved=%lld still=%lld | findid ok=%lld bad=%lld (read-back validation, reads live)\n",
+                    (long)tc, g_a2_snap_max_n, g_a2_snap_overflow,
+                    (long long)g_a2_chk_ok, (long long)g_a2_chk_idbad, (long long)g_a2_chk_posbad,
+                    (long long)g_a2_chk_moved, (long long)g_a2_chk_still,
+                    (long long)g_a2_chk_findid_ok, (long long)g_a2_chk_findid_bad);
+        else if (g_a2_level >= 2)
             sprintf(m, "[eaw-mt] A2: live — driver ticks=%ld walk_calls=%ld | snapshot n=%u max_n=%u overflow=%u (populate-only, reads live)\n",
                     (long)tc, (long)g_a2_walk_calls, g_a2_snap_n, g_a2_snap_max_n, g_a2_snap_overflow);
         else
@@ -2635,12 +2695,16 @@ static void a2_tick_2be640(int64_t gom, uint32_t p2) {
     if (run_walk) {
         if (g_a2_level >= 2) a2_snapshot_acquire(gom);   /* a2.2.1: tick-start frozen view (populate; reads stay live) */
         uint8_t *sent = (uint8_t *)(uintptr_t)gom + 0xf0;
+        uint32_t r = 0;
         for (uint8_t *node = *(uint8_t **)((uint8_t *)(uintptr_t)gom + 0xf8);
-             node != sent; node = *(uint8_t **)(node + 0x8)) {
+             node != sent; node = *(uint8_t **)(node + 0x8), r++) {
             int64_t op = *(int64_t *)(node + 0x18);
-            g_a2.f3a6b80(op ? op - 0x18 : 0, p2, sil);   /* IDENTITY: binary per-object body */
+            int64_t obj = op ? op - 0x18 : 0;
+            if (g_a2_level >= 3) a2_snap_check_precall(r, obj);  /* a2.2.2: live==snap[r] before the body runs */
+            g_a2.f3a6b80(obj, p2, sil);                          /* IDENTITY: binary per-object body */
             InterlockedIncrement(&g_a2_walk_calls);
         }
+        if (g_a2_level >= 3) a2_snap_check_freeze(gom);   /* a2.2.2: now-live pos diverged from frozen snap[r] */
     }
 
     /* ---- block 3: 2nd master sweep → vfunc_10(obj,3) → 3fc750 ---- */

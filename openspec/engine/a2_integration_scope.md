@@ -328,9 +328,36 @@ documented today; the lifted sensor bodies abstract them and fire-marshalling us
 populate is behavior-neutral; snapshot populated **max_n=1010 objects/tick, overflow=0** (grow-only buffer,
 no per-tick alloc at steady state); **zero crashes** over 5121+ ticks. **⇒ a2.2.1 clears its gate.**
 
-**Next: a2.2.2** — flip block-2 cheap-mass cross-reads onto the snapshot (start with the sensor/fog
-position reads), confirming `health/team/target_id/visible` offsets by validated use; then the lifted
-`sim/` bodies + two-phase fire via the existing pfire defer/drain.
+### ✅ a2.2.2 RESULT — the FrozenSnapshot is PROVEN a correct read source (2026-06-12)
+
+**Roadmap-reshaping finding (Rule 6 — contradicts the planned "flip cheap-mass cross-reads"):** the lifted
+**cheap-mass bodies have NO snapshot-resolvable cross-read.** Locomotor/transform/reveal read only OWN state
+(waypoints / own transform / own 2D move-threshold). Sensor/fog (`unit_ai`, `sim/unit_ai.cpp` BLOCK C)
+cross-reads only via `visible(owner,obj)` → the **un-lifted binary LOS/faction predicate `FUN_14035f470`**
+(reads the other object's live pos for LOS). So the snapshot's real first consumer is **not** the cheap-mass
+— it is the lifted `fire_control_decide` **target-pos feed** (`sim/fire_control.h:144` already declares
+`target_pos` as "snapshot target world pos"; the marshalling `winmm_proxy.c:5354` currently feeds it LIVE
+`tgt+0x78`), which lives in the `EAW_PFIRE` path — **mutually exclusive with `EAW_A2`**. ⇒ the real read-
+flip (a2.2.3) requires an **a2↔pfire composition**, OR lifting the sensor LOS predicate `35f470` for the
+"true" cheap-mass flip.
+
+**Given that, a2.2.2 = snapshot READ-BACK correctness validation** (user-chosen — prove the populated view
+is usable before any flip). `EAW_A2>=3` adds three read-only checks (behavior-neutral) exploiting the
+object-granular invariant (object r is untouched until its OWN body runs):
+1. **Pre-call invariant** — before each `f3a6b80(r)`, live `{id@+0x50, pos@+0x78}` must == `snap[r]` exactly
+   (rank-alignment + capture). 2. **Freeze (anti-alias)** — after the walk, moved objects' live pos has
+   diverged from the still-frozen `snap[r]` (proves a real copy, not a live view). 3. **find_by_id** — the
+   id→rank resolution path a consumer will use.
+
+**Validation (`just a2=3 difftrace=1`):** DTWORLD battle-1 **bit-identical** to baseline (still behavior-
+neutral). Over millions of object-visits: **pre-call `ok=1,733,033 idbad=0 posbad=0`** (invariant holds for
+EVERY object), **freeze `moved=1,526,177 still=206,856`** (moved≫0 ⇒ snapshot genuinely frozen while the
+world advanced), **find_by_id `ok=9,107 bad=0`**, **zero crashes** over 4097+ ticks. **⇒ the FrozenSnapshot
+is a correct, stably rank/id-indexed, genuinely-frozen tick-start read source — a2.2.2 clears its gate.**
+
+**Next: a2.2.3** — the first real read-flip: feed `fire_control_decide`'s `target_pos/vel` from the snapshot
+instead of the live `tgt+0x78` read. Requires resolving the a2↔pfire mutual exclusion (compose the two
+takeovers). DTWORLD diverges by design where the read flips (the a2.0b-accepted determinism retrofit).
 
 ---
 
