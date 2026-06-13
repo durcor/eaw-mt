@@ -2474,6 +2474,344 @@ static BOOL install_pfire_hooks(void) {
 }
 
 /* =========================================================================
+ * MILESTONE a2.2.0 — the sim-tick CONTROL-FLOW TAKEOVER (a2_integration_scope.md §4-§6)
+ *
+ * The first time our code drives the GOM tick. EAW_A2=1 replaces the binary FUN_1402be640
+ * (the per-tick GameObjectManager update, called x2 from the tail22 body) with a2_tick_2be640 —
+ * a FAITHFUL transcription of decomp/2be640.c (verified against the objdump of the baseline binary,
+ * binaries/original/StarWarsG.exe @ 0x1402be640..0x1402bec69). a2.2.0 is IDENTITY ONLY: block 2 (the
+ * master_update_list walk) is driven by OUR loop but still calls the binary per-object body 3a6b80;
+ * every other block calls its binary helper. Zero intended behavior change — this isolates the
+ * control-flow takeover. Lifted cheap-mass + two-phase fire enter at a2.2.1+.
+ *
+ * Gate (flip-behind-kill-switch, user-chosen): default OFF; when armed, correctness = DTWORLD
+ * bit-identity vs the EAW_A2=0 baseline (the commutative per-tick (object_id, settled-pos) world hash)
+ * + zero crashes + replay-determinism, NOT a shadow compare. Mutually exclusive with EAW_PFIRE (both
+ * own the 2be640 seam). Lives in the always-installed section so it works in the lean EAW_ORACLE build
+ * (where DTWORLD is emitted); the profile-only install_tail22_body_hooks timing detour is left alone.
+ *
+ * Ground-truth offsets (objdump of 0x1402be640): GOM fields master_update_list{sentinel@+0xf0,head@+0xf8},
+ * second_update_list{sentinel@+0x138,head@+0x140}; intrusive node {next@+0x8, objptr@+0x18, obj=objptr-0x18};
+ * creation_params base@+0x5f8 (count@+0x600, stride 0x30), param_1[1] sub-object base@+0x5f0, mode FSM@+0x618,
+ * player rosters @+0x470/+0x478(cnt) & +0x488/+0x490(cnt) stride 0x58; vftable for the local DynamicVectorClass
+ * @ imgbase+0x800488; the inline-storage vector free thunk @ 0x769c94.
+ * ========================================================================= */
+typedef void    (*A2_f20ed70)(int64_t);
+typedef void    (*A2_f3a6b80)(int64_t, uint32_t, uint32_t);
+typedef void    (*A2_f3fc750)(int64_t);
+typedef void    (*A2_f3ac530)(int64_t, int32_t);
+typedef int64_t (*A2_f29f810)(int64_t, int64_t, int32_t, int64_t, int64_t, int32_t, int32_t);
+typedef void    (*A2_f2b2fe0)(int64_t, int32_t, int32_t, int32_t);
+typedef int64_t (*A2_f2aca60)(int64_t, int32_t);
+typedef char    (*A2_fpred1)(int64_t);
+typedef void    (*A2_fvoid1)(int64_t);
+typedef void    (*A2_f28c720)(int64_t, int32_t);
+typedef void    (*A2_f44a1a0)(int64_t, void *);
+typedef void    (*A2_f3de570)(int64_t, int64_t, int32_t);
+typedef int32_t (*A2_f294a70)(int64_t);
+typedef char    (*A2_f2ad100)(int64_t, void *, void *);
+typedef void    (*A2_f2b92e0)(int64_t, void *, void *);
+typedef void    (*A2_ffree)(void *);
+typedef char    (*A2_fpred0)(void);          /* nullable callbacks DAT_b15618/15640/15650/155f8 */
+typedef int32_t (*A2_vfE0)(int64_t);         /* vtable+0xe0 (read-only "is-X" query) */
+typedef int64_t (*A2_vf10)(int64_t, int32_t);/* vtable+0x10 */
+typedef int64_t (*A2_vf38)(int64_t);         /* vtable+0x38 */
+
+static struct {
+    uintptr_t imgbase;
+    A2_f20ed70 f20ed70; A2_f3a6b80 f3a6b80; A2_f3fc750 f3fc750; A2_f3ac530 f3ac530;
+    A2_f29f810 f29f810; A2_f2b2fe0 f2b2fe0; A2_f2aca60 f2aca60; A2_fpred1 f28af60; A2_fpred1 f2b0350;
+    A2_f28c720 f28c720; A2_fvoid1 f28c6c0; A2_fvoid1 f28f590; A2_f44a1a0 f44a1a0; A2_f3de570 f3de570;
+    A2_f294a70 f294a70; A2_f2ad100 f2ad100; A2_f2b92e0 f2b92e0; A2_fvoid1 f2b76a0; A2_fvoid1 f2a62d0;
+    A2_ffree ffree;
+} g_a2;
+
+static int g_a2_level = -1;
+static int a2_on(void) {     /* pfire_on() (defined above) lets a2 refuse to co-arm on the shared 2be640 seam */
+    if (g_a2_level < 0) {
+        const char *e = getenv("EAW_A2");
+        g_a2_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
+        if (g_a2_level < 0) g_a2_level = 0;
+        if (g_a2_level >= 1 && pfire_on() >= 1) {
+            log_write("[eaw-mt] A2: REFUSING to arm — EAW_A2 and EAW_PFIRE both own the 2be640 seam (mutually exclusive). Unset one.\n");
+            g_a2_level = 0;
+        } else if (g_a2_level >= 1) {
+            log_write("[eaw-mt] A2: sim-tick walk-driver ARMED (EAW_A2=1) — a2.2.0 full 2be640 transcription, block-2 identity (binary 3a6b80). DTWORLD must match the EAW_A2=0 baseline.\n");
+        } else {
+            log_write("[eaw-mt] A2: off (EAW_A2=1 to arm the 2be640 walk-driver)\n");
+        }
+    }
+    return g_a2_level;
+}
+
+#define A2G(off)      (g_a2.imgbase + (uintptr_t)(off))           /* address of a global by RVA */
+#define A2_U8(p,o)    (*(uint8_t  *)((uint8_t *)(uintptr_t)(p) + (o)))
+#define A2_I32(p,o)   (*(int32_t  *)((uint8_t *)(uintptr_t)(p) + (o)))
+#define A2_U32(p,o)   (*(uint32_t *)((uint8_t *)(uintptr_t)(p) + (o)))
+#define A2_I64(p,o)   (*(int64_t  *)((uint8_t *)(uintptr_t)(p) + (o)))
+#define A2_F32(p,o)   (*(float    *)((uint8_t *)(uintptr_t)(p) + (o)))
+
+static LONG g_a2_walk_calls = 0, g_a2_tick_calls = 0;
+
+/* Faithful transcription of FUN_1402be640. gom = the GameObjectManager (rcx), p2 = the tick arg (edx). */
+static void a2_tick_2be640(int64_t gom, uint32_t p2) {
+    LONG tc = InterlockedIncrement(&g_a2_tick_calls);
+    if ((tc & 0x3ff) == 1) {
+        char m[160];
+        sprintf(m, "[eaw-mt] A2: live — driver ticks=%ld walk_calls=%ld (block-2 identity, binary 3a6b80)\n",
+                (long)tc, (long)g_a2_walk_calls);
+        log_write(m);
+    }
+
+    /* ---- block 1: preamble (20ed70 x DAT_a16fb0) ---- */
+    int64_t v_d8 = A2_I64(gom, 0xd8);
+    if (v_d8 != 0) g_a2.f20ed70(v_d8);
+    for (int i = 0; i < A2_I32(A2G(0), 0xa16fb0); i++)
+        g_a2.f20ed70((int64_t)i * 0x38 + A2_I64(gom, 0xd0));
+
+    /* ---- block 2 gate + the master_update_list walk (the seam) ---- */
+    int64_t v20 = A2_I64(gom, 0x20);
+    if (v20 == 0) return;                       /* be6a4 → epilogue (NO 2a62d0) */
+    if (A2_U8(v20, 0x98) == 0) return;          /* be6b1 → epilogue */
+    int32_t e0 = ((A2_vfE0)A2_I64(A2_I64(v20, 0), 0xe0))(v20);   /* vfunc 0xe0(v20) */
+    uint32_t sil = (e0 == 0 && A2_I32(A2G(0), 0xb1540c) > 0) ? 1u : 0u;
+    int elide;
+    if (A2_U8(A2G(0), 0xb154d0) == 0 &&
+        ((A2_I64(A2G(0), 0xb2b368) - A2_I64(A2G(0), 0xb2b360)) >> 3) == 0)      elide = 1;
+    else if (g_a2.f28af60(A2G(0xb153e0)) != 0)                                   elide = 1;
+    else if (g_a2.f2b0350(gom) == 0)                                            elide = 1;
+    else { elide = 0; sil = 1; }
+    int run_walk;
+    if (elide) run_walk = (sil != 0) ? (A2_U8(A2G(0), 0xb2766c) != 0) : 1;
+    else       run_walk = (A2_U8(A2G(0), 0xb2766c) != 0);
+    if (run_walk) {
+        uint8_t *sent = (uint8_t *)(uintptr_t)gom + 0xf0;
+        for (uint8_t *node = *(uint8_t **)((uint8_t *)(uintptr_t)gom + 0xf8);
+             node != sent; node = *(uint8_t **)(node + 0x8)) {
+            int64_t op = *(int64_t *)(node + 0x18);
+            g_a2.f3a6b80(op ? op - 0x18 : 0, p2, sil);   /* IDENTITY: binary per-object body */
+            InterlockedIncrement(&g_a2_walk_calls);
+        }
+    }
+
+    /* ---- block 3: 2nd master sweep → vfunc_10(obj,3) → 3fc750 ---- */
+    int64_t v20b = A2_I64(gom, 0x20);
+    if (((A2_vfE0)A2_I64(A2_I64(v20b, 0), 0xe0))(v20b) == 0 && A2_I32(A2G(0), 0xb1540c) < 1) {
+        uint8_t *sent = (uint8_t *)(uintptr_t)gom + 0xf0;
+        for (uint8_t *node = *(uint8_t **)((uint8_t *)(uintptr_t)gom + 0xf8);
+             node != sent; node = *(uint8_t **)(node + 0x8)) {
+            int64_t op = *(int64_t *)(node + 0x18);
+            int64_t obj = op ? op - 0x18 : 0;
+            if (obj && A2_U8(obj, 0x335) != 0xff) {
+                int64_t r = ((A2_vf10)A2_I64(A2_I64(obj, 0), 0x10))(obj, 3);
+                if (r) g_a2.f3fc750(r);
+            }
+        }
+    }
+
+    /* ---- block 4: second_update_list → DynamicTransform 3ac530(obj,0) ---- */
+    {
+        uint8_t *sent = (uint8_t *)(uintptr_t)gom + 0x138;
+        for (uint8_t *node = *(uint8_t **)((uint8_t *)(uintptr_t)gom + 0x140);
+             node != sent; node = *(uint8_t **)(node + 0x8)) {
+            int64_t op = *(int64_t *)(node + 0x18);
+            g_a2.f3ac530(op ? op - 0x18 : 0, 0);
+        }
+    }
+
+    /* ---- block 5: creation_params reverse-loop spawn-drain (29f810) ---- */
+    int32_t iVar5 = A2_I32(A2G(0), 0xb0a320);
+    for (int idx = A2_I32(gom, 0x600) - 1; idx >= 0; idx--) {
+        uint8_t *base = (uint8_t *)(uintptr_t)A2_I64(gom, 0x5f8) + (int64_t)idx * 0x30;
+        if (A2_I32(base, 0) <= iVar5) {
+            int64_t pv = g_a2.f29f810(gom, A2_I64(base, 0x8), A2_I32(base, 0x10),
+                                      (int64_t)(base + 0x14), (int64_t)(base + 0x20),
+                                      A2_U8(base, 0x2c), A2_U8(base, 0x2d));
+            if (A2_U8(base, 0x2e) == 1) {
+                int64_t r = ((A2_vf10)A2_I64(A2_I64(pv, 0), 0x10))(pv, 0x19);
+                if (r) { A2_I64(r, 0x40) = 0; A2_I32(r, 0x48) = 0; }
+            }
+            int32_t cnt = A2_I32(gom, 0x600);
+            if (idx < cnt) {
+                g_a2.f2b2fe0((int64_t)gom + 0x5f0, idx, idx + 1, (cnt - idx) - 1);
+                A2_I32(gom, 0x600) = cnt - 1;
+            }
+        }
+    }
+
+    /* ---- block 6: pick the active player record → 2aca60 ---- */
+    int64_t pg10 = 0;
+    {
+        int64_t arr = 0;
+        if      (A2_I32(gom, 0x478) > 0) arr = A2_I64(gom, 0x470);
+        else if (A2_I32(gom, 0x490) > 0) arr = A2_I64(gom, 0x488);
+        if (arr) pg10 = g_a2.f2aca60(gom, A2_I32(arr, 0));
+    }
+
+    /* ---- block 7: mode/bridge FSM @ +0x618 ---- */
+    {
+        int32_t mode = A2_I32(gom, 0x618);
+        int goto_b7b = 0;
+        if (mode == 1) {
+            int64_t pg11 = 0; int bridge = 0;
+            if (A2_U8(A2G(0), 0xb154d0) != 0) {
+                pg11 = g_a2.f2aca60(gom, A2_I32(A2G(0), 0xb154dc));
+                if (pg11) bridge = 1;
+            }
+            if (!bridge && pg10) { pg11 = pg10; bridge = 1; }
+            if (bridge) {
+                int64_t r = ((A2_vf38)A2_I64(A2_I64(A2_I64(pg11, 0x2a0), 0), 0x38))(A2_I64(pg11, 0x2a0));
+                float tmp[3] = { A2_F32(r, 0xc), A2_F32(r, 0x1c), A2_F32(r, 0x2c) };
+                g_a2.f44a1a0(A2G(0xb30350), tmp);
+                g_a2.f3de570(A2G(0xb27f60), pg11, 0);
+                A2_I32(gom, 0x618) = 2;
+                goto_b7b = 1;
+            } else {
+                A2_I32(gom, 0x618) = 3;
+                g_a2.f28c720(A2G(0xb153e0), 0);
+                g_a2.f28c6c0(A2G(0xb153e0));
+                if (A2_U8(A2G(0), 0xb154d0) != 0) { A2_I32(gom, 0x618) = -1; g_a2.f28f590(A2G(0xb153e0)); }
+                mode = A2_I32(gom, 0x618);
+            }
+        }
+        if (goto_b7b || mode == 2) {            /* be9f7 BLOCK7B */
+            if (A2_U8(A2G(0), 0xb303c0) == 0) {
+                A2_I32(gom, 0x618) = 3;
+                g_a2.f28c720(A2G(0xb153e0), 0);
+                g_a2.f28c6c0(A2G(0xb153e0));
+                if (A2_U8(A2G(0), 0xb154d0) != 0) { A2_I32(gom, 0x618) = -1; g_a2.f28f590(A2G(0xb153e0)); }
+            }
+        }
+    }
+
+    /* ---- block 7c: roster id-match → bVar2 (gates 2b92e0/2b76a0 below) ---- */
+    uint8_t bVar2 = 0;
+    if (g_a2.f28af60(A2G(0xb153e0)) == 0) {
+        int proceed = (A2_U8(A2G(0), 0xb154d0) != 0) ||
+                      (((A2_I64(A2G(0), 0xb2b368) - A2_I64(A2G(0), 0xb2b360)) >> 3) != 0);
+        if (proceed) {
+            int32_t id = g_a2.f294a70(A2G(0xa16fd0));
+            int n478 = A2_I32(gom, 0x478);
+            if (n478 > 0) {
+                uint8_t *rec = (uint8_t *)(uintptr_t)A2_I64(gom, 0x470) + 4;
+                for (int i = 0; i < n478; i++, rec += 0x58)
+                    if (A2_I32(rec, 4) == id || A2_I32(rec, 0) == id) { bVar2 = 1; break; }
+            }
+            if (!bVar2) {
+                int n490 = A2_I32(gom, 0x490);
+                if (n490 > 0) {
+                    uint8_t *rec = (uint8_t *)(uintptr_t)A2_I64(gom, 0x488) + 4;
+                    for (int i = 0; i < n490; i++, rec += 0x58)
+                        if (A2_I32(rec, 4) == id || A2_I32(rec, 0) == id) { bVar2 = 1; break; }
+                }
+            }
+        }
+    }
+
+    /* ---- block 8: collect (2ad100) → gated apply (2b92e0) → vector RAII ---- */
+    {
+        typedef struct { void *vftable; void *data; int32_t size; uint32_t tag; } A2DynVec;
+        void *VFT = (void *)A2G(0x800488);
+        A2DynVec vecA = { VFT, 0, 0, 0 }, vecB = { VFT, 0, 0, 0 };
+        if (g_a2.f2ad100(gom, &vecA, &vecB) != 0) {
+            void *p18 = *(void **)A2G(0xb15618);
+            void *p40 = *(void **)A2G(0xb15640);
+            void *p50 = *(void **)A2G(0xb15650);
+            int64_t v_eea0 = A2_I64(A2G(0), 0xb2eea0);
+            if ((p18 == 0 || ((A2_fpred0)p18)() == 0) &&
+                (p40 == 0 || ((A2_fpred0)p40)() == 0) &&
+                (p50 == 0 || ((A2_fpred0)p50)() == 0) &&
+                (A2_I32(v_eea0, 0x44) != 1 || g_a2.f28af60(A2G(0xb153e0)) != 0) &&
+                bVar2 == 0) {
+                g_a2.f2b92e0(gom, &vecA, &vecB);
+            }
+        }
+        if (vecA.data) { if (vecA.tag & 0x80000000u) HeapFree(GetProcessHeap(), 0, vecA.data); else g_a2.ffree(vecA.data); }
+        if (vecB.data) { if (vecB.tag & 0x80000000u) HeapFree(GetProcessHeap(), 0, vecB.data); else g_a2.ffree(vecB.data); }
+    }
+
+    /* ---- block 8b: 2b76a0 (gated) then the final flush 2a62d0 ---- */
+    if (A2_I32(gom, 0x490) != 0) {
+        void *p55 = *(void **)A2G(0xb155f8);
+        void *p40 = *(void **)A2G(0xb15640);
+        void *p50 = *(void **)A2G(0xb15650);
+        if ((p55 == 0 || ((A2_fpred0)p55)() == 0) &&
+            (p40 == 0 || ((A2_fpred0)p40)() == 0) &&
+            (p50 == 0 || ((A2_fpred0)p50)() == 0) &&
+            bVar2 == 0) {
+            g_a2.f2b76a0(gom);
+        }
+    }
+    g_a2.f2a62d0(gom);
+}
+
+typedef void (*A2OrigFn)(int64_t, int64_t);
+static A2OrigFn g_a2_2be640_orig = NULL;
+static void a2_t2be640_dispatch(int64_t gom, int64_t p2) {
+    if (g_a2_level >= 1) a2_tick_2be640(gom, (uint32_t)p2);
+    else if (g_a2_2be640_orig) g_a2_2be640_orig(gom, p2);
+}
+
+/* Install: repoint the tail22-body call site(s) to 2be640 (x2) → our dispatcher. Mirrors
+ * install_tail22_body_hooks' E8 scan, but owns the seam in the release/oracle build (that timing
+ * installer is #ifdef EAW_PROFILE). Gated by a2_on(); if pfire is armed, a2_on() already declined. */
+static BOOL install_a2_hooks(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    if (!g_dt_imgbase) g_dt_imgbase = (uintptr_t)exe;
+    g_a2.imgbase = (uintptr_t)exe;
+    g_a2.f20ed70 = (A2_f20ed70)(g_a2.imgbase + 0x20ed70);
+    g_a2.f3a6b80 = (A2_f3a6b80)(g_a2.imgbase + 0x3a6b80);
+    g_a2.f3fc750 = (A2_f3fc750)(g_a2.imgbase + 0x3fc750);
+    g_a2.f3ac530 = (A2_f3ac530)(g_a2.imgbase + 0x3ac530);
+    g_a2.f29f810 = (A2_f29f810)(g_a2.imgbase + 0x29f810);
+    g_a2.f2b2fe0 = (A2_f2b2fe0)(g_a2.imgbase + 0x2b2fe0);
+    g_a2.f2aca60 = (A2_f2aca60)(g_a2.imgbase + 0x2aca60);
+    g_a2.f28af60 = (A2_fpred1)(g_a2.imgbase + 0x28af60);
+    g_a2.f2b0350 = (A2_fpred1)(g_a2.imgbase + 0x2b0350);
+    g_a2.f28c720 = (A2_f28c720)(g_a2.imgbase + 0x28c720);
+    g_a2.f28c6c0 = (A2_fvoid1)(g_a2.imgbase + 0x28c6c0);
+    g_a2.f28f590 = (A2_fvoid1)(g_a2.imgbase + 0x28f590);
+    g_a2.f44a1a0 = (A2_f44a1a0)(g_a2.imgbase + 0x44a1a0);
+    g_a2.f3de570 = (A2_f3de570)(g_a2.imgbase + 0x3de570);
+    g_a2.f294a70 = (A2_f294a70)(g_a2.imgbase + 0x294a70);
+    g_a2.f2ad100 = (A2_f2ad100)(g_a2.imgbase + 0x2ad100);
+    g_a2.f2b92e0 = (A2_f2b92e0)(g_a2.imgbase + 0x2b92e0);
+    g_a2.f2b76a0 = (A2_fvoid1)(g_a2.imgbase + 0x2b76a0);
+    g_a2.f2a62d0 = (A2_fvoid1)(g_a2.imgbase + 0x2a62d0);
+    g_a2.ffree   = (A2_ffree)(g_a2.imgbase + 0x769c94);
+
+    BYTE *tail_fn  = (BYTE *)exe + TAIL22_RVA;
+    BYTE *fn2be640 = (BYTE *)exe + T2BE640_RVA;
+    g_a2_2be640_orig = (A2OrigFn)fn2be640;
+
+    BYTE *stub = alloc_near(tail_fn, 14);
+    if (!stub) { log_write("[eaw-mt] WARN: alloc_near failed for a2 stub\n"); return FALSE; }
+    write_abs_jmp(stub, (uint64_t)a2_t2be640_dispatch);
+
+    int n = 0;
+    for (int i = 0; i <= TAIL22_BODY_SIZE - 5; i++) {
+        if (tail_fn[i] == 0xE8) {
+            int32_t rel; memcpy(&rel, tail_fn + i + 1, 4);
+            BYTE *target = tail_fn + i + 5 + rel;
+            if (target == fn2be640) {
+                int32_t nr = (int32_t)(stub - (tail_fn + i + 5));
+                DWORD old;
+                VirtualProtect(tail_fn + i + 1, 4, PAGE_EXECUTE_READWRITE, &old);
+                memcpy(tail_fn + i + 1, &nr, 4);
+                VirtualProtect(tail_fn + i + 1, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), tail_fn + i, 5);
+                n++;
+            }
+        }
+    }
+    char m[160];
+    sprintf(m, "[eaw-mt] A2: 2be640 walk-driver seam repointed at %d tail22 call site(s)\n", n);
+    log_write(m);
+    return n > 0;
+}
+
+/* =========================================================================
  * Per-entity Pump_Threads hook inside FUN_1403a6b80 (Phase 5 Step 10)
  *
  * Root cause confirmed: FUN_1403a6b80 calls FUN_140247a90 (Pump_Threads)
@@ -13271,6 +13609,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         build_meg_index();                 /* MEG archive filename index (for meg_has / nf_cache) */
         install_b141f70_subcallee_hooks(); /* nf_cache: MEG not-found memo (EAW_NO_MEGSKIP) */
         if (pfire_on()) install_pfire_hooks(); /* §8.10 step 4: gated 1-shard fire takeover (EAW_PFIRE=1; STAGE A identity) */
+        if (a2_on()) install_a2_hooks();       /* a2.2.0: gated sim-tick walk-driver takeover (EAW_A2=1; full 2be640 transcription, identity) */
 
 #ifdef EAW_PROFILE
         /* ---- Measurement-only instrumentation (compiled out of the release build) ---- */

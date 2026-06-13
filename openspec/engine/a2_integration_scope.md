@@ -265,6 +265,50 @@ gate — proceed to a2.2 (the 1-shard takeover) after the a2.0b retrofit-delta s
 
 a2.2 is the a1-successor (first sim-state control-flow takeover). a2.0 must clear its gate first.
 
+### ✅ a2.2.0 RESULT — the sim-tick CONTROL-FLOW TAKEOVER is live (2026-06-12)
+
+**Our code now drives the GOM tick.** `EAW_A2=1` replaces the binary `FUN_1402be640` (the per-tick
+GameObjectManager update, called ×2 from the tail22 body) with `a2_tick_2be640` in `hooks/winmm_proxy.c`
+— a **faithful transcription** of all 8 blocks of `decomp/2be640.c`, verified field-by-field against an
+`objdump` of the baseline binary (`binaries/original/StarWarsG.exe` @ `0x1402be640..0x1402bec69`). Per
+the two Rule-6 sign-offs taken this session: **full walk-driver** (spec-literal — drive the
+`master_update_list` head→sentinel walk ourselves, not the lighter `3a6b80` call-site repoint) +
+**flip-behind-kill-switch** (validate by DTWORLD identity + crash-free longevity, not a shadow compare).
+
+**a2.2.0 is IDENTITY ONLY:** block 2 (the walk) is driven by OUR loop but still calls the binary
+per-object body `3a6b80`; every other block (1: `20ed70` preamble; 3: 2nd master sweep `3fc750`;
+4: `second_update_list` `3ac530`; 5: `creation_params` spawn-drain `29f810`; 6: player-roster `2aca60`;
+7: mode/bridge FSM `28c720`/`3de570`/…; 8: `DynamicVectorClass` collect/apply `2ad100`/`2b92e0` + RAII +
+final flush `2a62d0`) calls its binary helper. Zero intended behavior change — this isolates the
+control-flow takeover from the lifted bodies (which enter at a2.2.1+).
+
+**Wiring:** a new `install_a2_hooks()` (gated by `a2_on()`, in the always-installed section) repoints the
+2 tail22→`2be640` call sites to our dispatcher — so it works in the **lean `EAW_ORACLE` build** where
+DTWORLD is emitted (the profile-only `install_tail22_body_hooks` timing detour is left untouched).
+**Mutually exclusive with `EAW_PFIRE`** (both own the `2be640` seam); `a2_on()` refuses to co-arm.
+Ground-truth offsets banked in the code header (master_update_list head@+0xf8/sent@+0xf0,
+second_update_list +0x140/+0x138, node{next@+8,objptr@+0x18}, creation_params@+0x5f8 cnt@+0x600
+stride 0x30, param_1[1]@+0x5f0, mode FSM@+0x618, rosters +0x470/+0x478 & +0x488/+0x490 stride 0x58,
+DynVec vftable@imgbase+0x800488, inline-free thunk@0x769c94).
+
+**Validation (oracle build, `just a2=1 difftrace=1 launch-foc-desktop`, menu-demo battle):**
+- **DTWORLD identity GATE = PASS.** Battle-1 (the deterministic demo intro, identical initial state from
+  launch) is **bit-identical** between `EAW_A2=0` and `EAW_A2=1`, hash AND global-LCG seed:
+  `tick=1024 h=ea5f27913390cce2 seed=8f00da8b`, `tick=2048 h=7f7fdaf6ca0fcbaa seed=cdb39e0c` (these also
+  match the prior spatial-query baseline → run-to-run reproducible). The matching seed proves the RNG
+  draw sequence is preserved, not just object positions. (Battles 2–4 of the attract loop diverge across
+  separate launches because the demo sequence is not frame-aligned launch-to-launch — different scenarios,
+  not an a2 regression; battle-1 is the controlled comparison, the established project methodology.)
+- **Stability:** the driver ran **21,505 ticks / 6.3M object-walk calls, ZERO crashes** (vs the baseline's
+  shorter run) — far past the a2.0 measure's reach. Live evidence + the `repointed at 2 tail22 call site(s)`
+  line confirm our driver, not the binary, walked every object.
+
+**⇒ a2.2.0 clears its gate.** The riskiest control-flow change in the project (first time our code drives
+the sim tick) is in-engine and behavior-neutral. Next: **a2.2.1** — acquire/populate the `FrozenSnapshot`
+around block 2 (reads still live, 1-shard), then a2.2.2+ swaps block-2 cheap-mass sub-calls for the lifted
+`sim/` bodies + two-phase fire. (DTWORLD coverage caveat: it hashes only fire-control objects; the gate
+relies on it + crash-free longevity, the same posture as the spatial-query and pfire validations.)
+
 ---
 
 ## 7. Acceptance gate (contract §5, adapted for the fallback)

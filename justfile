@@ -23,6 +23,8 @@ pumpprof := ""
 offwatch := ""
 # Milestone a1: arm the gated SFX takeover (oracle build, also needs difftrace=1). Override: just difftrace=1 a1=1 launch-foc-desktop
 a1 := ""
+# Milestone a2.2.0: arm the gated sim-tick walk-driver takeover at 2be640 (oracle build + difftrace=1 for the DTWORLD gate; default OFF, mutually exclusive with pfire). Override: just a2=1 difftrace=1 launch-foc-desktop
+a2 := ""
 # a2.0 Amdahl measurement (oracle build): time 3a6b80 body vs 3a76b0 fire-control, DT hooks skipped. Override: just a2measure=1 launch-foc-desktop
 a2measure := ""
 # B3.1 (§8.25): arm the 385190 opp-scan selection-bit-exact reimpl diff (oracle build, also needs difftrace=1; ~2x scan cost). Override: just difftrace=1 dtscanobs=1 launch-foc-desktop
@@ -351,6 +353,7 @@ launch-foc-desktop:
       EAW_PUMPPROF={{pumpprof}} \
       EAW_OFFWATCH={{offwatch}} \
       EAW_A1={{a1}} \
+      EAW_A2={{a2}} \
       EAW_A2MEASURE={{a2measure}} \
       EAW_DTSCAN_OBS={{dtscanobs}} \
       EAW_PFIRE_SCAN={{pfirescan}} \
