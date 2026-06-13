@@ -470,12 +470,34 @@ call site); intercept genuinely in-path — **1.31M+ calls** routed through it; 
 zero crashes. **⇒ the redirect mechanism is proven inert** — the foundation a2.4.1 uses to swap a lifted body
 in-situ. Evidence: `eaw-mt.log.a240-body1`.
 
-**Next: a2.4.1** — at `EAW_A2_BODY>=2`, dispatch the `3ac530` intercept to a **C re-transcription of
-DynamicTransform** in the hook (Finding 3: `sim/` not linked) instead of the binary; gate: DTWORLD still
-bit-identical (the C body reproduces the binary, as DTDYN proved offline) + zero crashes. The intercept's
-a2.4.1 hook point is already stubbed (`winmm_proxy.c`, `a2_body_3ac530_intercept`). Then repoint the
-remaining cheap-mass sites (`557ba0`, `3c2710`) the same way; the behavior-loop dispatch is an indirect
-`vtable[0x30]` call (not E8) → handled at the worker-extraction step, not by repointing.
+### ✅ a2.4.1 RESULT — the C DynamicTransform numeric core is bit-exact IN-SITU (2026-06-13)
+
+⚠️Decoding `3ac530` showed it is **not pure numeric** — `sim/dynamic_transform.cpp` lifted only the
+matrix-rebuild core (identity + 3 Givens + 90°); the full `3ac530` also has a **Class-3 render/scene tail**
+(`266340`/`265d80`/`vtable[0x28]`/listener loop) that never parallelizes. A full C *replace* would force
+transcribing that tail (risk, zero shard payoff — the §a2.4 Finding-1 pattern one level down). So a2.4.1 is
+the project-standard **in-situ SHADOW ORACLE**, not a replace.
+
+`EAW_A2_BODY=2` (`winmm_proxy.c`, `a2_dt_core` + `a2_body_3ac530_intercept`): a literal C port of
+`sim/dynamic_transform.cpp` (the guarded sin/cos via binary `776650`/`776150`, three Givens with the
+decompile's operand order). The intercept captures the inputs (euler `+0x90/94/98`, pos `+0x78/7c/80`), lets
+the **binary drive** (numeric + render tail), then runs the C core into a scratch matrix and compares it
+bit-exact against the binary's written matrix at `obj+0x248`. Constants read live from the binary (no assumed
+1.0/2.0/360.0 — Rule 2): `d2r=(DAT_8007dc·DAT_8007d4)/DAT_8007f4`, 90°=`d2r·DAT_8007ec`, small-angle
+cos=`DAT_1407ffaf8`.
+
+**Validation (`just a2body=2 difftrace=1`, demo battle-1):** repoint `site(s)=1`; **shadow `ok=1,310,721
+bad=0`** — the C core matched the binary's matrix bit-for-bit on every one of 1.31M real calls (no FIRST
+MISMATCH ever fired); DTWORLD **bit-identical to baseline** (`ea5f…`/`7f7f…`) — behavior-neutral (binary
+drives); zero crashes. **⇒ the lifted DynamicTransform numeric core is proven correct in-situ on real game
+data** — the prerequisite for running it on a worker. Evidence: `eaw-mt.log.a241-body2`.
+
+**Next: a2.4.2** — extract the proven C core onto a worker. Options to confirm first: the matrix rebuild is
+idempotent (resets to identity from euler/pos each call, no read-after-write on its own output), so a worker
+can pre-compute it while the main thread's binary `3ac530` re-does it harmlessly — but real speedup needs the
+binary's numeric part skipped (patch/transcribe its prologue). Also: shadow-validate `557ba0` & `3c2710` the
+same way (repoint already generalizes), and handle the behavior-loop `vtable[0x30]` (indirect, not E8) at
+the worker step. Then the `ShardScheduler` engine binding (`sim/shard_scheduler.h`) partitions the work-list.
 
 ---
 

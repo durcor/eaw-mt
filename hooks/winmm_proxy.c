@@ -2974,10 +2974,19 @@ static void a2_t2be640_dispatch(int64_t gom, int64_t p2) {
  * they coexist. Self-contained install (own imgbase + real pointer) so it works with EAW_A2 unset.
  * ========================================================================= */
 typedef void (*A2Body3ac530Fn)(int64_t, int32_t);
+typedef float (*A2BodyScFn)(float);
 static A2Body3ac530Fn g_a2body_3ac530_real = NULL;
 static int       g_a2body_level = -1;
 static uintptr_t g_a2body_imgbase = 0;
 static LONG      g_a2body_3ac530_calls = 0;
+/* a2.4.1 — DynamicTransform numeric-core constants (read from the binary at install) + the shadow-oracle
+ * counters. The C core is a literal port of sim/dynamic_transform.cpp; the binary's small-angle cos default
+ * (DAT_1407ffaf8) and degrees→radians scale (DAT_8007dc·DAT_8007d4/DAT_8007f4) are read live (no assumed
+ * 1.0/2.0/360.0 — Rule 2). sin=FUN_140776650, cos=FUN_140776150. */
+static A2BodyScFn g_a2body_sin = NULL, g_a2body_cos = NULL;
+static float     g_a2body_d2r = 0.0f, g_a2body_ang90 = 0.0f, g_a2body_smallcos = 1.0f;
+static int64_t   g_a2body_dt_ok = 0, g_a2body_dt_bad = 0;   /* shadow: per-call matrix ok / mismatch */
+static int       g_a2body_dt_firstbad_logged = 0;
 
 static int a2_body_on(void) {
     if (g_a2body_level < 0) {
@@ -2985,7 +2994,7 @@ static int a2_body_on(void) {
         g_a2body_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
         if (g_a2body_level < 0) g_a2body_level = 0;
         if (g_a2body_level >= 2)
-            log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=2) — 3ac530 (DynamicTransform) site inside 3a6b80 REDIRECTED to the C re-transcription. DTWORLD must match baseline (the C body reproduces the binary; DTDYN-validated).\n");
+            log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=2) — 3ac530 DynamicTransform SHADOW ORACLE: the C numeric-core re-transcription runs alongside the binary and its matrix is compared bit-exact (binary still drives ⇒ behavior-neutral, DTWORLD must match baseline ea5f.../7f7f...). Expect bad=0.\n");
         else if (g_a2body_level >= 1)
             log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=1) — 3ac530 call-site inside 3a6b80 repointed to a PASS-THROUGH intercept (a2.4.0 identity foothold). DTWORLD must match the EAW_A2_BODY=0 baseline (ea5f.../7f7f...).\n");
         else
@@ -2994,24 +3003,97 @@ static int a2_body_on(void) {
     return g_a2body_level;
 }
 
-/* call-site replacement for FUN_1403ac530 inside 3a6b80 (the Pass-C DynamicTransform). a2.4.0: pure
- * pass-through (identity). a2.4.1 (level>=2): dispatch to the C DynamicTransform re-transcription. */
+/* ---- a2.4.1: C re-transcription of the DynamicTransform NUMERIC CORE (port of sim/dynamic_transform.cpp) ----
+ * The lifted core = identity-reset + translation=pos + three Givens rotations (euler_z via 480f0, euler_y
+ * inline, euler_x via cf8d0) + a final 90° (480f0). Operand order preserved from decomp/3ac530.c so it is
+ * bit-exact. The render/scene tail of 3ac530 (266340/265d80/listener loop, Class-3) is NOT part of the core
+ * and stays in the binary — which is why a2.4.1 SHADOW-validates (run core + binary, compare) rather than
+ * replacing: replacing would force transcribing the never-parallelized render tail (risk, no shard payoff). */
+static inline void a2_dt_guarded_sc(float angle, float *s, float *c) {
+    uint32_t bits; memcpy(&bits, &angle, sizeof bits);
+    if (0x1d000000u < (bits & 0x7f800000u)) { *s = g_a2body_sin(angle); *c = g_a2body_cos(angle); }
+    else                                    { *s = angle;               *c = g_a2body_smallcos; }
+}
+/* 480f0: a=col0 b=col1 → col1'=b*c-a*s ; col0'=a*c+b*s. */
+static inline void a2_dt_rot01(float m[12], float angle) {
+    float s, cc; a2_dt_guarded_sc(angle, &s, &cc);
+    for (int r = 0; r < 3; ++r) { int i = 4*r; float a = m[i], b = m[i+1]; m[i+1] = b*cc - a*s; m[i] = a*cc + b*s; }
+}
+/* inline (euler_y): a=col2 b=col0 → col2'=a*c+b*s ; col0'=b*c-a*s. */
+static inline void a2_dt_rot20(float m[12], float angle) {
+    float s, cc; a2_dt_guarded_sc(angle, &s, &cc);
+    for (int r = 0; r < 3; ++r) { int i = 4*r; float a = m[i+2], b = m[i]; m[i+2] = a*cc + b*s; m[i] = b*cc - a*s; }
+}
+/* cf8d0: a=col2 b=col1 → col2'=a*c-b*s ; col1'=b*c+a*s. */
+static inline void a2_dt_rot12(float m[12], float angle) {
+    float s, cc; a2_dt_guarded_sc(angle, &s, &cc);
+    for (int r = 0; r < 3; ++r) { int i = 4*r; float b = m[i+1], a = m[i+2]; m[i+2] = a*cc - b*s; m[i+1] = b*cc + a*s; }
+}
+static void a2_dt_core(float m[12], float ex, float ey, float ez, float px, float py, float pz) {
+    m[0]=1.0f; m[1]=0.0f; m[2]=0.0f;  m[3]=px;
+    m[4]=0.0f; m[5]=1.0f; m[6]=0.0f;  m[7]=py;
+    m[8]=0.0f; m[9]=0.0f; m[10]=1.0f; m[11]=pz;
+    a2_dt_rot01(m, g_a2body_d2r * ez);   /* 480f0 by euler_z (+0x98) */
+    a2_dt_rot20(m, g_a2body_d2r * ey);   /* inline by euler_y (+0x94) */
+    a2_dt_rot12(m, g_a2body_d2r * ex);   /* cf8d0  by euler_x (+0x90) */
+    a2_dt_rot01(m, g_a2body_ang90);      /* 480f0 by const 90° (DAT_1408007ec) */
+}
+
+/* call-site replacement for FUN_1403ac530 inside 3a6b80 (the Pass-C DynamicTransform). a2.4.0 (level 1):
+ * pure pass-through. a2.4.1 (level>=2): SHADOW ORACLE — capture the inputs, let the binary drive (numeric +
+ * render tail), then run the C core into a scratch matrix and compare against the binary's written matrix at
+ * obj+0x248 bit-exact. Behavior-NEUTRAL (binary still drives ⇒ DTWORLD unchanged); proves the C core matches
+ * the binary in-situ on real game data — the prerequisite for putting it on a worker (a2.4.2). */
 static void a2_body_3ac530_intercept(int64_t obj, int32_t mode) {
     LONG c = InterlockedIncrement(&g_a2body_3ac530_calls);
+    float ex=0,ey=0,ez=0,px=0,py=0,pz=0; int shadow = (g_a2body_level >= 2 && obj);
+    if (shadow) {
+        ex = *(float *)(obj + 0x90); ey = *(float *)(obj + 0x94); ez = *(float *)(obj + 0x98);
+        px = *(float *)(obj + 0x78); py = *(float *)(obj + 0x7c); pz = *(float *)(obj + 0x80);
+    }
+    if (g_a2body_3ac530_real) g_a2body_3ac530_real(obj, mode);   /* binary drives (numeric + Class-3 tail) */
+    if (shadow) {
+        float sm[12]; a2_dt_core(sm, ex, ey, ez, px, py, pz);
+        const float *bm = (const float *)(obj + 0x248);   /* binary's rebuilt 3x4 matrix */
+        int bad = 0;
+        for (int i = 0; i < 12; ++i) if (memcmp(&sm[i], &bm[i], 4) != 0) { bad = 1; break; }
+        if (bad) {
+            g_a2body_dt_bad++;
+            if (!g_a2body_dt_firstbad_logged) {
+                g_a2body_dt_firstbad_logged = 1;
+                char m[320];
+                sprintf(m, "[eaw-mt] A2BODY-DT FIRST MISMATCH @call=%ld eul=(%.9g,%.9g,%.9g) | C m3/7/11=%.9g/%.9g/%.9g bin=%.9g/%.9g/%.9g | C m0=%.9g bin=%.9g\n",
+                        (long)c, ex, ey, ez, sm[3], sm[7], sm[11], bm[3], bm[7], bm[11], sm[0], bm[0]);
+                log_write(m);
+            }
+        } else g_a2body_dt_ok++;
+    }
     if ((c & 0x3ffff) == 1) {
-        char m[128];
-        sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 intercept calls=%ld (lvl=%d, %s)\n",
-                (long)c, g_a2body_level, g_a2body_level >= 2 ? "C-retranscribe" : "pass-through");
+        char m[200];
+        if (g_a2body_level >= 2)
+            sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 SHADOW calls=%ld | C-core vs binary ok=%lld bad=%lld (behavior-neutral)\n",
+                    (long)c, (long long)g_a2body_dt_ok, (long long)g_a2body_dt_bad);
+        else
+            sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 intercept calls=%ld (lvl=%d, pass-through)\n", (long)c, g_a2body_level);
         log_write(m);
     }
-    /* a2.4.1 hook point: if (g_a2body_level >= 2) { a2_body_dynamic_transform(obj, mode); return; } */
-    if (g_a2body_3ac530_real) g_a2body_3ac530_real(obj, mode);
 }
 
 static BOOL install_a2body_hooks(void) {
     HMODULE exe = GetModuleHandleA(NULL);
     if (!exe) return FALSE;
     g_a2body_imgbase = (uintptr_t)exe;
+    /* a2.4.1 numeric-core constants, read live from the binary (Rule 2 — no assumed 1.0/2.0/360.0). */
+    g_a2body_sin = (A2BodyScFn)((uintptr_t)exe + 0x776650);
+    g_a2body_cos = (A2BodyScFn)((uintptr_t)exe + 0x776150);
+    {
+        float c1 = *(float *)((uintptr_t)exe + 0x8007dc);   /* float32 pi */
+        float c2 = *(float *)((uintptr_t)exe + 0x8007d4);   /* 2.0 */
+        float c3 = *(float *)((uintptr_t)exe + 0x8007f4);   /* 360.0 */
+        g_a2body_d2r      = (c1 * c2) / c3;                  /* degrees→radians, binary's exact grouping */
+        g_a2body_ang90    = g_a2body_d2r * *(float *)((uintptr_t)exe + 0x8007ec);  /* the final 90° angle */
+        g_a2body_smallcos = *(float *)((uintptr_t)exe + 0x7ffaf8);                 /* small-angle cos default */
+    }
     BYTE *fn3a6b80 = (BYTE *)exe + TA6B80_RVA;
     BYTE *fn3ac530 = (BYTE *)exe + 0x3ac530ULL;
     g_a2body_3ac530_real = (A2Body3ac530Fn)fn3ac530;
