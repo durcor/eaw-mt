@@ -141,7 +141,12 @@ higher ceiling (~3.5–6×)**, not the ~2× serial-fire fallback — keeping the
 waste the lift. Remaining work to realize it (delta over the serial-fire a2):
 1. Feed `fire_control_decide`'s cross-object inputs from the `FrozenSnapshot` (target pos/health/team) + the
    frozen team-grid (spatial query) — both already tick-start-stable.
-2. The spatial-query **short-lock + copy-out** (§8.6) — the one piece not yet built.
+2. ~~The spatial-query **short-lock + copy-out** (§8.6) — the one piece not yet built.~~ ✅ **DONE
+   2026-06-12** (commit a157da6): engine binding of `sim/spatial_query.h` wired into the live opp-scan
+   reimpl — `20e780` query + copy candidate pointers to a per-thread Win32-TLS buffer under
+   `g_spatial_query_cs`, gate/score/reach eval runs lock-free from the copy. Validated **behavior-neutral**
+   (`EAW_PFIRE_SCAN=1` self-validation `wmiss=0/smiss=0`, DTWORLD bit-identical to baseline, zero crashes);
+   inert today (serial 1-shard), correct for the N-shard parallel fire pass.
 3. Drain the deferred `SpawnCommand`/`Command`/`SfxCommand` in canonical order after the parallel phase
    (`drain_parallel`, already built + host-green).
 Then `fire_control_decide` runs **inside Phase-A** (deferred writes) instead of a serial pass.
