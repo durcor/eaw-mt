@@ -456,6 +456,27 @@ ALL serial spans untouched binary (honors the hybrid + Findings 1–3), zero tra
 The fully self-driven outer-flow transcription (for worker extraction) can follow once each cheap-mass body
 is repoint-validated in-situ.
 
+### ✅ a2.4.0 RESULT — the cheap-mass call-site repoint mechanism is LIVE (2026-06-13)
+
+`EAW_A2_BODY=1` installs `install_a2body_hooks` (`winmm_proxy.c`): `alloc_near` a stub →
+`pfire_repoint_calls(3a6b80, A6B80_BODY_SIZE, 3ac530, stub)` repoints the one `3ac530` E8 site inside binary
+`3a6b80` to `a2_body_3ac530_intercept`, which (level 1) is **pure pass-through** to the real `3ac530`.
+Self-contained install (own imgbase + real pointer), orthogonal to `EAW_A2`/`EAW_PFIRE` (distinct E8 site
+from pfire's `a76b0`), works with the stock walk.
+
+**Validation (`just a2body=1 difftrace=1`, demo battle-1):** repoint `site(s)=1` (exactly one DynamicTransform
+call site); intercept genuinely in-path — **1.31M+ calls** routed through it; DTWORLD **bit-identical to the
+`EAW_A2_BODY=0` baseline** (`1024 h=ea5f27913390cce2/seed=8f00da8b`, `2048 h=7f7fdaf6ca0fcbaa/seed=cdb39e0c`);
+zero crashes. **⇒ the redirect mechanism is proven inert** — the foundation a2.4.1 uses to swap a lifted body
+in-situ. Evidence: `eaw-mt.log.a240-body1`.
+
+**Next: a2.4.1** — at `EAW_A2_BODY>=2`, dispatch the `3ac530` intercept to a **C re-transcription of
+DynamicTransform** in the hook (Finding 3: `sim/` not linked) instead of the binary; gate: DTWORLD still
+bit-identical (the C body reproduces the binary, as DTDYN proved offline) + zero crashes. The intercept's
+a2.4.1 hook point is already stubbed (`winmm_proxy.c`, `a2_body_3ac530_intercept`). Then repoint the
+remaining cheap-mass sites (`557ba0`, `3c2710`) the same way; the behavior-loop dispatch is an indirect
+`vtable[0x30]` call (not E8) → handled at the worker-extraction step, not by repointing.
+
 ---
 
 ## 7. Acceptance gate (contract §5, adapted for the fallback)

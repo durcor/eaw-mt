@@ -2959,6 +2959,72 @@ static void a2_t2be640_dispatch(int64_t gom, int64_t p2) {
     else if (g_a2_2be640_orig) g_a2_2be640_orig(gom, p2);
 }
 
+/* =========================================================================
+ * a2.4.0 — per-object body cheap-mass CALL-SITE REPOINT (EAW_A2_BODY)
+ *
+ * The buildable hybrid (a2_integration_scope.md §a2.4 START): rather than transcribe the monolithic binary
+ * FUN_1403a6b80 (whose hard-to-transcribe spans — block-B render, the Lua AI-pump RNG seed, DoT — are all
+ * serial gaps that NEVER parallelize), repoint its CHEAP-MASS E8 sub-call sites to gated intercepts (the
+ * proven pfire_repoint_calls pattern), leaving every serial span untouched binary. a2.4.0 repoints the
+ * 3ac530 (DynamicTransform, decode 3a6b80.c:140 `3ac530(obj,0)`) site to a PASS-THROUGH intercept — an
+ * identity foothold that proves the redirect mechanism is inert. a2.4.1 (level>=2) will dispatch to a C
+ * re-transcription of DynamicTransform here (sim/ is C++ host-only, not linked into this hook → must be
+ * re-transcribed in C; §a2.4 START Finding 3). Orthogonal to EAW_A2 / EAW_PFIRE: it patches inside 3a6b80,
+ * which every walk path (stock or a2-driven) calls; the 3ac530 site is distinct from pfire's a76b0 site, so
+ * they coexist. Self-contained install (own imgbase + real pointer) so it works with EAW_A2 unset.
+ * ========================================================================= */
+typedef void (*A2Body3ac530Fn)(int64_t, int32_t);
+static A2Body3ac530Fn g_a2body_3ac530_real = NULL;
+static int       g_a2body_level = -1;
+static uintptr_t g_a2body_imgbase = 0;
+static LONG      g_a2body_3ac530_calls = 0;
+
+static int a2_body_on(void) {
+    if (g_a2body_level < 0) {
+        const char *e = getenv("EAW_A2_BODY");
+        g_a2body_level = (e && e[0] && e[0] != '0') ? atoi(e) : 0;
+        if (g_a2body_level < 0) g_a2body_level = 0;
+        if (g_a2body_level >= 2)
+            log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=2) — 3ac530 (DynamicTransform) site inside 3a6b80 REDIRECTED to the C re-transcription. DTWORLD must match baseline (the C body reproduces the binary; DTDYN-validated).\n");
+        else if (g_a2body_level >= 1)
+            log_write("[eaw-mt] A2BODY: ARMED (EAW_A2_BODY=1) — 3ac530 call-site inside 3a6b80 repointed to a PASS-THROUGH intercept (a2.4.0 identity foothold). DTWORLD must match the EAW_A2_BODY=0 baseline (ea5f.../7f7f...).\n");
+        else
+            log_write("[eaw-mt] A2BODY: off (EAW_A2_BODY=1 to arm the 3a6b80 cheap-mass call-site repoint)\n");
+    }
+    return g_a2body_level;
+}
+
+/* call-site replacement for FUN_1403ac530 inside 3a6b80 (the Pass-C DynamicTransform). a2.4.0: pure
+ * pass-through (identity). a2.4.1 (level>=2): dispatch to the C DynamicTransform re-transcription. */
+static void a2_body_3ac530_intercept(int64_t obj, int32_t mode) {
+    LONG c = InterlockedIncrement(&g_a2body_3ac530_calls);
+    if ((c & 0x3ffff) == 1) {
+        char m[128];
+        sprintf(m, "[eaw-mt] A2BODY: live — 3ac530 intercept calls=%ld (lvl=%d, %s)\n",
+                (long)c, g_a2body_level, g_a2body_level >= 2 ? "C-retranscribe" : "pass-through");
+        log_write(m);
+    }
+    /* a2.4.1 hook point: if (g_a2body_level >= 2) { a2_body_dynamic_transform(obj, mode); return; } */
+    if (g_a2body_3ac530_real) g_a2body_3ac530_real(obj, mode);
+}
+
+static BOOL install_a2body_hooks(void) {
+    HMODULE exe = GetModuleHandleA(NULL);
+    if (!exe) return FALSE;
+    g_a2body_imgbase = (uintptr_t)exe;
+    BYTE *fn3a6b80 = (BYTE *)exe + TA6B80_RVA;
+    BYTE *fn3ac530 = (BYTE *)exe + 0x3ac530ULL;
+    g_a2body_3ac530_real = (A2Body3ac530Fn)fn3ac530;
+    BYTE *stub = alloc_near(fn3a6b80, 14);
+    if (!stub) { log_write("[eaw-mt] WARN: alloc_near failed for a2body 3ac530 stub\n"); return FALSE; }
+    write_abs_jmp(stub, (uint64_t)a2_body_3ac530_intercept);
+    int n = pfire_repoint_calls(fn3a6b80, A6B80_BODY_SIZE, fn3ac530, stub);
+    char m[160];
+    sprintf(m, "[eaw-mt] A2BODY: 3a6b80 cheap-mass repoint — 3ac530(DynamicTransform) site(s)=%d\n", n);
+    log_write(m);
+    return (n > 0);
+}
+
 /* Install: repoint the tail22-body call site(s) to 2be640 (x2) → our dispatcher. Mirrors
  * install_tail22_body_hooks' E8 scan, but owns the seam in the release/oracle build (that timing
  * installer is #ifdef EAW_PROFILE). Gated by a2_on(); if pfire is armed, a2_on() already declined. */
@@ -13817,6 +13883,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         install_b141f70_subcallee_hooks(); /* nf_cache: MEG not-found memo (EAW_NO_MEGSKIP) */
         if (pfire_on()) install_pfire_hooks(); /* §8.10 step 4: gated 1-shard fire takeover (EAW_PFIRE=1; STAGE A identity) */
         if (a2_on()) install_a2_hooks();       /* a2.2.0: gated sim-tick walk-driver takeover (EAW_A2=1; full 2be640 transcription, identity) */
+        if (a2_body_on()) install_a2body_hooks(); /* a2.4.0: gated cheap-mass call-site repoint inside 3a6b80 (EAW_A2_BODY=1; 3ac530 pass-through identity) */
 
 #ifdef EAW_PROFILE
         /* ---- Measurement-only instrumentation (compiled out of the release build) ---- */
