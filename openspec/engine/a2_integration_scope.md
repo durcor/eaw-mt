@@ -608,6 +608,54 @@ Phase-A/B split + the true a2 end-goal, but the bigger build (the interleaved ch
 flagged). Alternatively build the 1.53× pipeline as a self-contained win first. `557ba0`/`3c2710` get the same
 apply treatment; behavior-loop `vtable[0x30]` (indirect, not E8) is handled when self-behaviors drive workers.
 
+### 🔧 a2.4.6 START — object-shard pivot CHOSEN (user, 2026-06-13): it forces a full `3a6b80` body transcription
+
+User chose object-level sharding over the 1.53× pipeline. Deep RE of `decomp/3a6b80.c` (390 lines) + objdump
+`0x1403a6b80` settles the buildability and reshapes the increment:
+
+**FINDING A — no incremental/shortcut path; the body transcription is ALL-OR-NOTHING.** The cheap-mass that
+must move to a Phase-A worker (the inline locomotor field-copy 42–66, the behavior loop 132–138) is **inline
+code, not E8 call sites** — so unlike `3ac530`/`3c2710`/`557ba0` it CANNOT be owned by `pfire_repoint_calls`.
+And there is **no flag that splits cheap-mass from serial**: `param_3`(sil) gates the whole head+Lua+fire
+(skips far too much — incl. fire); block-B render is gated only by `obj+0x2a0`. There is **no safe
+mid-function re-entry** into the binary, so a partial transcription that "calls binary for the rest" is
+impossible. ⇒ owning the cheap-mass requires transcribing the ENTIRE per-object body (the a2.2.0-for-the-body
+step), and its first validatable milestone is the COMPLETE body driving DTWORLD-identical.
+
+**FINDING B — it IS feasible (the block-B blocker is dissolved).** The a2.4-START worry ("~26 lost-arg vtable
+calls" in block B 159–261) is resolved by objdump: those are simple **`this`-only getters** — e.g.
+`mov rcx,[rax+0x20]; call [rax+0x108]` = `(*(fn**)(*(i64*)X+0x108))(X)`. Ghidra just dropped the `rcx`
+attribution. Every serial leaf is identified (event `3a9e30`+vector-erase `582a0`/`38a1f0`/`3ac8a0`; block-B
+pose-eval `12d2c0`, scene `264cb0`/`264c80`/`2647a0`/`265280`/`2648b0`/`4775d0`/`294a40`/`2824d0`/`264840`/
+`278fa0`/`266340`, `this`-only vtable getters at `+0x100/108/110/118` + `vtable[0x28]`; Lua `246fb0`/`247a90`/
+`769c58`/`247000`/`LuaValue::vftable`; fire `396070`/`396df0`/`3a8ad0`/`3a76b0`; DoT `3727a0`/`3ab890`; RNG
+`1ffbb0`). So the transcription is mechanical but LARGE — and ~250 of 390 lines are the high-risk serial spans
+(event-loop vector-erase 82–130, block-B render 159–261, Lua pump 264–346) FINDING 1 flagged.
+
+**SPAN MAP (the transcription unit list, each = own-C or call-binary-leaf, top-level guards orchestrate):**
+1. loco 37–78: 24 field-copies (own) + `557ba0`(loco)→char + completion tail (`41aeb0`/vt[0x20]/vt[0x18]/
+   `58570`/`220ed0`). 2. preamble 79–81: `5369e0(*(obj+0xf0)+0x138,p2)`. 3. event loop 82–130: per-event
+   `3a9e30(obj,…14 args…)` + std::vector-erase of 0x38-stride elems (`582a0` move, `38a1f0` destroy, `3ac8a0`
+   clear-if-≤1). 4. behaviors 132–138: `for i=count-1..0: b=behaviors[(char)i*8]; if b[6]<=p2 && 4c3700(b):
+   vt[0x30](b,obj,p2)`. 5. transform/select 139–146: `if flags&0x100 { OUR 3ac530-apply(obj); if obj+0xb0 &&
+   *(obj+0xb0)+0x38 && (sel=vt[0x10](obj)): 3c2710(sel) }`. 6. render266340 147–157: gate `264840`/`278fa0`
+   then `266340(...)`. 7. block B 159–261: vtable-getter pair compare → pose-eval `12d2c0`+vt[0x28]; scene
+   visibility `264cb0`/`264c80`; alpha `2647a0`/`265280`/`4775d0`; flag-clear (all `this`-only calls).
+   8. Lua 264–346: `37da80`; ServiceRate/LastService node-walk via `246fb0`+Lua-value list, gate then
+   `247a90(lua_ctx)` pump + `1ffbb0` RNG seed + `769c58`/`247000` LuaValue alloc/set. 9. fire 347–373:
+   hardpoint scan (count `+0x4d`==1) → `396070`/clamp/`396df0`/`3a8ad0`; `3a76b0(obj,p2)`. 10. `obj+0x320 *=
+   DAT_b26fa4`. 11. DoT 376–386: `3727a0`+`1ffbb0` RNG+`3ab890(obj,0x11)`. The two determinism-critical RNG
+   draws (AI-pump :326, DoT :382) use `1ffbb0=float(u32* lcg,float lo,float hi)` (XMM1/2; `xmm7=DAT_800860`
+   bit-XOR), LCG=`&DAT_140a13e24` — must hit the global stream in the exact order/values (DTWORLD gate).
+
+**Build plan:** transcribe all spans into `a2_a6b80_body` (per-span helpers) calling binary leaves; gate
+`EAW_A2_BODY=6` under the **EAW_A2 walk-driver** (block-2's `g_a2.f3a6b80(obj,p2,sil)` → `a2_a6b80_body`);
+identity-first, DTWORLD-gated (`just a2=1 a2body=6` must == `ea5f…`/`7f7f…`, 0 crashes). Default OFF ⇒
+release-safe. THEN a2.4.7 reorders the transcribed body into Phase-A(cheap-mass: spans 1,4,5)/Phase-B(serial),
+a2.4.8 shards Phase-A across N workers by `shard_of(obj+0x50)` with the serial Phase-B drained on main in walk
+order. Multi-turn; this is the riskiest control-flow change since a2.2.0 (but gated + identity-validated,
+same playbook).
+
 ---
 
 ## 7. Acceptance gate (contract §5, adapted for the fallback)
