@@ -304,10 +304,33 @@ DynVec vftable@imgbase+0x800488, inline-free thunk@0x769c94).
   line confirm our driver, not the binary, walked every object.
 
 **⇒ a2.2.0 clears its gate.** The riskiest control-flow change in the project (first time our code drives
-the sim tick) is in-engine and behavior-neutral. Next: **a2.2.1** — acquire/populate the `FrozenSnapshot`
-around block 2 (reads still live, 1-shard), then a2.2.2+ swaps block-2 cheap-mass sub-calls for the lifted
-`sim/` bodies + two-phase fire. (DTWORLD coverage caveat: it hashes only fire-control objects; the gate
-relies on it + crash-free longevity, the same posture as the spatial-query and pfire validations.)
+the sim tick) is in-engine and behavior-neutral. (DTWORLD coverage caveat: it hashes only fire-control
+objects; the gate relies on it + crash-free longevity, the same posture as the spatial-query and pfire
+validations.)
+
+### ✅ a2.2.1 RESULT — the tick-start FrozenSnapshot is populated (2026-06-12, same commit as a2.2.2-prep)
+
+**`EAW_A2>=2`** adds `a2_snapshot_acquire(gom)` — a pre-pass over the `master_update_list` in **visitation
+rank order** (== block-2's order) that captures each object's cross-read fields into a grow-only frozen
+buffer (`g_a2_snap`) BEFORE the per-object bodies mutate anything, with `a2_snapshot_release()` at tick end.
+This is Interface #2 (`sim/frozen_snapshot.h`) realized on the engine: the eventual N-shard Phase-A will
+read OTHER objects only from this tick-start view (no read-after-write race). **a2.2.1 only POPULATES it —
+block 2's reads stay LIVE (1-shard ⇒ no race) — so it is behavior-neutral.** Gated at `>=2` so the proven
+a2.2.0 takeover (`=1`) stays a clean A/B baseline.
+
+**Confirmed offsets only (Rule 2 — no guessed offsets):** `object_id @ obj+0x50`, `pos @ obj+0x78/+0x7c/
++0x80` (the dominant cross-read for the sensor/fog/aim cheap-mass). `health/target_id/team/visible` stay 0
+in the `A2ObjState` POD until **a2.2.2** confirms their offsets by validated use (they are not cleanly
+documented today; the lifted sensor bodies abstract them and fire-marshalling uses geometry).
+
+**Validation (`just a2=2 difftrace=1 launch-foc-desktop`):** DTWORLD battle-1 **bit-identical** to the
+`EAW_A2=0` baseline (hash + seed: 1024=ea5f27913390cce2/8f00da8b, 2048=7f7fdaf6ca0fcbaa/cdb39e0c) ⇒ the
+populate is behavior-neutral; snapshot populated **max_n=1010 objects/tick, overflow=0** (grow-only buffer,
+no per-tick alloc at steady state); **zero crashes** over 5121+ ticks. **⇒ a2.2.1 clears its gate.**
+
+**Next: a2.2.2** — flip block-2 cheap-mass cross-reads onto the snapshot (start with the sensor/fog
+position reads), confirming `health/team/target_id/visible` offsets by validated use; then the lifted
+`sim/` bodies + two-phase fire via the existing pfire defer/drain.
 
 ---
 

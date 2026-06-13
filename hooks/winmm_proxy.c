@@ -2535,6 +2535,8 @@ static int a2_on(void) {     /* pfire_on() (defined above) lets a2 refuse to co-
         if (g_a2_level >= 1 && pfire_on() >= 1) {
             log_write("[eaw-mt] A2: REFUSING to arm — EAW_A2 and EAW_PFIRE both own the 2be640 seam (mutually exclusive). Unset one.\n");
             g_a2_level = 0;
+        } else if (g_a2_level >= 2) {
+            log_write("[eaw-mt] A2: sim-tick walk-driver ARMED (EAW_A2=2) — a2.2.1 + tick-start FrozenSnapshot POPULATE (rank-order pre-pass; reads still LIVE, snapshot unread). DTWORLD must still match the EAW_A2=0 baseline.\n");
         } else if (g_a2_level >= 1) {
             log_write("[eaw-mt] A2: sim-tick walk-driver ARMED (EAW_A2=1) — a2.2.0 full 2be640 transcription, block-2 identity (binary 3a6b80). DTWORLD must match the EAW_A2=0 baseline.\n");
         } else {
@@ -2553,13 +2555,59 @@ static int a2_on(void) {     /* pfire_on() (defined above) lets a2 refuse to co-
 
 static LONG g_a2_walk_calls = 0, g_a2_tick_calls = 0;
 
+/* ---- a2.2.1 (EAW_A2>=2): the tick-start FrozenSnapshot — Interface #2 (sim/frozen_snapshot.h) ----
+ * A pre-pass over the master_update_list, in VISITATION RANK ORDER (== block-2's order), captures each
+ * object's cross-read fields into a frozen buffer BEFORE the per-object bodies mutate anything. The
+ * eventual N-shard Phase-A reads OTHER objects only from this tick-start view (no read-after-write race).
+ * a2.2.1 only POPULATES it — block 2's reads stay LIVE (1-shard ⇒ no race) — so this is behavior-neutral
+ * (DTWORLD must stay == the EAW_A2=1 baseline); a2.2.2 flips the lifted-body cross-reads onto it.
+ * Confirmed offsets only: object_id @ obj+0x50, pos @ obj+0x78/+0x7c/+0x80 (the dominant cross-read for
+ * the sensor/fog/aim cheap-mass). health/target_id/team/visible stay 0 until a2.2.2 confirms their offsets
+ * by validated use (Rule 2 — no guessed offsets). Grow-only heap buffer ⇒ no per-tick alloc at steady state. */
+typedef struct { uint32_t object_id; float pos[3]; float health; uint32_t target_id; uint32_t team; uint8_t visible; } A2ObjState;
+static A2ObjState *g_a2_snap = NULL;
+static uint32_t    g_a2_snap_cap = 0, g_a2_snap_n = 0;
+static uint32_t    g_a2_snap_overflow = 0, g_a2_snap_max_n = 0;
+
+static void a2_snapshot_acquire(int64_t gom) {
+    g_a2_snap_n = 0;
+    uint8_t *sent = (uint8_t *)(uintptr_t)gom + 0xf0;
+    for (uint8_t *node = *(uint8_t **)((uint8_t *)(uintptr_t)gom + 0xf8);
+         node != sent; node = *(uint8_t **)(node + 0x8)) {
+        int64_t op = *(int64_t *)(node + 0x18);
+        int64_t obj = op ? op - 0x18 : 0;
+        if (g_a2_snap_n >= g_a2_snap_cap) {              /* grow-only (never shrink ⇒ steady-state alloc-free) */
+            uint32_t nc = g_a2_snap_cap ? g_a2_snap_cap * 2 : 1024;
+            A2ObjState *nb = (A2ObjState *)realloc(g_a2_snap, (size_t)nc * sizeof(A2ObjState));
+            if (!nb) { g_a2_snap_overflow++; break; }    /* OOM: snapshot incomplete (unread in a2.2.1 ⇒ harmless) */
+            g_a2_snap = nb; g_a2_snap_cap = nc;
+        }
+        A2ObjState *s = &g_a2_snap[g_a2_snap_n++];
+        if (obj) {
+            s->object_id = *(uint32_t *)(obj + 0x50);
+            s->pos[0] = *(float *)(obj + 0x78);
+            s->pos[1] = *(float *)(obj + 0x7c);
+            s->pos[2] = *(float *)(obj + 0x80);
+        } else {
+            s->object_id = 0; s->pos[0] = s->pos[1] = s->pos[2] = 0.0f;
+        }
+        s->health = 0.0f; s->target_id = 0; s->team = 0; s->visible = 0;   /* a2.2.2: wire by validated use */
+    }
+    if (g_a2_snap_n > g_a2_snap_max_n) g_a2_snap_max_n = g_a2_snap_n;
+}
+static void a2_snapshot_release(void) { g_a2_snap_n = 0; }
+
 /* Faithful transcription of FUN_1402be640. gom = the GameObjectManager (rcx), p2 = the tick arg (edx). */
 static void a2_tick_2be640(int64_t gom, uint32_t p2) {
     LONG tc = InterlockedIncrement(&g_a2_tick_calls);
     if ((tc & 0x3ff) == 1) {
-        char m[160];
-        sprintf(m, "[eaw-mt] A2: live — driver ticks=%ld walk_calls=%ld (block-2 identity, binary 3a6b80)\n",
-                (long)tc, (long)g_a2_walk_calls);
+        char m[224];
+        if (g_a2_level >= 2)
+            sprintf(m, "[eaw-mt] A2: live — driver ticks=%ld walk_calls=%ld | snapshot n=%u max_n=%u overflow=%u (populate-only, reads live)\n",
+                    (long)tc, (long)g_a2_walk_calls, g_a2_snap_n, g_a2_snap_max_n, g_a2_snap_overflow);
+        else
+            sprintf(m, "[eaw-mt] A2: live — driver ticks=%ld walk_calls=%ld (block-2 identity, binary 3a6b80)\n",
+                    (long)tc, (long)g_a2_walk_calls);
         log_write(m);
     }
 
@@ -2585,6 +2633,7 @@ static void a2_tick_2be640(int64_t gom, uint32_t p2) {
     if (elide) run_walk = (sil != 0) ? (A2_U8(A2G(0), 0xb2766c) != 0) : 1;
     else       run_walk = (A2_U8(A2G(0), 0xb2766c) != 0);
     if (run_walk) {
+        if (g_a2_level >= 2) a2_snapshot_acquire(gom);   /* a2.2.1: tick-start frozen view (populate; reads stay live) */
         uint8_t *sent = (uint8_t *)(uintptr_t)gom + 0xf0;
         for (uint8_t *node = *(uint8_t **)((uint8_t *)(uintptr_t)gom + 0xf8);
              node != sent; node = *(uint8_t **)(node + 0x8)) {
@@ -2743,6 +2792,7 @@ static void a2_tick_2be640(int64_t gom, uint32_t p2) {
         }
     }
     g_a2.f2a62d0(gom);
+    if (g_a2_level >= 2) a2_snapshot_release();           /* a2.2.1: drop the frozen view at tick end */
 }
 
 typedef void (*A2OrigFn)(int64_t, int64_t);
